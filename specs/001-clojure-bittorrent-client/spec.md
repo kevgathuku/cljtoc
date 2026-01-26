@@ -1,173 +1,314 @@
-# Feature Specification: Clojure BitTorrent Client
+# Architecture Specification: Clojure BitTorrent Client
 
 **Feature Branch**: `001-clojure-bittorrent-client`
 **Created**: 2026-01-26
-**Status**: Draft
+**Status**: Complete - Architecture Defined
+**Type**: Parent Specification (No Implementation)
 **Input**: User description: "Build a BitTorrent client in Clojure that embraces crash-only design, uses core.async for concurrency, applies OTP-style supervision semantics, maintains hard boundaries between Domain (pure), Protocol logic, Effects (network, disk, time), and Supervision/lifecycle. Must be testable without I/O and avoid hidden global state."
 
-## User Scenarios & Testing *(mandatory)*
+## Overview
 
-### User Story 1 - Download a Single Torrent File (Priority: P1)
+This specification defines the architecture and overall vision for a production-grade BitTorrent client in Clojure. The implementation is split into independently deliverable sub-features, each with its own specification, acceptance criteria, and success metrics.
 
-A user wants to download a file from a torrent. They provide a .torrent file or magnet link, specify a download location, and the client downloads the complete file by connecting to peers, requesting pieces, verifying integrity, and assembling the final file.
+## Vision & Scope
 
-**Why this priority**: This is the core value proposition of a BitTorrent client - the ability to download content from a swarm. Without this capability, the client has no utility.
+Build a BitTorrent client that can download and seed files from the BitTorrent network while exemplifying clean architecture principles:
 
-**Independent Test**: Can be fully tested by providing a .torrent file, starting a download, and verifying the completed file matches the expected hash. Delivers the fundamental value of file acquisition.
+- **Crash-Only Design**: The system expects and handles failures gracefully; restart is the primary recovery mechanism
+- **Pure Domain Logic**: All business logic is pure, deterministic functions with no side effects
+- **Explicit Effects**: Network I/O, disk I/O, time, and randomness are isolated behind ports/interfaces
+- **Supervision Trees**: OTP-style supervisors manage worker lifecycles with explicit restart policies
+- **Zero Hidden State**: All state is explicitly passed or managed by supervised components
+- **Testability First**: Full system behavior testable without actual I/O using test doubles
 
-**Acceptance Scenarios**:
+## Sub-Features Roadmap
 
-1. **Given** a valid .torrent file and a specified download directory, **When** the user starts the download, **Then** the client connects to the tracker, discovers peers, and begins downloading pieces
-2. **Given** an active download with available peers, **When** pieces are received, **Then** each piece is verified against its hash before being accepted
-3. **Given** all pieces have been downloaded and verified, **When** the download completes, **Then** the final file matches the expected info hash and is available at the specified location
-4. **Given** a download in progress, **When** the user pauses the download, **Then** all peer connections are gracefully closed and progress is persisted
-5. **Given** a paused download with progress saved, **When** the user resumes, **Then** only missing pieces are requested
+This architecture is implemented through the following independently deliverable features:
 
----
+| Feature | Description | Status | Dependencies | Priority |
+|---------|-------------|--------|--------------|----------|
+| [001a-bencode-parser](../001a-bencode-parser/) | Parse .torrent files (bencode format) to domain model | Not Started | None | P1 - Foundation |
+| [001b-tracker-protocol](../001b-tracker-protocol/) | HTTP/UDP tracker communication for peer discovery | Not Started | 001a | P1 - Required |
+| [001c-peer-wire-protocol](../001c-peer-wire-protocol/) | BitTorrent peer message protocol implementation | Not Started | 001a | P1 - Required |
+| [001d-piece-selection](../001d-piece-selection/) | Pure domain logic for piece management & verification | Not Started | 001a | P1 - Required |
+| [001e-download-orchestration](../001e-download-orchestration/) | End-to-end single torrent download coordination | Not Started | 001a-d | P1 - MVP |
+| [001f-seeding](../001f-seeding/) | Accept connections and serve pieces to peers | Not Started | 001e | P2 |
+| [001g-multi-torrent](../001g-multi-torrent/) | Concurrent multi-torrent management | Not Started | 001f | P3 |
+| [001h-monitoring](../001h-monitoring/) | Real-time statistics and progress reporting | Not Started | 001g | P3 |
+| [001i-production-hardening](../001i-production-hardening/) | Supervision trees and crash recovery | Not Started | 001h | P4 |
 
-### User Story 2 - Seed Files to the Swarm (Priority: P2)
+**Implementation Strategy**: Features 001a-001d can be developed in parallel as they have minimal dependencies. Feature 001e integrates them into a working MVP. Features 001f-001i add incremental value on top of the MVP.
 
-A user who has completed a download (or has original content) wants to contribute back to the swarm by seeding. The client accepts incoming connections from peers and uploads pieces upon request.
+## High-Level User Journeys
 
-**Why this priority**: Seeding is essential for the health of the BitTorrent ecosystem and completes the bidirectional nature of the protocol. However, it depends on having content to share, making it secondary to downloading.
+### Primary Journey: Download a Torrent (Spans features 001a-001e)
 
-**Independent Test**: Can be tested by having the client seed a known file and verifying that a separate peer can successfully download pieces from it.
+A user provides a .torrent file and download directory, and the client downloads the complete file by connecting to peers, requesting pieces in optimal order, verifying integrity, and assembling the final file.
 
-**Acceptance Scenarios**:
+**End-to-End Success**: User can download a 1GB torrent from a healthy swarm to completion with full verification.
 
-1. **Given** a completed download, **When** seeding is enabled, **Then** the client announces to the tracker and accepts incoming peer connections
-2. **Given** an incoming peer connection with a valid handshake, **When** the peer requests a piece, **Then** the client sends the requested piece data
-3. **Given** multiple peers requesting different pieces, **When** handling requests, **Then** requests are served fairly without starving any single peer
+### Secondary Journey: Seed to the Swarm (Adds feature 001f)
 
----
+A user with completed downloads contributes back to the network by accepting incoming connections and serving pieces to other peers.
 
-### User Story 3 - Monitor Download Progress and Statistics (Priority: P3)
+**End-to-End Success**: Client can seed a file and serve pieces to requesting peers with fair upload distribution.
 
-A user wants visibility into the current state of their downloads including progress percentage, download/upload speeds, number of connected peers, and estimated time remaining.
+### Tertiary Journey: Manage Multiple Torrents (Adds feature 001g)
 
-**Why this priority**: Monitoring provides transparency and user confidence but is not essential for the core download/upload functionality.
+A user manages multiple concurrent downloads and seeds with appropriate resource sharing and independent progress tracking.
 
-**Independent Test**: Can be tested by starting a download and verifying that statistics are reported accurately and update in real-time.
+**End-to-End Success**: Multiple torrents make progress concurrently without resource starvation.
 
-**Acceptance Scenarios**:
+### Observability Journey: Monitor Progress (Adds feature 001h)
 
-1. **Given** an active download, **When** the user queries status, **Then** they see: progress percentage, downloaded/total bytes, download speed, upload speed, connected peers count
-2. **Given** changing network conditions, **When** speeds fluctuate, **Then** the displayed statistics reflect current conditions within 5 seconds
-3. **Given** a completed download, **When** the user queries status, **Then** they see 100% progress and cumulative statistics
+A user queries real-time statistics including progress, speeds, peer counts, and ETAs for all active transfers.
 
----
+**End-to-End Success**: Statistics update within 5 seconds and accurately reflect system state.
 
-### User Story 4 - Handle Network Failures Gracefully (Priority: P4)
+### Reliability Journey: Automatic Recovery (Adds feature 001i)
 
-When network issues occur (peer disconnects, tracker unavailable, timeouts), the client recovers automatically without user intervention and without corrupting download state.
+The system automatically recovers from any component failure (peer disconnect, tracker unavailable, disk errors, crashes) without user intervention or data corruption.
 
-**Why this priority**: Reliability is critical for user trust but builds upon the core download functionality.
+**End-to-End Success**: Forceful termination at any point results in no corruption; restart resumes from last verified state.
 
-**Independent Test**: Can be tested by simulating network failures during download and verifying automatic recovery and data integrity.
+## Critical Edge Cases (Cross-Cutting)
 
-**Acceptance Scenarios**:
+These scenarios must be considered across all sub-features:
 
-1. **Given** a peer disconnects unexpectedly, **When** the client detects the failure, **Then** in-flight piece requests from that peer are re-requested from other available peers
-2. **Given** the tracker becomes unavailable, **When** the client attempts to announce, **Then** the client continues downloading from known peers and retries tracker contact according to configured intervals
-3. **Given** a complete network outage, **When** connectivity is restored, **Then** the client automatically resumes peer connections and continues downloading
-4. **Given** any failure scenario, **When** recovery occurs, **Then** no downloaded data is lost and no duplicate pieces are written
+- **Malformed Input**: Torrent files with missing/invalid fields, corrupt bencode
+- **Malicious Peers**: Pieces that repeatedly fail verification, invalid protocol messages
+- **Resource Exhaustion**: Disk full, memory pressure, connection limits
+- **Network Failures**: Total outage, tracker unavailability, peer churn
+- **Crashes**: SIGKILL mid-write, power loss, OOM termination
+- **Scale**: Torrents >1TB, thousands of pieces, memory constraints
+- **Cross-Seeding**: Multiple torrents referencing the same files
 
----
 
-### User Story 5 - Manage Multiple Concurrent Torrents (Priority: P5)
+## Architectural Principles *(mandatory)*
 
-A user wants to download and seed multiple torrents simultaneously, with the client managing resources across all active transfers.
+These principles apply across all sub-features and form the non-negotiable foundation of the design:
 
-**Why this priority**: Multi-torrent support increases utility but adds complexity beyond the single-torrent core.
+### AP-001: Pure Domain Core
 
-**Independent Test**: Can be tested by starting multiple torrents and verifying all make progress concurrently and resources are shared appropriately.
+All business logic MUST be implemented as pure, deterministic functions with no side effects. This includes:
+- Piece selection algorithms
+- State transitions
+- Verification logic
+- Protocol message encoding/decoding
+- Choking/unchoking decisions
 
-**Acceptance Scenarios**:
+**Rationale**: Pure functions are trivially testable, composable, and reason-able. They eliminate entire classes of bugs related to hidden state and timing.
 
-1. **Given** multiple torrents are active, **When** the user queries status, **Then** each torrent shows independent progress
-2. **Given** limited bandwidth, **When** multiple torrents compete, **Then** bandwidth is distributed according to configured priorities or fairly if no priority set
-3. **Given** one torrent fails catastrophically, **When** the failure is handled, **Then** other torrents continue unaffected
+### AP-002: Explicit Effect Isolation
 
----
+All side effects MUST be isolated behind explicit ports/interfaces:
+- **Network Port**: TCP/UDP socket operations
+- **Disk Port**: File read/write operations
+- **Time Port**: Current time, timers, delays
+- **Random Port**: Random number generation
 
-### Edge Cases
+**Rationale**: Effect isolation enables testing with test doubles, deterministic replay, and clear boundaries between "what to do" (domain) and "how to do it" (effects).
 
-- What happens when a torrent file is malformed or missing required fields?
-- How does the system handle pieces that repeatedly fail hash verification (potentially malicious peers)?
-- What happens when disk space runs out mid-download?
-- How does the client behave when all peers disconnect and no tracker is reachable?
-- What happens when the client is terminated forcefully (crash, kill signal) mid-write?
-- How are extremely large torrents (>1TB) handled with respect to memory?
-- What happens when two torrents share the same file (cross-seeding scenario)?
+### AP-003: Crash-Only Design
 
-## Requirements *(mandatory)*
+Components MUST be designed to handle crashes as the normal path:
+- No graceful shutdown required (though allowed for optimization)
+- State must be recoverable from persistent storage
+- In-memory state must be reconstructible from durable state
+- Restart is the primary recovery mechanism
 
-### Functional Requirements
+**Rationale**: Simplifies error handling by eliminating complex cleanup paths. If crashes are safe, all errors become crashes.
 
-#### Core Protocol
+### AP-004: Supervision Hierarchies
 
-- **FR-001**: System MUST parse and validate .torrent files (bencode format) extracting info hash, piece hashes, file metadata, and tracker URLs
-- **FR-002**: System MUST implement the BitTorrent peer wire protocol including handshake, choke/unchoke, interested/not-interested, have, bitfield, request, piece, and cancel messages
-- **FR-003**: System MUST verify each downloaded piece against its SHA-1 hash before accepting it
-- **FR-004**: System MUST announce to HTTP and UDP trackers to discover peers and report progress
-- **FR-005**: System MUST maintain persistent state of download progress to enable resume after restart
+Every concurrent process MUST have an explicit supervisor:
+- Supervisors own worker lifecycles
+- Supervisors implement restart policies
+- Workers fail fast and delegate recovery to supervisors
+- No worker retries its own operations (unless designed as a retry-supervisor)
 
-#### Architecture (Crash-Only Design)
+**Rationale**: Makes failure domains explicit and prevents hidden retry logic that can lead to resource leaks and cascading failures.
 
-- **FR-006**: System MUST structure all domain logic (piece selection, verification, state transitions) as pure, deterministic functions with no side effects
-- **FR-007**: System MUST isolate all side effects (network I/O, disk I/O, timers, randomness) behind explicit interfaces that can be replaced with test doubles
-- **FR-008**: System MUST implement explicit supervision where worker failures are expected and handled by supervisors via restart policies
-- **FR-009**: System MUST ensure no worker performs its own retries unless explicitly designed to do so; retry logic belongs to supervisors
-- **FR-010**: System MUST ensure all concurrent processes have explicit owners/supervisors responsible for their lifecycle
-- **FR-011**: System MUST avoid hidden global state; all state must be explicitly passed or managed through supervised components
+### AP-005: Zero Global State
 
-#### Peer Management
+No global mutable state (atoms, refs, agents) outside of supervised components:
+- State must be explicitly passed via function arguments
+- Stateful components must be managed by supervisors
+- Configuration is immutable after initialization
 
-- **FR-012**: System MUST maintain connections to multiple peers simultaneously (configurable limit, default: 50 per torrent)
-- **FR-013**: System MUST implement choking/unchoking algorithm to optimize upload to reciprocating peers
-- **FR-014**: System MUST track piece availability across peers to enable rarest-first selection
-- **FR-015**: System MUST handle peer disconnections by reassigning pending piece requests to other peers
+**Rationale**: Global state creates hidden dependencies and makes testing, reasoning, and parallelization difficult.
 
-#### Disk Management
+### AP-006: Contract-First Protocols
 
-- **FR-016**: System MUST write completed pieces to disk atomically to prevent corruption on crashes
-- **FR-017**: System MUST pre-allocate disk space for the complete download or handle allocation incrementally with graceful disk-full handling
-- **FR-018**: System MUST support downloads to configurable directory locations
+All protocol implementations MUST define their interface as a protocol/multimethod:
+- Separate "what" (interface) from "how" (implementation)
+- Support multiple implementations (production, test, simulation)
+- Enable composition and decoration
 
-#### Testability
+**Rationale**: Enables dependency injection, testing with fakes/mocks, and runtime selection of implementations.
 
-- **FR-019**: System MUST be testable without actual network I/O by providing injectable network ports
-- **FR-020**: System MUST be testable without actual disk I/O by providing injectable storage ports
-- **FR-021**: System MUST support deterministic testing by providing injectable time and randomness sources
+## Key Domain Entities
 
-### Key Entities
+These entities form the core domain vocabulary used across all sub-features:
 
-- **Torrent**: Represents a torrent session including info hash, file metadata, piece hashes, tracker URLs, and current download state
-- **Piece**: A fixed-size chunk of the torrent with an index, expected hash, download status, and data (when downloaded)
-- **Peer**: A remote BitTorrent client with connection state, pieces it has (bitfield), choke/interest state, and transfer statistics
-- **Block**: A sub-piece unit of transfer (typically 16KB) used for requesting data from peers
-- **Tracker**: An announce endpoint (HTTP or UDP) that provides peer discovery for a torrent
-- **Supervisor**: A process responsible for managing the lifecycle of worker processes, implementing restart strategies on failure
+### Torrent
+Represents a torrent session with:
+- **info-hash**: Unique SHA-1 identifier (20 bytes)
+- **metadata**: Name, file list, piece length, total size
+- **piece-hashes**: Vector of expected SHA-1 hashes (20 bytes each)
+- **tracker-urls**: List of announce endpoints
+- **state**: Download/seed progress and piece availability
+
+### Piece
+A fixed-size chunk of the torrent:
+- **index**: Zero-based position in torrent
+- **hash**: Expected SHA-1 hash (20 bytes)
+- **length**: Size in bytes (last piece may be shorter)
+- **status**: :pending, :downloading, :verifying, :complete
+- **data**: Actual bytes (nil until downloaded)
+
+### Block
+Sub-piece unit for network transfer (typically 16KB):
+- **piece-index**: Parent piece
+- **offset**: Byte offset within piece
+- **length**: Block size (≤ 16KB)
+- **data**: Actual bytes
+
+### Peer
+Remote BitTorrent client connection:
+- **peer-id**: 20-byte identifier
+- **address**: IP and port
+- **bitfield**: Which pieces peer has
+- **state**: Connection, choke, interest flags
+- **statistics**: Upload/download rates, bytes transferred
+
+### Tracker
+Announce endpoint for peer discovery:
+- **url**: Announce URL
+- **type**: :http or :udp
+- **interval**: Time between announces
+- **peers**: Last received peer list
+
+### Supervisor
+Process lifecycle manager:
+- **children**: Supervised worker processes
+- **strategy**: :one-for-one, :all-for-one, :rest-for-one
+- **max-restarts**: Failure rate limit
+- **restart-policy**: :permanent, :transient, :temporary
+
+## Cross-Cutting Requirements *(mandatory)*
+
+These requirements apply to all sub-features:
+
+### Testability
+
+- **CR-001**: All sub-features MUST achieve ≥90% unit test coverage for domain logic
+- **CR-002**: All sub-features MUST be testable without actual I/O via injectable ports
+- **CR-003**: All sub-features MUST support deterministic testing via injectable time/randomness
+- **CR-004**: Integration tests MUST run deterministically without flaky failures
+
+### Performance
+
+- **CR-005**: Memory usage MUST remain bounded regardless of torrent size (streaming, not loading entire pieces)
+- **CR-006**: CPU usage MUST be efficient (no polling loops, use async notification)
+- **CR-007**: Download speed MUST reach ≥80% of available bandwidth with sufficient peers
+
+### Reliability
+
+- **CR-008**: All disk writes MUST be atomic or recoverable (no partial corrupted state)
+- **CR-009**: Component failures MUST be contained to failure domains (no cascading failures)
+- **CR-010**: Forceful termination MUST result in resumable state (no data loss)
+
+### Protocol Compliance
+
+- **CR-011**: All protocol implementations MUST conform to BitTorrent v1 spec (BEP 3)
+- **CR-012**: All network messages MUST be validated before processing
+- **CR-013**: Invalid peer behavior MUST result in connection termination, not crashes
+
+## Technology Constraints
+
+
+## Technology Constraints
+
+- **Language**: Clojure (JVM) for core implementation
+- **Concurrency**: core.async for managing concurrent processes
+- **Testing**: clojure.test or similar for unit/integration tests
+- **Build**: Leiningen or tools.deps for dependency management
+- **Target**: BitTorrent v1 protocol (BEP 3) as baseline
 
 ## Assumptions
 
-- The client targets the BitTorrent v1 protocol (BEP 3) as the baseline; extensions (DHT, PEX, magnet links) can be added later
-- Single-file and multi-file torrents are both supported
-- The client operates as a command-line application initially; GUI can be added as a separate layer
-- Standard piece selection strategy (rarest-first) is used unless endgame mode is active
-- Default block size is 16KB as per BitTorrent convention
-- Tracker announce intervals follow tracker-specified values with reasonable defaults (30 minutes)
-- The client will gracefully degrade when trackers are unavailable (using cached peer lists)
+- The client targets BitTorrent v1 (BEP 3); extensions (DHT, PEX, magnet links) are future enhancements
+- Both single-file and multi-file torrents are supported
+- Command-line interface is the initial user interface; GUI is a future enhancement
+- Standard piece selection (rarest-first) is used; endgame mode is handled in sub-feature 001d
+- Default block size is 16KB per BitTorrent convention
+- Tracker announce intervals follow tracker-specified values with 30-minute default
+- The client gracefully degrades when trackers are unavailable (uses cached peers)
+- IPv4 is required; IPv6 is optional
 
-## Success Criteria *(mandatory)*
+## System-Level Success Criteria *(mandatory)*
 
-### Measurable Outcomes
+These criteria apply to the complete system (all sub-features integrated):
 
-- **SC-001**: Users can download a 1GB torrent from a healthy swarm to completion with full verification
-- **SC-002**: All domain logic achieves 90% unit test coverage without requiring actual I/O
-- **SC-003**: The client recovers from any single component failure (peer, disk writer, tracker) within 30 seconds without data loss
-- **SC-004**: Forceful termination at any point results in no corruption; restart resumes from last verified state
-- **SC-005**: The client sustains 50 concurrent peer connections per torrent while maintaining responsive user feedback
-- **SC-006**: Integration tests run deterministically with simulated time, network, and disk without flaky failures
-- **SC-007**: Download speed reaches at least 80% of available bandwidth when sufficient peers are available
-- **SC-008**: Memory usage stays below 100MB for single-torrent downloads regardless of torrent size
+### Functional Completeness
+
+- **SC-001**: A user can download a 1GB single-file torrent from a healthy swarm to completion with full verification
+- **SC-002**: A user can seed a completed torrent and serve pieces to at least 10 concurrent requesting peers
+- **SC-003**: A user can manage 5 concurrent torrents with independent progress and status
+
+### Architectural Quality
+
+- **SC-004**: All domain logic across all sub-features achieves ≥90% unit test coverage without requiring actual I/O
+- **SC-005**: Integration tests execute deterministically with simulated time, network, and disk, with zero flaky test failures over 100 runs
+- **SC-006**: No component uses global mutable state; all state is explicitly managed or passed
+
+### Reliability
+
+- **SC-007**: The client recovers from any single component failure (peer, tracker, disk writer) within 30 seconds without data loss
+- **SC-008**: Forceful termination (SIGKILL) at any point results in zero data corruption; restart resumes from last verified state
+- **SC-009**: The client handles 100 sequential peer disconnects during a download without failing or leaking resources
+
+### Performance
+
+- **SC-010**: Download speed reaches ≥80% of available bandwidth when connected to 20+ peers with sufficient upload capacity
+- **SC-011**: Memory usage stays below 100MB per active torrent regardless of torrent size (streaming model)
+- **SC-012**: The client sustains 50 concurrent peer connections per torrent while maintaining <100ms response to user status queries
+
+## Sub-Feature Requirements Summary
+
+The functional requirements from the original spec are distributed across sub-features as follows:
+
+| Requirement | Sub-Feature | Description |
+|-------------|-------------|-------------|
+| FR-001 | 001a | Parse and validate .torrent files (bencode) |
+| FR-002 | 001c | Implement peer wire protocol messages |
+| FR-003 | 001d | Verify pieces against SHA-1 hashes |
+| FR-004 | 001b | Announce to HTTP/UDP trackers |
+| FR-005 | 001e | Persist download progress for resume |
+| FR-006-011 | All | Architecture principles (pure domain, ports, supervision) |
+| FR-012 | 001e | Maintain multiple concurrent peer connections |
+| FR-013 | 001f | Implement choking/unchoking algorithm |
+| FR-014 | 001d | Track piece availability for selection |
+| FR-015 | 001e | Handle peer disconnections gracefully |
+| FR-016-018 | 001e | Disk management (atomic writes, allocation) |
+| FR-019-021 | All | Testability via injectable ports |
+
+## Getting Started
+
+To begin implementing this architecture:
+
+1. **Start with 001a** (bencode parser): This is the foundation with zero dependencies
+2. **Proceed with 001b-d in parallel**: These can be developed independently once 001a is complete
+3. **Integrate with 001e**: Brings together all pieces into working MVP
+4. **Add value incrementally with 001f-i**: Each adds independent value on top of MVP
+
+Each sub-feature has its own specification with detailed user stories, acceptance criteria, and success metrics. Refer to the sub-feature specs for implementation details.
+
+## Notes
+
+- This is an **architecture specification**, not an implementation specification
+- Implementation details belong in sub-feature specs (001a-001i)
+- Changes to architectural principles require review of impact on all sub-features
+- Sub-features can be developed, tested, and merged independently
+- The roadmap table should be updated as sub-features are completed

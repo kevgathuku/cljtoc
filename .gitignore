@@ -11,3 +11,6 @@ pom.xml.asc
 /.prepl-port
 .hgignore
 .hg/
+.claude/settings.local.json
+.clj-kondo/.cache/
+.lsp/.cache/
