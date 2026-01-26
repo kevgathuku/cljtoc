@@ -50,17 +50,17 @@ Each sub-feature follows the full spec-kit workflow independently:
 
 ### Sub-Features Roadmap
 
-| ID | Feature | Dependencies | Priority | Command to Start |
-|----|---------|--------------|----------|------------------|
-| 001a | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files (bencode format) to domain model with pure functions` |
-| 001b | Tracker Protocol | 001a | P1 | `/speckit.specify Implement HTTP/UDP tracker communication for peer discovery` |
-| 001c | Peer Wire Protocol | 001a | P1 | `/speckit.specify Implement BitTorrent peer message protocol` |
-| 001d | Piece Selection | 001a | P1 | `/speckit.specify Pure domain logic for piece management and verification` |
-| 001e | Download Orchestration | 001a-d | P1 | `/speckit.specify End-to-end single torrent download coordinator` |
-| 001f | Seeding | 001e | P2 | `/speckit.specify Accept connections and serve pieces to peers` |
-| 001g | Multi-Torrent | 001f | P3 | `/speckit.specify Manage multiple concurrent torrents` |
-| 001h | Monitoring | 001g | P3 | `/speckit.specify Real-time statistics and progress reporting` |
-| 001i | Production Hardening | 001h | P4 | `/speckit.specify Supervision trees and crash recovery` |
+| ID | Feature | Dependencies | Priority | Command to Start | Status |
+|----|---------|--------------|----------|------------------|--------|
+| 002 | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files...` | ✅ In Progress |
+| 003 | Tracker Protocol | 002 | P1 | `/speckit.specify Implement HTTP/UDP tracker communication` | Not Started |
+| 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | Not Started |
+| 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | Not Started |
+| 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | Not Started |
+| 007 | Seeding | 006 | P2 | `/speckit.specify Accept connections and serve pieces` | Not Started |
+| 008 | Multi-Torrent | 007 | P3 | `/speckit.specify Manage multiple concurrent torrents` | Not Started |
+| 009 | Monitoring | 008 | P3 | `/speckit.specify Real-time statistics and progress` | Not Started |
+| 010 | Production Hardening | 009 | P4 | `/speckit.specify Supervision trees and crash recovery` | Not Started |
 
 ## Technical Context (Applies to All Sub-Features)
 

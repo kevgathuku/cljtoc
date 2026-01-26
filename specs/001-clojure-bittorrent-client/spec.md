@@ -27,17 +27,17 @@ This architecture is implemented through the following independently deliverable
 
 | Feature | Description | Status | Dependencies | Priority |
 |---------|-------------|--------|--------------|----------|
-| [001a-bencode-parser](../001a-bencode-parser/) | Parse .torrent files (bencode format) to domain model | Not Started | None | P1 - Foundation |
-| [001b-tracker-protocol](../001b-tracker-protocol/) | HTTP/UDP tracker communication for peer discovery | Not Started | 001a | P1 - Required |
-| [001c-peer-wire-protocol](../001c-peer-wire-protocol/) | BitTorrent peer message protocol implementation | Not Started | 001a | P1 - Required |
-| [001d-piece-selection](../001d-piece-selection/) | Pure domain logic for piece management & verification | Not Started | 001a | P1 - Required |
-| [001e-download-orchestration](../001e-download-orchestration/) | End-to-end single torrent download coordination | Not Started | 001a-d | P1 - MVP |
-| [001f-seeding](../001f-seeding/) | Accept connections and serve pieces to peers | Not Started | 001e | P2 |
-| [001g-multi-torrent](../001g-multi-torrent/) | Concurrent multi-torrent management | Not Started | 001f | P3 |
-| [001h-monitoring](../001h-monitoring/) | Real-time statistics and progress reporting | Not Started | 001g | P3 |
-| [001i-production-hardening](../001i-production-hardening/) | Supervision trees and crash recovery | Not Started | 001h | P4 |
+| [002-bencode-parser](../002-bencode-parser/) | Parse .torrent files (bencode format) to domain model | **In Progress** | None | P1 - Foundation |
+| 003-tracker-protocol | HTTP/UDP tracker communication for peer discovery | Not Started | 002 | P1 - Required |
+| 004-peer-wire-protocol | BitTorrent peer message protocol implementation | Not Started | 002 | P1 - Required |
+| 005-piece-selection | Pure domain logic for piece management & verification | Not Started | 002 | P1 - Required |
+| 006-download-orchestration | End-to-end single torrent download coordination | Not Started | 002-005 | P1 - MVP |
+| 007-seeding | Accept connections and serve pieces to peers | Not Started | 006 | P2 |
+| 008-multi-torrent | Concurrent multi-torrent management | Not Started | 007 | P3 |
+| 009-monitoring | Real-time statistics and progress reporting | Not Started | 008 | P3 |
+| 010-production-hardening | Supervision trees and crash recovery | Not Started | 009 | P4 |
 
-**Implementation Strategy**: Features 001a-001d can be developed in parallel as they have minimal dependencies. Feature 001e integrates them into a working MVP. Features 001f-001i add incremental value on top of the MVP.
+**Implementation Strategy**: Features 002-005 can be developed in parallel as they have minimal dependencies. Feature 006 integrates them into a working MVP. Features 007-010 add incremental value on top of the MVP.
 
 ## High-Level User Journeys
 
