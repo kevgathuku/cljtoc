@@ -25,51 +25,78 @@ Build a BitTorrent client that can download and seed files from the BitTorrent n
 
 This architecture is implemented through the following independently deliverable features:
 
+### Core Engine Features
+
 | Feature | Description | Status | Dependencies | Priority |
 |---------|-------------|--------|--------------|----------|
 | [002-bencode-parser](../002-bencode-parser/) | Parse .torrent files (bencode format) to domain model | **In Progress** | None | P1 - Foundation |
 | 003-tracker-protocol | HTTP/UDP tracker communication for peer discovery | Not Started | 002 | P1 - Required |
 | 004-peer-wire-protocol | BitTorrent peer message protocol implementation | Not Started | 002 | P1 - Required |
 | 005-piece-selection | Pure domain logic for piece management & verification | Not Started | 002 | P1 - Required |
-| 006-download-orchestration | End-to-end single torrent download coordination | Not Started | 002-005 | P1 - MVP |
+| 006-download-orchestration | End-to-end single torrent download coordination | Not Started | 002-005 | P1 - Engine Core |
+
+### User Interface Features
+
+| Feature | Description | Status | Dependencies | Priority |
+|---------|-------------|--------|--------------|----------|
+| 011-cli-interface | Command-line interface for torrent management | Not Started | 006 | P1 - MVP Complete |
+
+### Enhancement Features
+
+| Feature | Description | Status | Dependencies | Priority |
+|---------|-------------|--------|--------------|----------|
 | 007-seeding | Accept connections and serve pieces to peers | Not Started | 006 | P2 |
-| 008-multi-torrent | Concurrent multi-torrent management | Not Started | 007 | P3 |
+| 008-multi-torrent | Concurrent multi-torrent management | Not Started | 007 | P2 |
 | 009-monitoring | Real-time statistics and progress reporting | Not Started | 008 | P3 |
 | 010-production-hardening | Supervision trees and crash recovery | Not Started | 009 | P4 |
 
-**Implementation Strategy**: Features 002-005 can be developed in parallel as they have minimal dependencies. Feature 006 integrates them into a working MVP. Features 007-010 add incremental value on top of the MVP.
+**Implementation Strategy**: 
+- **Phase 1 - Foundation**: Features 002-005 can be developed in parallel (minimal dependencies)
+- **Phase 2 - Engine MVP**: Feature 006 integrates foundation features into working download engine
+- **Phase 3 - User MVP**: Feature 011 provides CLI to make engine usable by end users
+- **Phase 4 - Enhancements**: Features 007-010 add seeding, multi-torrent, monitoring, and hardening
 
 ## High-Level User Journeys
 
-### Primary Journey: Download a Torrent (Spans features 001a-001e)
+### Primary Journey: Download a Torrent (Spans features 002-006 + 011)
 
-A user provides a .torrent file and download directory, and the client downloads the complete file by connecting to peers, requesting pieces in optimal order, verifying integrity, and assembling the final file.
+A user provides a .torrent file path and download directory via CLI, and the client downloads the complete file by connecting to peers, requesting pieces in optimal order, verifying integrity, and assembling the final file.
 
-**End-to-End Success**: User can download a 1GB torrent from a healthy swarm to completion with full verification.
+**End-to-End Success**: User runs `cljtoc download myfile.torrent --output ~/Downloads` and gets a fully verified downloaded file.
 
-### Secondary Journey: Seed to the Swarm (Adds feature 001f)
+**CLI Commands Needed**: `download`, `pause`, `resume`, `status`, `cancel`
+
+### Secondary Journey: Seed to the Swarm (Adds feature 007, uses CLI from 011)
 
 A user with completed downloads contributes back to the network by accepting incoming connections and serving pieces to other peers.
 
-**End-to-End Success**: Client can seed a file and serve pieces to requesting peers with fair upload distribution.
+**End-to-End Success**: User runs `cljtoc seed ~/Downloads/myfile.torrent` and the client serves pieces to requesting peers.
 
-### Tertiary Journey: Manage Multiple Torrents (Adds feature 001g)
+**CLI Commands Needed**: `seed`, `stop`
+
+### Tertiary Journey: Manage Multiple Torrents (Adds feature 008, uses CLI from 011)
 
 A user manages multiple concurrent downloads and seeds with appropriate resource sharing and independent progress tracking.
 
-**End-to-End Success**: Multiple torrents make progress concurrently without resource starvation.
+**End-to-End Success**: User runs `cljtoc list` to see all active torrents with progress, speeds, and peer counts.
 
-### Observability Journey: Monitor Progress (Adds feature 001h)
+**CLI Commands Needed**: `list`, `priority`, `limit`
+
+### Observability Journey: Monitor Progress (Adds feature 009, uses CLI from 011)
 
 A user queries real-time statistics including progress, speeds, peer counts, and ETAs for all active transfers.
 
-**End-to-End Success**: Statistics update within 5 seconds and accurately reflect system state.
+**End-to-End Success**: User runs `cljtoc status <torrent-id>` and sees detailed real-time statistics that update accurately.
 
-### Reliability Journey: Automatic Recovery (Adds feature 001i)
+**CLI Commands Needed**: `status`, `watch` (continuous monitoring)
+
+### Reliability Journey: Automatic Recovery (Adds feature 010)
 
 The system automatically recovers from any component failure (peer disconnect, tracker unavailable, disk errors, crashes) without user intervention or data corruption.
 
-**End-to-End Success**: Forceful termination at any point results in no corruption; restart resumes from last verified state.
+**End-to-End Success**: User can forcefully terminate client mid-download, restart it, and the download resumes automatically from the last verified state with no data loss.
+
+**CLI Commands Needed**: Resume is automatic on restart, but explicit `cljtoc resume <torrent-id>` also supported
 
 ## Critical Edge Cases (Cross-Cutting)
 
@@ -225,6 +252,13 @@ These requirements apply to all sub-features:
 - **CR-012**: All network messages MUST be validated before processing
 - **CR-013**: Invalid peer behavior MUST result in connection termination, not crashes
 
+### User Interface
+
+- **CR-014**: CLI MUST provide clear error messages for user errors (invalid file paths, permissions, etc.)
+- **CR-015**: CLI MUST provide progress feedback for long-running operations (download, verification)
+- **CR-016**: CLI MUST support both interactive and scripted/automated usage
+- **CR-017**: CLI MUST exit with appropriate status codes (0 for success, non-zero for errors)
+
 ## Technology Constraints
 
 
@@ -234,18 +268,24 @@ These requirements apply to all sub-features:
 - **Concurrency**: core.async for managing concurrent processes
 - **Testing**: clojure.test or similar for unit/integration tests
 - **Build**: Leiningen or tools.deps for dependency management
+- **CLI Framework**: tools.cli or similar for command-line argument parsing
 - **Target**: BitTorrent v1 protocol (BEP 3) as baseline
 
 ## Assumptions
 
 - The client targets BitTorrent v1 (BEP 3); extensions (DHT, PEX, magnet links) are future enhancements
 - Both single-file and multi-file torrents are supported
-- Command-line interface is the initial user interface; GUI is a future enhancement
-- Standard piece selection (rarest-first) is used; endgame mode is handled in sub-feature 001d
+- Command-line interface is the primary user interface for MVP
+- GUI/TUI is a future enhancement (would be feature 012+)
+- The CLI operates in two modes:
+  - **Foreground mode**: Runs download/seed in current terminal session
+  - **Daemon mode**: Future enhancement for background operation with client-server architecture
+- Standard piece selection (rarest-first) is used; endgame mode is handled in sub-feature 005
 - Default block size is 16KB per BitTorrent convention
 - Tracker announce intervals follow tracker-specified values with 30-minute default
 - The client gracefully degrades when trackers are unavailable (uses cached peers)
 - IPv4 is required; IPv6 is optional
+- Configuration file support (.cljtocrc or similar) is a future enhancement
 
 ## System-Level Success Criteria *(mandatory)*
 
@@ -253,27 +293,34 @@ These criteria apply to the complete system (all sub-features integrated):
 
 ### Functional Completeness
 
-- **SC-001**: A user can download a 1GB single-file torrent from a healthy swarm to completion with full verification
-- **SC-002**: A user can seed a completed torrent and serve pieces to at least 10 concurrent requesting peers
-- **SC-003**: A user can manage 5 concurrent torrents with independent progress and status
+- **SC-001**: A user can download a 1GB single-file torrent from a healthy swarm to completion with full verification using a single CLI command
+- **SC-002**: A user can seed a completed torrent and serve pieces to at least 10 concurrent requesting peers via CLI
+- **SC-003**: A user can manage 5 concurrent torrents with independent progress and status queryable via CLI
+- **SC-004**: A user can pause, resume, and cancel downloads through CLI commands without data loss
 
 ### Architectural Quality
 
-- **SC-004**: All domain logic across all sub-features achieves ≥90% unit test coverage without requiring actual I/O
-- **SC-005**: Integration tests execute deterministically with simulated time, network, and disk, with zero flaky test failures over 100 runs
-- **SC-006**: No component uses global mutable state; all state is explicitly managed or passed
+- **SC-005**: All domain logic across all sub-features achieves ≥90% unit test coverage without requiring actual I/O
+- **SC-006**: Integration tests execute deterministically with simulated time, network, and disk, with zero flaky test failures over 100 runs
+- **SC-007**: No component uses global mutable state; all state is explicitly managed or passed
 
 ### Reliability
 
-- **SC-007**: The client recovers from any single component failure (peer, tracker, disk writer) within 30 seconds without data loss
-- **SC-008**: Forceful termination (SIGKILL) at any point results in zero data corruption; restart resumes from last verified state
-- **SC-009**: The client handles 100 sequential peer disconnects during a download without failing or leaking resources
+- **SC-008**: The client recovers from any single component failure (peer, tracker, disk writer) within 30 seconds without data loss
+- **SC-009**: Forceful termination (SIGKILL) at any point results in zero data corruption; restart resumes from last verified state
+- **SC-010**: The client handles 100 sequential peer disconnects during a download without failing or leaking resources
 
 ### Performance
 
-- **SC-010**: Download speed reaches ≥80% of available bandwidth when connected to 20+ peers with sufficient upload capacity
-- **SC-011**: Memory usage stays below 100MB per active torrent regardless of torrent size (streaming model)
-- **SC-012**: The client sustains 50 concurrent peer connections per torrent while maintaining <100ms response to user status queries
+- **SC-011**: Download speed reaches ≥80% of available bandwidth when connected to 20+ peers with sufficient upload capacity
+- **SC-012**: Memory usage stays below 100MB per active torrent regardless of torrent size (streaming model)
+- **SC-013**: The client sustains 50 concurrent peer connections per torrent while maintaining <100ms response to user status queries
+
+### Usability
+
+- **SC-014**: CLI commands provide clear, actionable error messages when user provides invalid input
+- **SC-015**: Users can successfully complete a download using only `--help` documentation without consulting external docs
+- **SC-016**: Status output updates at least once per second for active downloads, showing progress, speed, and ETA
 
 ## Sub-Feature Requirements Summary
 
@@ -281,18 +328,19 @@ The functional requirements from the original spec are distributed across sub-fe
 
 | Requirement | Sub-Feature | Description |
 |-------------|-------------|-------------|
-| FR-001 | 001a | Parse and validate .torrent files (bencode) |
-| FR-002 | 001c | Implement peer wire protocol messages |
-| FR-003 | 001d | Verify pieces against SHA-1 hashes |
-| FR-004 | 001b | Announce to HTTP/UDP trackers |
-| FR-005 | 001e | Persist download progress for resume |
+| FR-001 | 002 | Parse and validate .torrent files (bencode) |
+| FR-002 | 004 | Implement peer wire protocol messages |
+| FR-003 | 005 | Verify pieces against SHA-1 hashes |
+| FR-004 | 003 | Announce to HTTP/UDP trackers |
+| FR-005 | 006 | Persist download progress for resume |
 | FR-006-011 | All | Architecture principles (pure domain, ports, supervision) |
-| FR-012 | 001e | Maintain multiple concurrent peer connections |
-| FR-013 | 001f | Implement choking/unchoking algorithm |
-| FR-014 | 001d | Track piece availability for selection |
-| FR-015 | 001e | Handle peer disconnections gracefully |
-| FR-016-018 | 001e | Disk management (atomic writes, allocation) |
+| FR-012 | 006 | Maintain multiple concurrent peer connections |
+| FR-013 | 007 | Implement choking/unchoking algorithm |
+| FR-014 | 005 | Track piece availability for selection |
+| FR-015 | 006 | Handle peer disconnections gracefully |
+| FR-016-018 | 006 | Disk management (atomic writes, allocation) |
 | FR-019-021 | All | Testability via injectable ports |
+| FR-022-025 | 011 | CLI commands (download, pause, resume, status, etc.) |
 
 ## Getting Started
 

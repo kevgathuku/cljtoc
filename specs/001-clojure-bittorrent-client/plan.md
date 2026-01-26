@@ -50,6 +50,8 @@ Each sub-feature follows the full spec-kit workflow independently:
 
 ### Sub-Features Roadmap
 
+#### Core Engine Features
+
 | ID | Feature | Dependencies | Priority | Command to Start | Status |
 |----|---------|--------------|----------|------------------|--------|
 | 002 | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files...` | ✅ In Progress |
@@ -57,8 +59,19 @@ Each sub-feature follows the full spec-kit workflow independently:
 | 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | Not Started |
 | 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | Not Started |
 | 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | Not Started |
+
+#### User Interface Features
+
+| ID | Feature | Dependencies | Priority | Command to Start | Status |
+|----|---------|--------------|----------|------------------|--------|
+| 011 | CLI Interface | 006 | P1 | `/speckit.specify Command-line interface with download, pause, resume, status, seed commands` | Not Started |
+
+#### Enhancement Features
+
+| ID | Feature | Dependencies | Priority | Command to Start | Status |
+|----|---------|--------------|----------|------------------|--------|
 | 007 | Seeding | 006 | P2 | `/speckit.specify Accept connections and serve pieces` | Not Started |
-| 008 | Multi-Torrent | 007 | P3 | `/speckit.specify Manage multiple concurrent torrents` | Not Started |
+| 008 | Multi-Torrent | 007 | P2 | `/speckit.specify Manage multiple concurrent torrents` | Not Started |
 | 009 | Monitoring | 008 | P3 | `/speckit.specify Real-time statistics and progress` | Not Started |
 | 010 | Production Hardening | 009 | P4 | `/speckit.specify Supervision trees and crash recovery` | Not Started |
 
@@ -159,11 +172,14 @@ See [spec.md](spec.md) for full details on each principle.
 
 To begin implementation:
 
-1. **Start with 001a**: Run `/speckit.specify Parse .torrent files (bencode format) to domain model with pure functions`
-2. **Complete 001a lifecycle**: plan → tasks → implement → merge
-3. **Proceed to 001b-d**: Can work in parallel once 001a is merged
-4. **Integrate at 001e**: Brings all pieces together into MVP
-5. **Add value with 001f-i**: Each adds independent functionality
+1. **Complete Feature 002**: Currently in progress (bencode parser)
+2. **Proceed to 003-005**: Can work in parallel once 002 is merged
+3. **Integrate at 006**: Brings all pieces together into working download engine
+4. **Add CLI at 011**: Makes the engine usable by end users - **completes MVP**
+5. **Add value with 007-010**: Each adds independent functionality (seeding, multi-torrent, monitoring, hardening)
+
+**True MVP**: Features 002-006 + 011 (Foundation + Engine + CLI)
+**Enhanced Product**: Add features 007-010 incrementally
 
 ## Notes
 
