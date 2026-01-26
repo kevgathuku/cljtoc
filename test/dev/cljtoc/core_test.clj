@@ -1,6 +1,6 @@
-(ns torrent-client-clj.core-test
+(ns dev.cljtoc.core-test
   (:require [clojure.test :refer :all]
-            [torrent-client-clj.core :refer :all]))
+            [dev.cljtoc.core :refer :all]))
 
 (deftest a-test
   (testing "FIXME, I fail."

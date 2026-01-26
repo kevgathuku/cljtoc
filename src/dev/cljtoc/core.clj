@@ -1,4 +1,4 @@
-(ns torrent-client-clj.core
+(ns dev.cljtoc.core
   (:gen-class))
 
 (defn -main
