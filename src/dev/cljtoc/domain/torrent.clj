@@ -39,13 +39,21 @@
 ;; Announce URL extraction
 ;; ---------------------------------------------------------------------------
 
+(defn- bytes->str
+  "Convert a byte array to a UTF-8 string, or return value as-is if not bytes."
+  [v]
+  (if (instance? (Class/forName "[B") v)
+    (String. ^bytes v "UTF-8")
+    v))
+
 (defn extract-announce-urls
   "Extracts the primary announce URL and optional announce-list tiers
   from a decoded torrent dictionary. Returns a map with :announce and
   :announce-list (nil if not present)."
   [decoded-dict]
-  {:announce (get decoded-dict "announce")
-   :announce-list (get decoded-dict "announce-list")})
+  {:announce (bytes->str (get decoded-dict "announce"))
+   :announce-list (when-let [al (get decoded-dict "announce-list")]
+                    (mapv (fn [tier] (mapv bytes->str tier)) al))})
 
 ;; ---------------------------------------------------------------------------
 ;; Piece parsing
@@ -65,8 +73,11 @@
 ;; Info dict parsing
 ;; ---------------------------------------------------------------------------
 
-(defn- parse-file-entry [file-map]
-  {:path (get file-map "path")
+(defn- parse-file-entry
+  "Parse a file entry from a multi-file torrent info dict.
+  Converts path strings from byte arrays to UTF-8."
+  [file-map]
+  {:path (mapv bytes->str (get file-map "path"))
    :length (get file-map "length")})
 
 (defn parse-info-dict
@@ -75,14 +86,12 @@
   :length (single-file only), :files (multi-file only), :private (optional).
   Returns {:ok info-map} or an error map."
   [info-map]
-  (let [name-val (get info-map "name")
+  (let [name-val (bytes->str (get info-map "name"))
         piece-length (get info-map "piece length")
         pieces-raw (get info-map "pieces")
-        pieces (if (string? pieces-raw)
-                 (parse-pieces (.getBytes ^String pieces-raw "ISO-8859-1"))
-                 (if (instance? (Class/forName "[B") pieces-raw)
-                   (parse-pieces pieces-raw)
-                   []))
+        pieces (if (instance? (Class/forName "[B") pieces-raw)
+                 (parse-pieces pieces-raw)
+                 [])
         length (get info-map "length")
         files (get info-map "files")
         private (get info-map "private")]
@@ -177,13 +186,13 @@
   Returns {:ok torrent-map} on success or an error map on failure.
 
   The torrent-map contains:
-    :announce      - primary tracker URL
-    :announce-list - optional tracker tiers
+    :announce      - primary tracker URL (string)
+    :announce-list - optional tracker tiers (vector of vectors of strings)
     :info          - parsed info dict (name, piece-length, pieces, length/files)
     :info-hash     - 20-byte SHA-1 hash of the original bencoded info dict
     :comment, :created-by, :creation-date, :encoding - optional fields"
   [^bytes torrent-bytes]
-  (let [decode-result (bencode/decode-bencode torrent-bytes)]
+  (let [decode-result (bencode/decode-bencode-raw torrent-bytes)]
     (if (:error decode-result)
       decode-result
       (let [decoded (:ok decode-result)]
@@ -204,13 +213,13 @@
                                             :info (:ok info-result)
                                             :info-hash (:ok info-hash-result)}
                                      (get decoded "comment")
-                                     (assoc :comment (get decoded "comment"))
+                                     (assoc :comment (bytes->str (get decoded "comment")))
                                      (get decoded "created by")
-                                     (assoc :created-by (get decoded "created by"))
+                                     (assoc :created-by (bytes->str (get decoded "created by")))
                                      (get decoded "creation date")
                                      (assoc :creation-date (get decoded "creation date"))
                                      (get decoded "encoding")
-                                     (assoc :encoding (get decoded "encoding")))
+                                     (assoc :encoding (bytes->str (get decoded "encoding"))))
                             validation (validate-torrent parsed)]
                         (if (:ok validation)
                           {:ok parsed}

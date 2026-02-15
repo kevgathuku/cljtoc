@@ -191,12 +191,7 @@
 ;; Public API
 ;; ---------------------------------------------------------------------------
 
-(defn decode-bencode
-  "Decodes a bencode-encoded byte array into Clojure data structures.
-  Returns {:ok value} on success, or an error map with :error, :message,
-  and :position keys on failure. Byte-array strings are converted to
-  UTF-8 Clojure strings. Dicts become sorted-maps with string keys."
-  [^bytes bs]
+(defn- decode-top-level [^bytes bs post-process]
   (if (zero? (alength bs))
     (bencode-error "empty input" 0)
     (let [result (decode-value bs 0)]
@@ -205,7 +200,22 @@
         (let [[val next-pos] result]
           (if (< next-pos (alength bs))
             (bencode-error (str "trailing data at position " next-pos) next-pos)
-            {:ok (bytes->string-tree val)}))))))
+            {:ok (post-process val)}))))))
+
+(defn decode-bencode
+  "Decodes a bencode-encoded byte array into Clojure data structures.
+  Returns {:ok value} on success, or an error map with :error, :message,
+  and :position keys on failure. Byte-array strings are converted to
+  UTF-8 Clojure strings. Dicts become sorted-maps with string keys."
+  [^bytes bs]
+  (decode-top-level bs bytes->string-tree))
+
+(defn decode-bencode-raw
+  "Like decode-bencode, but string values remain as byte arrays instead of
+  being converted to UTF-8 strings. Dict keys are still converted to strings.
+  Use this when you need lossless access to binary string fields (e.g. pieces)."
+  [^bytes bs]
+  (decode-top-level bs identity))
 
 (defn bencode-type
   "Returns the bencode type at the given position: :string, :integer, :list, :dict, or :unknown."
