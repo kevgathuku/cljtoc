@@ -1,4 +1,12 @@
 (ns dev.cljtoc.domain.torrent
+  "Torrent metadata parser for .torrent files.
+
+  Transforms raw .torrent file bytes into structured TorrentMetainfo maps.
+  Computes the info hash from original bencoded bytes (never re-encoded)
+  to ensure correctness. Supports single-file and multi-file torrents
+  with comprehensive validation.
+
+  All errors are returned as data maps, never thrown as exceptions."
   (:require [dev.cljtoc.domain.bencode :as bencode])
   (:import [java.util Arrays]))
 
@@ -6,24 +14,36 @@
 ;; Info dict extraction
 ;; ---------------------------------------------------------------------------
 
-(defn extract-info-dict-bytes [^bytes torrent-bytes]
+(defn extract-info-dict-bytes
+  "Extracts the raw bencoded bytes of the info dictionary from torrent bytes.
+  Returns {:ok byte-array} or an error map. The bytes are copied from the
+  original input to preserve the exact encoding for info hash computation."
+  [^bytes torrent-bytes]
   (let [span-result (bencode/find-dict-value-span torrent-bytes "info")]
     (if (:error span-result)
       span-result
       (let [[start end] (:ok span-result)]
         {:ok (Arrays/copyOfRange torrent-bytes (int start) (int end))}))))
 
-(defn compute-info-hash [^bytes torrent-bytes]
+(defn compute-info-hash
+  "Computes the 20-byte SHA-1 info hash from torrent bytes.
+  The hash is computed over the original bencoded info dict bytes,
+  not a re-encoded version. Returns {:ok byte-array} or an error map."
+  [^bytes torrent-bytes]
   (let [info-result (extract-info-dict-bytes torrent-bytes)]
     (if (:error info-result)
       info-result
-      {:ok (bencode/sha1-hash (:ok info-result))})))
+      {:ok (bencode/sha1-hash ^bytes (:ok info-result))})))
 
 ;; ---------------------------------------------------------------------------
 ;; Announce URL extraction
 ;; ---------------------------------------------------------------------------
 
-(defn extract-announce-urls [decoded-dict]
+(defn extract-announce-urls
+  "Extracts the primary announce URL and optional announce-list tiers
+  from a decoded torrent dictionary. Returns a map with :announce and
+  :announce-list (nil if not present)."
+  [decoded-dict]
   {:announce (get decoded-dict "announce")
    :announce-list (get decoded-dict "announce-list")})
 
@@ -31,7 +51,10 @@
 ;; Piece parsing
 ;; ---------------------------------------------------------------------------
 
-(defn parse-pieces [^bytes piece-data]
+(defn parse-pieces
+  "Splits a concatenated piece hash byte array into a vector of
+  individual 20-byte SHA-1 hash arrays."
+  [^bytes piece-data]
   (let [len (alength piece-data)]
     (if (zero? len)
       []
@@ -46,7 +69,12 @@
   {:path (get file-map "path")
    :length (get file-map "length")})
 
-(defn parse-info-dict [info-map]
+(defn parse-info-dict
+  "Parses a decoded info dictionary into a structured map with keys:
+  :name, :piece-length, :pieces (vector of 20-byte arrays),
+  :length (single-file only), :files (multi-file only), :private (optional).
+  Returns {:ok info-map} or an error map."
+  [info-map]
   (let [name-val (get info-map "name")
         piece-length (get info-map "piece length")
         pieces-raw (get info-map "pieces")
@@ -69,7 +97,10 @@
 ;; Validation
 ;; ---------------------------------------------------------------------------
 
-(defn validate-required-fields [torrent]
+(defn validate-required-fields
+  "Checks that required torrent fields are present: announce, info,
+  info.name, info.piece-length, info.pieces. Returns a vector of error maps."
+  [torrent]
   (let [errors (transient [])]
     (when-not (:announce torrent)
       (conj! errors (bencode/torrent-error "missing required field: announce" {})))
@@ -84,7 +115,10 @@
         (conj! errors (bencode/torrent-error "missing required field: info.pieces" {}))))
     (persistent! errors)))
 
-(defn validate-field-types [torrent]
+(defn validate-field-types
+  "Checks that torrent fields have correct types: piece-length and length
+  must be integers. Returns a vector of error maps."
+  [torrent]
   (let [errors (transient [])
         info (:info torrent)]
     (when info
@@ -98,7 +132,9 @@
                        {:field "length" :actual (type (:length info))}))))
     (persistent! errors)))
 
-(defn validate-pieces-length [torrent]
+(defn validate-pieces-length
+  "Checks that every piece hash is exactly 20 bytes. Returns a vector of error maps."
+  [torrent]
   (let [pieces (get-in torrent [:info :pieces])]
     (if (or (nil? pieces) (empty? pieces))
       []
@@ -110,7 +146,9 @@
                  {:piece-index idx :actual-length (alength piece)})))
             pieces)))))
 
-(defn validate-piece-length [torrent]
+(defn validate-piece-length
+  "Checks that piece-length is a positive integer. Returns a vector of error maps."
+  [torrent]
   (let [pl (get-in torrent [:info :piece-length])]
     (if (and (integer? pl) (pos? pl))
       []
@@ -118,7 +156,10 @@
         (str "piece-length must be a positive integer, got: " pl)
         {:field "piece-length" :value pl})])))
 
-(defn validate-torrent [torrent]
+(defn validate-torrent
+  "Runs all validation checks on a parsed torrent map. Returns {:ok true}
+  if valid, or {:error [error-maps]} with all validation failures."
+  [torrent]
   (let [errors (vec (concat (validate-required-fields torrent)
                             (validate-field-types torrent)
                             (validate-piece-length torrent)
@@ -131,7 +172,17 @@
 ;; Main torrent parser
 ;; ---------------------------------------------------------------------------
 
-(defn parse-torrent [^bytes torrent-bytes]
+(defn parse-torrent
+  "Parses raw .torrent file bytes into a TorrentMetainfo map.
+  Returns {:ok torrent-map} on success or an error map on failure.
+
+  The torrent-map contains:
+    :announce      - primary tracker URL
+    :announce-list - optional tracker tiers
+    :info          - parsed info dict (name, piece-length, pieces, length/files)
+    :info-hash     - 20-byte SHA-1 hash of the original bencoded info dict
+    :comment, :created-by, :creation-date, :encoding - optional fields"
+  [^bytes torrent-bytes]
   (let [decode-result (bencode/decode-bencode torrent-bytes)]
     (if (:error decode-result)
       decode-result
@@ -164,4 +215,3 @@
                         (if (:ok validation)
                           {:ok parsed}
                           validation)))))))))))))
-
