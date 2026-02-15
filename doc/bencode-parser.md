@@ -150,13 +150,31 @@ Validation is automatically run inside `parse-torrent`. Use `validate-torrent` d
 
 ### Command-line interface
 
-Parse a `.torrent` file from the command line:
+The CLI uses a namespace-based command structure for better organization and extensibility:
 
 ```bash
-lein run path/to/file.torrent
+# Parse and display torrent metadata
+lein run torrent.parse path/to/file.torrent
+
+# Show available commands
+lein run
 ```
 
-This will parse the torrent file and print its metadata in a readable format. Example output:
+**Available commands:**
+
+| Command | Description | Status |
+|---------|-------------|--------|
+| `torrent.parse` | Parse and display torrent file metadata | ✅ Implemented |
+| `torrent.download` | Download files from a torrent | 🚧 Not yet implemented |
+| `torrent.seed` | Seed a torrent | 🚧 Not yet implemented |
+
+**Example:** Parse a torrent file and print its metadata in a readable format:
+
+```bash
+lein run torrent.parse tmp/example.torrent
+```
+
+Output:
 
 ```clojure
 {:announce "http://tracker.example.com/announce",

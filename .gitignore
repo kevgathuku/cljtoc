@@ -14,3 +14,4 @@ pom.xml.asc
 .claude/settings.local.json
 .clj-kondo/.cache/
 .lsp/.cache/
+tmp/
