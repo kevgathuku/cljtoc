@@ -204,3 +204,120 @@
   (testing "invalid bencode returns error"
     (let [result (torrent/parse-torrent (.getBytes "not bencode" "UTF-8"))]
       (is (:error result)))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 7: Validation
+;; ---------------------------------------------------------------------------
+
+(deftest validate-required-fields-test
+  (testing "valid torrent returns no errors"
+    (let [t {:announce "http://tracker.example.com/announce"
+             :info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]}}]
+      (is (empty? (torrent/validate-required-fields t)))))
+  (testing "missing announce returns error"
+    (let [t {:info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]}}]
+      (is (some #(re-find #"announce" (:message %))
+                (torrent/validate-required-fields t)))))
+  (testing "missing info returns error"
+    (let [t {:announce "http://example.com"}]
+      (is (some #(re-find #"info" (:message %))
+                (torrent/validate-required-fields t)))))
+  (testing "missing name in info returns error"
+    (let [t {:announce "http://example.com"
+             :info {:piece-length 262144
+                    :pieces [(byte-array 20)]}}]
+      (is (some #(re-find #"name" (:message %))
+                (torrent/validate-required-fields t)))))
+  (testing "missing piece-length in info returns error"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :pieces [(byte-array 20)]}}]
+      (is (some #(re-find #"piece-length" (:message %))
+                (torrent/validate-required-fields t)))))
+  (testing "missing pieces in info returns error"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :piece-length 262144}}]
+      (is (some #(re-find #"pieces" (:message %))
+                (torrent/validate-required-fields t))))))
+
+(deftest validate-field-types-test
+  (testing "valid types return no errors"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]
+                    :length 500000}}]
+      (is (empty? (torrent/validate-field-types t)))))
+  (testing "non-integer piece-length returns error"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :piece-length "not a number"
+                    :pieces [(byte-array 20)]}}]
+      (is (some #(re-find #"piece-length" (:message %))
+                (torrent/validate-field-types t)))))
+  (testing "non-integer length returns error"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]
+                    :length "not a number"}}]
+      (is (some #(re-find #"length" (:message %))
+                (torrent/validate-field-types t))))))
+
+(deftest validate-pieces-length-test
+  (testing "valid 20-byte pieces return no errors"
+    (let [t {:info {:pieces [(byte-array 20) (byte-array 20)]}}]
+      (is (empty? (torrent/validate-pieces-length t)))))
+  (testing "non-20-byte piece returns error"
+    (let [t {:info {:pieces [(byte-array 20) (byte-array 15)]}}]
+      (is (seq (torrent/validate-pieces-length t))))))
+
+(deftest validate-piece-length-test
+  (testing "positive piece-length returns no errors"
+    (let [t {:info {:piece-length 262144}}]
+      (is (empty? (torrent/validate-piece-length t)))))
+  (testing "zero piece-length returns error"
+    (let [t {:info {:piece-length 0}}]
+      (is (seq (torrent/validate-piece-length t)))))
+  (testing "negative piece-length returns error"
+    (let [t {:info {:piece-length -1}}]
+      (is (seq (torrent/validate-piece-length t))))))
+
+(deftest validate-torrent-test
+  (testing "valid torrent returns {:ok true}"
+    (let [t {:announce "http://tracker.example.com/announce"
+             :info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20) (byte-array 20)]
+                    :length 500000}}]
+      (is (= {:ok true} (torrent/validate-torrent t)))))
+  (testing "multiple errors are aggregated"
+    (let [t {:info {:piece-length 0
+                    :pieces [(byte-array 15)]}}]
+      (let [result (torrent/validate-torrent t)]
+        (is (vector? (:error result)))
+        (is (> (count (:error result)) 1))))))
+
+(deftest bencode-error-positions-test
+  (testing "truncated string includes position"
+    (let [result (bencode/decode-bencode (.getBytes "4:sp" "UTF-8"))]
+      (is (= :bencode-parse-error (:error result)))
+      (is (number? (:position result)))))
+  (testing "invalid integer includes position"
+    (let [result (bencode/decode-bencode (.getBytes "i03e" "UTF-8"))]
+      (is (= :bencode-parse-error (:error result)))
+      (is (number? (:position result))))))
+
+(deftest error-messages-descriptive-test
+  (testing "bencode errors have non-empty messages"
+    (let [result (bencode/decode-bencode (.getBytes "x" "UTF-8"))]
+      (is (string? (:message result)))
+      (is (pos? (count (:message result))))))
+  (testing "torrent errors have context"
+    (let [err (bencode/torrent-error "test error" {:field "info"})]
+      (is (= {:field "info"} (:context err))))))

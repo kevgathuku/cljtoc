@@ -66,6 +66,68 @@
            (some? private) (assoc :private (= 1 private)))}))
 
 ;; ---------------------------------------------------------------------------
+;; Validation
+;; ---------------------------------------------------------------------------
+
+(defn validate-required-fields [torrent]
+  (let [errors (transient [])]
+    (when-not (:announce torrent)
+      (conj! errors (bencode/torrent-error "missing required field: announce" {})))
+    (when-not (:info torrent)
+      (conj! errors (bencode/torrent-error "missing required field: info" {})))
+    (when (:info torrent)
+      (when-not (get-in torrent [:info :name])
+        (conj! errors (bencode/torrent-error "missing required field: info.name" {})))
+      (when-not (get-in torrent [:info :piece-length])
+        (conj! errors (bencode/torrent-error "missing required field: info.piece-length" {})))
+      (when-not (get-in torrent [:info :pieces])
+        (conj! errors (bencode/torrent-error "missing required field: info.pieces" {}))))
+    (persistent! errors)))
+
+(defn validate-field-types [torrent]
+  (let [errors (transient [])
+        info (:info torrent)]
+    (when info
+      (when (and (:piece-length info) (not (integer? (:piece-length info))))
+        (conj! errors (bencode/torrent-error
+                       "type mismatch: piece-length must be an integer"
+                       {:field "piece-length" :actual (type (:piece-length info))})))
+      (when (and (:length info) (not (integer? (:length info))))
+        (conj! errors (bencode/torrent-error
+                       "type mismatch: length must be an integer"
+                       {:field "length" :actual (type (:length info))}))))
+    (persistent! errors)))
+
+(defn validate-pieces-length [torrent]
+  (let [pieces (get-in torrent [:info :pieces])]
+    (if (or (nil? pieces) (empty? pieces))
+      []
+      (vec (keep-indexed
+            (fn [idx ^bytes piece]
+              (when (not= 20 (alength piece))
+                (bencode/torrent-error
+                 (str "piece " idx " is " (alength piece) " bytes, expected 20")
+                 {:piece-index idx :actual-length (alength piece)})))
+            pieces)))))
+
+(defn validate-piece-length [torrent]
+  (let [pl (get-in torrent [:info :piece-length])]
+    (if (and (integer? pl) (pos? pl))
+      []
+      [(bencode/torrent-error
+        (str "piece-length must be a positive integer, got: " pl)
+        {:field "piece-length" :value pl})])))
+
+(defn validate-torrent [torrent]
+  (let [errors (vec (concat (validate-required-fields torrent)
+                            (validate-field-types torrent)
+                            (validate-piece-length torrent)
+                            (validate-pieces-length torrent)))]
+    (if (empty? errors)
+      {:ok true}
+      {:error errors})))
+
+;; ---------------------------------------------------------------------------
 ;; Main torrent parser
 ;; ---------------------------------------------------------------------------
 
@@ -86,16 +148,20 @@
                         announce-urls (extract-announce-urls decoded)]
                     (if (:error info-result)
                       info-result
-                      {:ok (cond-> {:announce (:announce announce-urls)
-                                    :announce-list (:announce-list announce-urls)
-                                    :info (:ok info-result)
-                                    :info-hash (:ok info-hash-result)}
-                             (get decoded "comment")
-                             (assoc :comment (get decoded "comment"))
-                             (get decoded "created by")
-                             (assoc :created-by (get decoded "created by"))
-                             (get decoded "creation date")
-                             (assoc :creation-date (get decoded "creation date"))
-                             (get decoded "encoding")
-                             (assoc :encoding (get decoded "encoding")))})))))))))))
+                      (let [parsed (cond-> {:announce (:announce announce-urls)
+                                            :announce-list (:announce-list announce-urls)
+                                            :info (:ok info-result)
+                                            :info-hash (:ok info-hash-result)}
+                                     (get decoded "comment")
+                                     (assoc :comment (get decoded "comment"))
+                                     (get decoded "created by")
+                                     (assoc :created-by (get decoded "created by"))
+                                     (get decoded "creation date")
+                                     (assoc :creation-date (get decoded "creation date"))
+                                     (get decoded "encoding")
+                                     (assoc :encoding (get decoded "encoding")))
+                            validation (validate-torrent parsed)]
+                        (if (:ok validation)
+                          {:ok parsed}
+                          validation)))))))))))))
 
