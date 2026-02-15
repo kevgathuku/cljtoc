@@ -7,32 +7,6 @@
             [clojure.spec.gen.alpha :as gen]))
 
 ;; ---------------------------------------------------------------------------
-;; Basic field specs
-;; ---------------------------------------------------------------------------
-
-(s/def ::info-hash
-  (s/and bytes?
-         #(= 20 (alength ^bytes %))))
-
-(s/def ::peer-id
-  (s/and bytes?
-         #(= 20 (alength ^bytes %))))
-
-(s/def ::port
-  (s/int-in 1 65536))  ; 1-65535 inclusive
-
-(s/def ::ip-address
-  (s/and string?
-         #(or (re-matches #"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$" %)
-              (re-matches #"^[0-9a-fA-F:]+$" %))))  ; Simple IPv4/IPv6 validation
-
-(s/def ::event
-  #{:started :completed :stopped nil})
-
-(s/def ::protocol
-  #{:http :udp})
-
-;; ---------------------------------------------------------------------------
 ;; Custom generators for protocol-aware test data
 ;; ---------------------------------------------------------------------------
 
@@ -62,6 +36,40 @@
                        (gen/choose 0 255)
                        (gen/choose 0 255)
                        (gen/choose 0 255))))
+
+;; ---------------------------------------------------------------------------
+;; Basic field specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::info-hash
+  (s/with-gen
+    (s/and bytes?
+           #(= 20 (alength ^bytes %)))
+    (constantly gen-info-hash)))
+
+(s/def ::peer-id
+  (s/with-gen
+    (s/and bytes?
+           #(= 20 (alength ^bytes %)))
+    (constantly gen-peer-id)))
+
+(s/def ::port
+  (s/with-gen
+    (s/int-in 1 65536)  ; 1-65535 inclusive
+    (constantly gen-port)))
+
+(s/def ::ip-address
+  (s/with-gen
+    (s/and string?
+           #(or (re-matches #"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$" %)
+                (re-matches #"^[0-9a-fA-F:]+$" %)))  ; Simple IPv4/IPv6 validation
+    (constantly gen-ipv4-address)))
+
+(s/def ::event
+  #{:started :completed :stopped nil})
+
+(s/def ::protocol
+  #{:http :udp})
 
 ;; ---------------------------------------------------------------------------
 ;; Entity specs
