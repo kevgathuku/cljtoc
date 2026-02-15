@@ -21,9 +21,9 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Create directory structure: src/dev/cljtoc/domain/ and test/dev/cljtoc/domain/
-- [ ] T002 Add test.check dependency to project.clj for property-based testing
-- [ ] T003 [P] Create test fixtures directory: test/dev/cljtoc/domain/fixtures/torrents/
+- [x] T001 Create directory structure: src/dev/cljtoc/domain/ and test/dev/cljtoc/domain/
+- [x] T002 Add test.check dependency to project.clj for property-based testing
+- [x] T003 [P] Create test fixtures directory: test/dev/cljtoc/domain/fixtures/torrents/
 
 ---
 
@@ -33,9 +33,9 @@
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Implement sha1-hash pure function in src/dev/cljtoc/domain/bencode.clj (wraps Java MessageDigest)
-- [ ] T005 [P] Implement byte array utility functions (bytes->hex-string, compare bytes) in src/dev/cljtoc/domain/bencode.clj
-- [ ] T006 [P] Create error data structure constructors (bencode-error, torrent-error) in src/dev/cljtoc/domain/bencode.clj
+- [x] T004 Implement sha1-hash pure function in src/dev/cljtoc/domain/bencode.clj (wraps Java MessageDigest)
+- [x] T005 [P] Implement byte array utility functions (bytes->hex-string, compare bytes) in src/dev/cljtoc/domain/bencode.clj
+- [x] T006 [P] Create error data structure constructors (bencode-error, torrent-error) in src/dev/cljtoc/domain/bencode.clj
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -51,22 +51,22 @@
 
 > **NOTE: Write these tests FIRST using TDD - tests should FAIL before implementation**
 
-- [ ] T007 [P] [US1] Unit test for decode-string in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T008 [P] [US1] Unit test for decode-integer in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T009 [P] [US1] Unit test for decode-list in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T010 [P] [US1] Unit test for decode-dict in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T011 [P] [US1] Unit test for nested structure decoding in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T012 [P] [US1] Property-based test for bencode decode invariants in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T007 [P] [US1] Unit test for decode-string in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T008 [P] [US1] Unit test for decode-integer in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T009 [P] [US1] Unit test for decode-list in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T010 [P] [US1] Unit test for decode-dict in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T011 [P] [US1] Unit test for nested structure decoding in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T012 [P] [US1] Property-based test for bencode decode invariants in test/dev/cljtoc/domain/bencode_test.clj
 
 ### Implementation for User Story 1
 
-- [ ] T013 [P] [US1] Implement decode-string function (format: <length>:<content>) in src/dev/cljtoc/domain/bencode.clj
-- [ ] T014 [P] [US1] Implement decode-integer function (format: i<number>e) in src/dev/cljtoc/domain/bencode.clj
-- [ ] T015 [US1] Implement decode-list function (format: l<elements>e) in src/dev/cljtoc/domain/bencode.clj (depends on T013, T014)
-- [ ] T016 [US1] Implement decode-dict function (format: d<k><v>...e) in src/dev/cljtoc/domain/bencode.clj (depends on T013, T014)
-- [ ] T017 [US1] Implement decode-bencode main function with type detection in src/dev/cljtoc/domain/bencode.clj (depends on T013-T016)
-- [ ] T018 [US1] Add position tracking for parse errors in src/dev/cljtoc/domain/bencode.clj
-- [ ] T019 [US1] Handle edge cases: empty strings, negative integers, truncated input in src/dev/cljtoc/domain/bencode.clj
+- [x] T013 [P] [US1] Implement decode-string function (format: <length>:<content>) in src/dev/cljtoc/domain/bencode.clj
+- [x] T014 [P] [US1] Implement decode-integer function (format: i<number>e) in src/dev/cljtoc/domain/bencode.clj
+- [x] T015 [US1] Implement decode-list function (format: l<elements>e) in src/dev/cljtoc/domain/bencode.clj (depends on T013, T014)
+- [x] T016 [US1] Implement decode-dict function (format: d<k><v>...e) in src/dev/cljtoc/domain/bencode.clj (depends on T013, T014)
+- [x] T017 [US1] Implement decode-bencode main function with type detection in src/dev/cljtoc/domain/bencode.clj (depends on T013-T016)
+- [x] T018 [US1] Add position tracking for parse errors in src/dev/cljtoc/domain/bencode.clj
+- [x] T019 [US1] Handle edge cases: empty strings, negative integers, truncated input in src/dev/cljtoc/domain/bencode.clj
 
 **Checkpoint**: User Story 1 complete - bencode decoder functional and tested
 
@@ -80,25 +80,25 @@
 
 ### Tests for User Story 2
 
-- [ ] T020 [P] [US2] Unit test for extract-info-dict-bytes in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T021 [P] [US2] Unit test for compute-info-hash in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T022 [P] [US2] Unit test for parse-single-file-torrent in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T023 [P] [US2] Unit test for parse-multi-file-torrent in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T024 [P] [US2] Integration test with real .torrent file fixtures in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T025 [P] [US2] Test info hash matches known values for fixture torrents in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T020 [P] [US2] Unit test for extract-info-dict-bytes in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T021 [P] [US2] Unit test for compute-info-hash in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T022 [P] [US2] Unit test for parse-single-file-torrent in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T023 [P] [US2] Unit test for parse-multi-file-torrent in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T024 [P] [US2] Integration test with real .torrent file fixtures in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T025 [P] [US2] Test info hash matches known values for fixture torrents in test/dev/cljtoc/domain/torrent_test.clj
 
 ### Implementation for User Story 2
 
-- [ ] T026 [P] [US2] Create torrent namespace in src/dev/cljtoc/domain/torrent.clj
-- [ ] T027 [P] [US2] Implement extract-info-dict-bytes function in src/dev/cljtoc/domain/torrent.clj
-- [ ] T028 [US2] Implement compute-info-hash function in src/dev/cljtoc/domain/torrent.clj (depends on T004, T027)
-- [ ] T029 [P] [US2] Implement extract-announce-urls (primary and announce-list) in src/dev/cljtoc/domain/torrent.clj
-- [ ] T030 [P] [US2] Implement parse-info-dict for single-file torrents in src/dev/cljtoc/domain/torrent.clj
-- [ ] T031 [P] [US2] Implement parse-info-dict for multi-file torrents in src/dev/cljtoc/domain/torrent.clj
-- [ ] T032 [US2] Implement parse-pieces (split into 20-byte hashes) in src/dev/cljtoc/domain/torrent.clj (depends on T030, T031)
-- [ ] T033 [US2] Implement parse-torrent main function in src/dev/cljtoc/domain/torrent.clj (depends on T027-T032)
-- [ ] T034 [US2] Extract optional fields (comment, created-by, creation-date, encoding) in src/dev/cljtoc/domain/torrent.clj
-- [ ] T035 [US2] Add sample .torrent files to test/dev/cljtoc/domain/fixtures/torrents/ for testing
+- [x] T026 [P] [US2] Create torrent namespace in src/dev/cljtoc/domain/torrent.clj
+- [x] T027 [P] [US2] Implement extract-info-dict-bytes function in src/dev/cljtoc/domain/torrent.clj
+- [x] T028 [US2] Implement compute-info-hash function in src/dev/cljtoc/domain/torrent.clj (depends on T004, T027)
+- [x] T029 [P] [US2] Implement extract-announce-urls (primary and announce-list) in src/dev/cljtoc/domain/torrent.clj
+- [x] T030 [P] [US2] Implement parse-info-dict for single-file torrents in src/dev/cljtoc/domain/torrent.clj
+- [x] T031 [P] [US2] Implement parse-info-dict for multi-file torrents in src/dev/cljtoc/domain/torrent.clj
+- [x] T032 [US2] Implement parse-pieces (split into 20-byte hashes) in src/dev/cljtoc/domain/torrent.clj (depends on T030, T031)
+- [x] T033 [US2] Implement parse-torrent main function in src/dev/cljtoc/domain/torrent.clj (depends on T027-T032)
+- [x] T034 [US2] Extract optional fields (comment, created-by, creation-date, encoding) in src/dev/cljtoc/domain/torrent.clj
+- [x] T035 [US2] Add sample .torrent files to test/dev/cljtoc/domain/fixtures/torrents/ for testing
 
 **Checkpoint**: User Story 2 complete - torrent parser extracts all metadata with correct info hash
 
@@ -112,22 +112,22 @@
 
 ### Tests for User Story 3
 
-- [ ] T036 [P] [US3] Unit test for missing required fields validation in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T037 [P] [US3] Unit test for type mismatch detection in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T038 [P] [US3] Unit test for invalid pieces field length in test/dev/cljtoc/domain/torrent_test.clj
-- [ ] T039 [P] [US3] Unit test for malformed bencode error reporting in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T040 [P] [US3] Test error messages include descriptive context in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T036 [P] [US3] Unit test for missing required fields validation in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T037 [P] [US3] Unit test for type mismatch detection in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T038 [P] [US3] Unit test for invalid pieces field length in test/dev/cljtoc/domain/torrent_test.clj
+- [x] T039 [P] [US3] Unit test for malformed bencode error reporting in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T040 [P] [US3] Test error messages include descriptive context in test/dev/cljtoc/domain/torrent_test.clj
 
 ### Implementation for User Story 3
 
-- [ ] T041 [P] [US3] Implement validate-required-fields function in src/dev/cljtoc/domain/torrent.clj
-- [ ] T042 [P] [US3] Implement validate-field-types function in src/dev/cljtoc/domain/torrent.clj
-- [ ] T043 [P] [US3] Implement validate-pieces-length (must be multiple of 20) in src/dev/cljtoc/domain/torrent.clj
-- [ ] T044 [P] [US3] Implement validate-piece-length (must be positive) in src/dev/cljtoc/domain/torrent.clj
-- [ ] T045 [US3] Implement validate-torrent main function in src/dev/cljtoc/domain/torrent.clj (depends on T041-T044)
-- [ ] T046 [US3] Enhance parse-torrent to call validate-torrent in src/dev/cljtoc/domain/torrent.clj
-- [ ] T047 [US3] Improve bencode error messages with byte position in src/dev/cljtoc/domain/bencode.clj
-- [ ] T048 [US3] Add context to torrent parse errors (found keys, expected types) in src/dev/cljtoc/domain/torrent.clj
+- [x] T041 [P] [US3] Implement validate-required-fields function in src/dev/cljtoc/domain/torrent.clj
+- [x] T042 [P] [US3] Implement validate-field-types function in src/dev/cljtoc/domain/torrent.clj
+- [x] T043 [P] [US3] Implement validate-pieces-length (must be multiple of 20) in src/dev/cljtoc/domain/torrent.clj
+- [x] T044 [P] [US3] Implement validate-piece-length (must be positive) in src/dev/cljtoc/domain/torrent.clj
+- [x] T045 [US3] Implement validate-torrent main function in src/dev/cljtoc/domain/torrent.clj (depends on T041-T044)
+- [x] T046 [US3] Enhance parse-torrent to call validate-torrent in src/dev/cljtoc/domain/torrent.clj
+- [x] T047 [US3] Improve bencode error messages with byte position in src/dev/cljtoc/domain/bencode.clj
+- [x] T048 [US3] Add context to torrent parse errors (found keys, expected types) in src/dev/cljtoc/domain/torrent.clj
 
 **Checkpoint**: User Story 3 complete - robust validation with clear error messages
 
@@ -141,22 +141,22 @@
 
 ### Tests for User Story 4
 
-- [ ] T049 [P] [US4] Unit test for encode-string in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T050 [P] [US4] Unit test for encode-integer in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T051 [P] [US4] Unit test for encode-list in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T052 [P] [US4] Unit test for encode-dict (with key sorting) in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T053 [P] [US4] Property-based test for round-trip encode/decode in test/dev/cljtoc/domain/bencode_test.clj
-- [ ] T054 [P] [US4] Test dictionary key lexicographic sorting in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T049 [P] [US4] Unit test for encode-string in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T050 [P] [US4] Unit test for encode-integer in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T051 [P] [US4] Unit test for encode-list in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T052 [P] [US4] Unit test for encode-dict (with key sorting) in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T053 [P] [US4] Property-based test for round-trip encode/decode in test/dev/cljtoc/domain/bencode_test.clj
+- [x] T054 [P] [US4] Test dictionary key lexicographic sorting in test/dev/cljtoc/domain/bencode_test.clj
 
 ### Implementation for User Story 4
 
-- [ ] T055 [P] [US4] Implement encode-string function in src/dev/cljtoc/domain/bencode.clj
-- [ ] T056 [P] [US4] Implement encode-integer function in src/dev/cljtoc/domain/bencode.clj
-- [ ] T057 [P] [US4] Implement encode-list function in src/dev/cljtoc/domain/bencode.clj
-- [ ] T058 [US4] Implement encode-dict with key sorting in src/dev/cljtoc/domain/bencode.clj (depends on T055, T056)
-- [ ] T059 [US4] Implement encode-bencode main function with type dispatch in src/dev/cljtoc/domain/bencode.clj (depends on T055-T058)
-- [ ] T060 [US4] Add bencode-roundtrip? utility function in src/dev/cljtoc/domain/bencode.clj
-- [ ] T061 [US4] Handle byte arrays as raw bencode strings in src/dev/cljtoc/domain/bencode.clj
+- [x] T055 [P] [US4] Implement encode-string function in src/dev/cljtoc/domain/bencode.clj
+- [x] T056 [P] [US4] Implement encode-integer function in src/dev/cljtoc/domain/bencode.clj
+- [x] T057 [P] [US4] Implement encode-list function in src/dev/cljtoc/domain/bencode.clj
+- [x] T058 [US4] Implement encode-dict with key sorting in src/dev/cljtoc/domain/bencode.clj (depends on T055, T056)
+- [x] T059 [US4] Implement encode-bencode main function with type dispatch in src/dev/cljtoc/domain/bencode.clj (depends on T055-T058)
+- [x] T060 [US4] Add bencode-roundtrip? utility function in src/dev/cljtoc/domain/bencode.clj
+- [x] T061 [US4] Handle byte arrays as raw bencode strings in src/dev/cljtoc/domain/bencode.clj
 
 **Checkpoint**: User Story 4 complete - full bencode encoder with round-trip validation
 
@@ -166,13 +166,13 @@
 
 **Purpose**: Final integration, documentation, and quality gates
 
-- [ ] T062 [P] Add docstrings to all public functions in src/dev/cljtoc/domain/bencode.clj
-- [ ] T063 [P] Add docstrings to all public functions in src/dev/cljtoc/domain/torrent.clj
-- [ ] T064 [P] Add type hints for performance optimization in src/dev/cljtoc/domain/bencode.clj
-- [ ] T065 Run performance test: parse 1MB .torrent file in <100ms
-- [ ] T066 Verify test coverage ≥90% for all domain functions
-- [ ] T067 [P] Create REPL examples in quickstart.md
-- [ ] T068 Update project README with bencode parser usage
+- [x] T062 [P] Add docstrings to all public functions in src/dev/cljtoc/domain/bencode.clj
+- [x] T063 [P] Add docstrings to all public functions in src/dev/cljtoc/domain/torrent.clj
+- [x] T064 [P] Add type hints for performance optimization in src/dev/cljtoc/domain/bencode.clj
+- [x] T065 Run performance test: parse 1MB .torrent file in <100ms
+- [x] T066 Verify test coverage ≥90% for all domain functions
+- [x] T067 [P] Create REPL examples in quickstart.md
+- [x] T068 Update project README with bencode parser usage
 
 **Checkpoint**: Feature complete and ready for merge
 
@@ -233,14 +233,4 @@ Phase 2 (Foundation) ← MUST complete before user stories
 - **User Story 4** (Encode): 13 tasks (6 tests + 7 implementation)
 - **Polish**: 7 tasks
 
-**Total**: 68 tasks
-
-**Estimated Effort**: 
-- Foundation + US1: ~2-3 days (critical path)
-- US2: ~2 days (can parallelize)
-- US3: ~1 day (can parallelize)
-- US4: ~1-2 days (can parallelize)
-- Polish: ~0.5 day
-
-**With parallelization**: ~4-5 days total
-**Sequential**: ~7-8 days total
+**Total**: 68 tasks (all complete)
