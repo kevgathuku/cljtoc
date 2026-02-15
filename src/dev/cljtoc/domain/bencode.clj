@@ -93,3 +93,87 @@
 
               :else
               (recur (inc i)))))))))
+
+;; ---------------------------------------------------------------------------
+;; Recursive decoder — decode-value dispatches by first byte
+;; ---------------------------------------------------------------------------
+
+(declare decode-value)
+
+(defn- decode-list [^bytes bs pos]
+  (let [len (alength bs)
+        start (inc pos)] ;; skip 'l'
+    (loop [i start
+           items (transient [])]
+      (if (>= i len)
+        (bencode-error "unexpected end of input in list" pos)
+        (if (= (aget bs i) (byte 0x65)) ;; 'e'
+          [(persistent! items) (inc i)]
+          (let [result (decode-value bs i)]
+            (if (map? result)
+              result
+              (let [[val next-pos] result]
+                (recur next-pos (conj! items val))))))))))
+
+(defn- decode-dict [^bytes bs pos]
+  (let [len (alength bs)
+        start (inc pos)] ;; skip 'd'
+    (loop [i start
+           entries (transient [])]
+      (if (>= i len)
+        (bencode-error "unexpected end of input in dict" pos)
+        (if (= (aget bs i) (byte 0x65)) ;; 'e'
+          (let [m (apply sorted-map (mapcat identity (persistent! entries)))]
+            [m (inc i)])
+          (let [key-result (decode-string bs i)]
+            (if (map? key-result)
+              key-result
+              (let [[key-bytes key-next] key-result
+                    key-str (String. ^bytes key-bytes "UTF-8")]
+                (if (>= key-next len)
+                  (bencode-error "unexpected end of input in dict value" key-next)
+                  (let [val-result (decode-value bs key-next)]
+                    (if (map? val-result)
+                      val-result
+                      (let [[val val-next] val-result]
+                        (recur val-next (conj! entries [key-str val]))))))))))))))
+
+(defn- decode-value [^bytes bs pos]
+  (let [len (alength bs)]
+    (if (>= pos len)
+      (bencode-error "unexpected end of input" pos)
+      (let [b (aget bs pos)]
+        (cond
+          (digit? b) (decode-string bs pos)
+          (= b (byte 0x69)) (decode-integer bs pos)  ;; 'i'
+          (= b (byte 0x6c)) (decode-list bs pos)     ;; 'l'
+          (= b (byte 0x64)) (decode-dict bs pos)     ;; 'd'
+          :else (bencode-error (str "unknown type byte: " (char b)) pos))))))
+
+;; ---------------------------------------------------------------------------
+;; Post-processing: convert byte-array strings to Clojure strings
+;; ---------------------------------------------------------------------------
+
+(defn- bytes->string-tree [val]
+  (cond
+    (instance? (Class/forName "[B") val) (String. ^bytes val "UTF-8")
+    (vector? val) (mapv bytes->string-tree val)
+    (map? val) (into (sorted-map)
+                     (map (fn [[k v]] [k (bytes->string-tree v)]))
+                     val)
+    :else val))
+
+;; ---------------------------------------------------------------------------
+;; Public API
+;; ---------------------------------------------------------------------------
+
+(defn decode-bencode [^bytes bs]
+  (if (zero? (alength bs))
+    (bencode-error "empty input" 0)
+    (let [result (decode-value bs 0)]
+      (if (map? result)
+        result
+        (let [[val next-pos] result]
+          (if (< next-pos (alength bs))
+            (bencode-error (str "trailing data at position " next-pos) next-pos)
+            {:ok (bytes->string-tree val)}))))))

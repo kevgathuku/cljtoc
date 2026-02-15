@@ -108,3 +108,57 @@
     (let [[val pos] (bencode/decode-integer (to-bytes "xxi99e") 2)]
       (is (= 99 val))
       (is (= 6 pos)))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 3: Decode lists, dicts, nested structures & public API
+;; ---------------------------------------------------------------------------
+
+(deftest decode-bencode-list-test
+  (testing "decodes list of integers"
+    (let [result (bencode/decode-bencode (to-bytes "li1ei2ei3ee"))]
+      (is (= {:ok [1 2 3]} result))))
+  (testing "decodes empty list"
+    (let [result (bencode/decode-bencode (to-bytes "le"))]
+      (is (= {:ok []} result))))
+  (testing "decodes list with mixed types"
+    (let [result (bencode/decode-bencode (to-bytes "l4:spami42ee"))]
+      (is (= {:ok ["spam" 42]} result))))
+  (testing "truncated list returns error"
+    (let [result (bencode/decode-bencode (to-bytes "li1ei2e"))]
+      (is (= :bencode-parse-error (:error result))))))
+
+(deftest decode-bencode-dict-test
+  (testing "decodes simple dict"
+    (let [result (bencode/decode-bencode (to-bytes "d3:bar4:spam3:fooi42ee"))]
+      (is (= {:ok (sorted-map "bar" "spam" "foo" 42)} result))))
+  (testing "decodes empty dict"
+    (let [result (bencode/decode-bencode (to-bytes "de"))]
+      (is (= {:ok (sorted-map)} result))))
+  (testing "dict keys are strings"
+    (let [{:keys [ok]} (bencode/decode-bencode (to-bytes "d1:ai1e1:bi2ee"))]
+      (is (= ["a" "b"] (keys ok)))))
+  (testing "truncated dict returns error"
+    (let [result (bencode/decode-bencode (to-bytes "d3:foo"))]
+      (is (= :bencode-parse-error (:error result))))))
+
+(deftest decode-bencode-nested-test
+  (testing "dict in list"
+    (let [result (bencode/decode-bencode (to-bytes "ld1:ai1eee"))]
+      (is (= {:ok [(sorted-map "a" 1)]} result))))
+  (testing "list in dict"
+    (let [result (bencode/decode-bencode (to-bytes "d1:ali1ei2eee"))]
+      (is (= {:ok (sorted-map "a" [1 2])} result))))
+  (testing "deeply nested"
+    (let [result (bencode/decode-bencode (to-bytes "d1:ad1:bd1:ci1eeee"))]
+      (is (= {:ok (sorted-map "a" (sorted-map "b" (sorted-map "c" 1)))} result)))))
+
+(deftest decode-bencode-errors-test
+  (testing "empty input returns error"
+    (let [result (bencode/decode-bencode (byte-array 0))]
+      (is (= :bencode-parse-error (:error result)))))
+  (testing "unknown type byte returns error"
+    (let [result (bencode/decode-bencode (to-bytes "x"))]
+      (is (= :bencode-parse-error (:error result)))))
+  (testing "trailing data after value returns error"
+    (let [result (bencode/decode-bencode (to-bytes "i42eXXX"))]
+      (is (= :bencode-parse-error (:error result))))))
