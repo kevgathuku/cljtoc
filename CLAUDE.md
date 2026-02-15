@@ -121,3 +121,10 @@ All PRs must verify:
 3. All go blocks have explicit supervisor ownership
 4. No new global state introduced
 5. New code has corresponding tests; domain tests are pure
+
+## Active Technologies
+- Clojure 1.11+ (JVM-based) (003-tracker-protocol)
+- N/A (stateless protocol parsing) (003-tracker-protocol)
+
+## Recent Changes
+- 003-tracker-protocol: Added Clojure 1.11+ (JVM-based)
