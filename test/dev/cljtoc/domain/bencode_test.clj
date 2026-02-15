@@ -1,5 +1,9 @@
 (ns dev.cljtoc.domain.bencode-test
   (:require [clojure.test :refer :all]
+            [clojure.test.check :as tc]
+            [clojure.test.check.clojure-test :refer [defspec]]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop]
             [dev.cljtoc.domain.bencode :as bencode]))
 
 ;; ---------------------------------------------------------------------------
@@ -162,3 +166,100 @@
   (testing "trailing data after value returns error"
     (let [result (bencode/decode-bencode (to-bytes "i42eXXX"))]
       (is (= :bencode-parse-error (:error result))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 4: Encoder + round-trip + property-based tests
+;; ---------------------------------------------------------------------------
+
+(deftest encode-string-test
+  (testing "encodes basic string"
+    (is (= "4:spam" (String. (bencode/encode-bencode "spam") "UTF-8"))))
+  (testing "encodes empty string"
+    (is (= "0:" (String. (bencode/encode-bencode "") "UTF-8")))))
+
+(deftest encode-integer-test
+  (testing "encodes positive integer"
+    (is (= "i42e" (String. (bencode/encode-bencode 42) "UTF-8"))))
+  (testing "encodes zero"
+    (is (= "i0e" (String. (bencode/encode-bencode 0) "UTF-8"))))
+  (testing "encodes negative integer"
+    (is (= "i-3e" (String. (bencode/encode-bencode -3) "UTF-8")))))
+
+(deftest encode-list-test
+  (testing "encodes list of integers"
+    (is (= "li1ei2ei3ee" (String. (bencode/encode-bencode [1 2 3]) "UTF-8"))))
+  (testing "encodes empty list"
+    (is (= "le" (String. (bencode/encode-bencode []) "UTF-8"))))
+  (testing "encodes mixed list"
+    (is (= "l4:spami42ee" (String. (bencode/encode-bencode ["spam" 42]) "UTF-8")))))
+
+(deftest encode-dict-test
+  (testing "encodes dict with sorted keys"
+    (is (= "d3:fooi42ee" (String. (bencode/encode-bencode {"foo" 42}) "UTF-8"))))
+  (testing "key sorting is lexicographic"
+    (is (= "d1:ai1e1:bi2ee" (String. (bencode/encode-bencode {"b" 2 "a" 1}) "UTF-8"))))
+  (testing "encodes empty dict"
+    (is (= "de" (String. (bencode/encode-bencode {}) "UTF-8")))))
+
+(deftest encode-dict-key-sorting-test
+  (testing "keys are sorted lexicographically in output"
+    (let [encoded (String. (bencode/encode-bencode {"z" 1 "a" 2 "m" 3}) "UTF-8")]
+      (is (= "d1:ai2e1:mi3e1:zi1ee" encoded)))))
+
+(deftest roundtrip-unit-test
+  (testing "string round-trips"
+    (is (bencode/bencode-roundtrip? "hello")))
+  (testing "integer round-trips"
+    (is (bencode/bencode-roundtrip? 42)))
+  (testing "empty string round-trips"
+    (is (bencode/bencode-roundtrip? "")))
+  (testing "negative integer round-trips"
+    (is (bencode/bencode-roundtrip? -99)))
+  (testing "list round-trips"
+    (is (bencode/bencode-roundtrip? [1 2 3])))
+  (testing "dict round-trips"
+    (is (bencode/bencode-roundtrip? (sorted-map "a" 1 "b" 2))))
+  (testing "nested structure round-trips"
+    (is (bencode/bencode-roundtrip? (sorted-map "list" [1 "two" 3]
+                                                "nested" (sorted-map "x" 10))))))
+
+(deftest bencode-type-test
+  (testing "identifies string"
+    (is (= :string (bencode/bencode-type (to-bytes "4:spam") 0))))
+  (testing "identifies integer"
+    (is (= :integer (bencode/bencode-type (to-bytes "i42e") 0))))
+  (testing "identifies list"
+    (is (= :list (bencode/bencode-type (to-bytes "le") 0))))
+  (testing "identifies dict"
+    (is (= :dict (bencode/bencode-type (to-bytes "de") 0))))
+  (testing "identifies unknown"
+    (is (= :unknown (bencode/bencode-type (to-bytes "x") 0)))))
+
+;; Property-based tests
+
+(def gen-bencode-string
+  (gen/fmap str gen/string-alphanumeric))
+
+(def gen-bencode-integer
+  gen/large-integer)
+
+(def gen-bencode-value
+  (gen/recursive-gen
+   (fn [inner]
+     (gen/one-of
+      [(gen/vector inner 0 5)
+       (gen/fmap #(into (sorted-map) %)
+                 (gen/vector
+                  (gen/tuple gen/string-alphanumeric inner)
+                  0 5))]))
+   (gen/one-of [gen-bencode-string gen-bencode-integer])))
+
+(defspec roundtrip-property 100
+  (prop/for-all [v gen-bencode-value]
+                (bencode/bencode-roundtrip? v)))
+
+(defspec encode-deterministic 100
+  (prop/for-all [v gen-bencode-value]
+                (java.util.Arrays/equals
+                 ^bytes (bencode/encode-bencode v)
+                 ^bytes (bencode/encode-bencode v))))

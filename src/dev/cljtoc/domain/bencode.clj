@@ -177,3 +177,62 @@
           (if (< next-pos (alength bs))
             (bencode-error (str "trailing data at position " next-pos) next-pos)
             {:ok (bytes->string-tree val)}))))))
+
+(defn bencode-type [^bytes bs pos]
+  (if (>= pos (alength bs))
+    :unknown
+    (let [b (aget bs pos)]
+      (cond
+        (digit? b)         :string
+        (= b (byte 0x69))  :integer
+        (= b (byte 0x6c))  :list
+        (= b (byte 0x64))  :dict
+        :else               :unknown))))
+
+;; ---------------------------------------------------------------------------
+;; Encoder
+;; ---------------------------------------------------------------------------
+
+(defn encode-bencode [value]
+  (let [out (java.io.ByteArrayOutputStream.)]
+    (letfn [(encode-val [v]
+              (cond
+                (string? v)
+                (let [bs (.getBytes ^String v "UTF-8")
+                      prefix (.getBytes (str (alength bs) ":") "UTF-8")]
+                  (.write out prefix 0 (alength prefix))
+                  (.write out bs 0 (alength bs)))
+
+                (instance? (Class/forName "[B") v)
+                (let [^bytes barr v
+                      prefix (.getBytes (str (alength barr) ":") "UTF-8")]
+                  (.write out prefix 0 (alength prefix))
+                  (.write out barr 0 (alength barr)))
+
+                (integer? v)
+                (let [bs (.getBytes (str "i" v "e") "UTF-8")]
+                  (.write out bs 0 (alength bs)))
+
+                (vector? v)
+                (do
+                  (.write out (int 0x6c))
+                  (doseq [item v]
+                    (encode-val item))
+                  (.write out (int 0x65)))
+
+                (map? v)
+                (do
+                  (.write out (int 0x64))
+                  (doseq [[k val] (sort-by key v)]
+                    (encode-val (if (string? k) k (str k)))
+                    (encode-val val))
+                  (.write out (int 0x65)))
+
+                :else
+                (throw (IllegalArgumentException.
+                        (str "unsupported bencode type: " (type v))))))]
+      (encode-val value)
+      (.toByteArray out))))
+
+(defn bencode-roundtrip? [value]
+  (= value (:ok (decode-bencode (encode-bencode value)))))
