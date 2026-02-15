@@ -1,19 +1,18 @@
 (ns dev.cljtoc.protocol.tracker-test
-  (:require [clojure.test :refer [deftest is testing]]
-            [clojure.test.check.clojure-test :refer [defspec]]
-            [clojure.test.check.generators :as gen]
-            [clojure.test.check.properties :as prop]
-            [dev.cljtoc.protocol.tracker :as tracker]
-            [dev.cljtoc.protocol.tracker.spec :as spec]
-            [dev.cljtoc.domain.bencode :as bencode]))
+  (:require
+   [clojure.string :as string]
+   [clojure.test :refer [deftest is testing]]
+   [clojure.test.check.clojure-test :refer [defspec]]
+   [clojure.test.check.generators :as gen]
+   [clojure.test.check.properties :as prop]
+   [dev.cljtoc.domain.bencode :as bencode]
+   [dev.cljtoc.protocol.tracker :as tracker]
+   [dev.cljtoc.protocol.tracker.spec :as spec]
+   [dev.cljtoc.test-utils :refer [to-bytes]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test helpers
 ;; ---------------------------------------------------------------------------
-
-(defn- to-bytes [^String s]
-  "Convert string to UTF-8 byte array"
-  (.getBytes s "UTF-8"))
 
 (defn- make-compact-peer-bytes
   "Create compact peer format bytes (6 bytes per IPv4 peer)"
@@ -25,7 +24,7 @@
 (defn- ip-string-to-parts
   "Convert IP address string to byte parts"
   [ip-str]
-  (mapv #(Integer/parseInt %) (clojure.string/split ip-str #"\.")))
+  (mapv #(Integer/parseInt %) (string/split ip-str #"\.")))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: Compact peer parsing (IPv4)
