@@ -171,6 +171,8 @@ A developer provides tracker interval and current time, and receives the next an
 - **FR-023**: System MUST handle malformed tracker responses without crashing
 - **FR-024**: System MUST distinguish between network errors, protocol errors, and tracker errors
 - **FR-025**: System MUST preserve error context (tracker URL, error message, error type) for debugging
+- **FR-033**: Spec validation failures MUST be transformed into {:error ...} result maps (not exceptions)
+- **FR-034**: Error results from spec failures MUST include spec explain-data for debugging while maintaining consistent error format
 
 #### Architecture Compliance
 
@@ -178,14 +180,20 @@ A developer provides tracker interval and current time, and receives the next an
 - **FR-027**: All network I/O MUST be isolated behind injectable port interfaces
 - **FR-028**: All time-related operations MUST use injectable time port (no direct access to system time)
 - **FR-029**: All functions MUST return result maps ({:ok value} or {:error ...}) instead of throwing exceptions
+- **FR-030**: All data entities MUST have clojure.spec definitions for validation and generative testing
+- **FR-031**: Public API functions MUST validate inputs using clojure.spec at function boundaries
+- **FR-032**: Spec instrumentation MUST be opt-in (enabled for development/testing, disabled in production)
 
 ### Key Entities
+
+All entities will have corresponding clojure.spec definitions for validation and generative testing:
 
 - **TrackerRequest**: Represents an announce request to be sent to a tracker
   - Request type (connect, announce, scrape)
   - Protocol (HTTP or UDP)
   - Required parameters (info_hash, peer_id, port, statistics)
   - Optional parameters (event, compact mode, peer count)
+  - Spec: `::tracker-request` with custom generators for 20-byte binary fields
 
 - **TrackerResponse**: Represents a parsed tracker response
   - Peer list (IP addresses and ports)
@@ -194,22 +202,26 @@ A developer provides tracker interval and current time, and receives the next an
   - Tracker ID (for HTTP trackers)
   - Connection ID (for UDP trackers)
   - Warnings or error messages
+  - Spec: `::tracker-response` with discriminated union for success/failure
 
 - **Peer**: Individual peer information from tracker
   - IP address (IPv4 or IPv6)
   - Port number
   - Peer ID (optional, not in compact format)
+  - Spec: `::peer` with custom generators for valid IP addresses and ports
 
 - **AnnounceSchedule**: Timing information for tracker communication
   - Next announce time
   - Interval duration
   - Retry backoff state (for failures)
+  - Spec: `::announce-schedule` with constraints on valid timestamps and intervals
 
 - **TrackerError**: Error information from failed tracker communication
   - Error type (network, protocol, tracker failure)
   - Error message
   - Tracker URL
   - Timestamp
+  - Spec: `::tracker-error` with enumerated error types
 
 ## Success Criteria *(mandatory)*
 
@@ -225,10 +237,78 @@ A developer provides tracker interval and current time, and receives the next an
 - **SC-008**: UDP protocol correctly handles connection ID expiration and re-connection sequences
 - **SC-009**: URL encoding for binary data (info_hash, peer_id) matches reference BitTorrent client implementations
 - **SC-010**: Error responses from trackers are correctly distinguished from network failures with appropriate error messages
+- **SC-011**: All data entities have clojure.spec definitions that enable generative testing
+- **SC-012**: Generative tests successfully discover edge cases in protocol parsing and message building
+- **SC-013**: Public API functions validate inputs at boundaries using clojure.spec with clear error messages
+
+### Testing Strategy
+
+The implementation will use clojure.spec for:
+
+1. **Data Contract Documentation**: All entities (TrackerRequest, TrackerResponse, Peer, etc.) have explicit spec definitions serving as executable documentation
+
+2. **Generative Testing**: Property-based tests using `clojure.spec.gen` with realistic protocol-aware generators:
+   - **20-byte binary fields**: Exactly 20 bytes for info-hash and peer-id (not arbitrary length)
+   - **IP addresses**: Valid IPv4 (4 bytes) and IPv6 (16 bytes) addresses in proper formats
+   - **Port numbers**: Realistic range 1024-65535 (standard non-privileged ports)
+   - **Compact peer format**: Properly structured byte arrays (6 bytes per IPv4 peer, 18 per IPv6)
+   - **Event codes**: Valid enumeration (0=none, 1=completed, 2=started, 3=stopped)
+   - **Transaction IDs**: 32-bit unsigned integers (0 to 2^32-1)
+   - **Intervals**: Positive integers representing seconds (reasonable range: 60-7200)
+   - Round-trip encode/decode verification for all message formats
+
+3. **Runtime Validation**: Input validation at public API boundaries only:
+   - Enabled during development and testing via `clojure.spec.test/instrument`
+   - Disabled in production for performance
+   - Clear, actionable error messages for invalid inputs
+   - Spec failures transformed to standard `{:error :invalid-input :message "..." :spec-explain ...}` format
+   - No exceptions thrown - maintains pure functional error handling (FR-029)
+   - Spec explain-data included in error context for debugging
+
+4. **Test Coverage**: Combination of example-based and generative tests to achieve 90%+ coverage without network I/O
+
+## Clarifications
+
+### Session 2026-02-15
+
+- Q: Data validation strategy with clojure.spec? → A: Use clojure.spec for all data contracts with runtime validation at public API boundaries only, opt-in instrumentation for dev/test
+- Q: Generative testing strategy? → A: Use spec-based generative testing for all protocol functions, with custom generators for binary data (info-hash, peer-id, compact peers)
+- Q: Custom generator scope? → A: Realistic generators with protocol constraints (20-byte hashes, valid IPs, realistic port ranges 1024-65535, proper binary formats)
+- Q: Spec failure error message format? → A: Map spec failures to {:error ...} result format with explain-data for debugging context
+- Q: Spec namespace organization? → A: Separate spec namespace (dev.cljtoc.protocol.tracker.spec) for all specs, imported by implementation and test namespaces
+
+## Implementation Structure
+
+### Namespace Organization
+
+The implementation will use a separate spec namespace for data contracts:
+
+- **dev.cljtoc.protocol.tracker.spec**: All clojure.spec definitions for data entities
+  - Entity specs: `::tracker-request`, `::tracker-response`, `::peer`, `::announce-schedule`, `::tracker-error`
+  - Field specs: `::info-hash`, `::peer-id`, `::port`, `::ip-address`, etc.
+  - Custom generators for protocol-aware test data
+  - Imported by both implementation and test namespaces
+
+- **dev.cljtoc.protocol.tracker**: Main implementation namespace
+  - Requires `dev.cljtoc.protocol.tracker.spec` for validation
+  - Public API functions validate inputs at boundaries using specs
+  - Pure protocol parsing and message-building functions
+
+- **dev.cljtoc.protocol.tracker-test**: Test namespace
+  - Requires `dev.cljtoc.protocol.tracker.spec` for generative testing
+  - Uses `clojure.spec.test/check` for property-based tests
+  - Example-based unit tests with hardcoded fixtures
+  - Achieves 90%+ coverage without network I/O
+
+This separation allows:
+- Specs to serve as executable documentation independent of implementation
+- Reusability across features (future features can reference tracker specs)
+- Independent control of spec validation (enable/disable without touching protocol logic)
 
 ## Dependencies
 
 - **002-bencode-parser**: Required for parsing HTTP tracker responses (bencode format)
+- **clojure.spec.alpha**: Required for data validation and generative testing
 
 ## Assumptions
 
@@ -243,3 +323,6 @@ A developer provides tracker interval and current time, and receives the next an
 - Network I/O port provides timeout mechanism for tracker requests
 - Time port provides current time for scheduling calculations
 - All binary data uses big-endian byte order (network byte order)
+- clojure.spec.alpha is available for data validation and generative testing
+- Spec instrumentation can be toggled independently (enabled in dev/test, disabled in production)
+- Custom spec generators produce realistic protocol-compliant test data
