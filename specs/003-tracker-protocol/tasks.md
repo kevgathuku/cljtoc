@@ -24,9 +24,9 @@ Following plan.md structure:
 
 **Purpose**: Project initialization and directory structure
 
-- [ ] T001 Create protocol directory structure: src/dev/cljtoc/protocol/, test/dev/cljtoc/protocol/
-- [ ] T002 Add clojure.spec.alpha and clojure.spec.gen.alpha dependencies to project.clj
-- [ ] T003 Verify dev.cljtoc.domain.bencode dependency is available (feature 002)
+- [x] T001 Create protocol directory structure: src/dev/cljtoc/protocol/, test/dev/cljtoc/protocol/
+- [x] T002 Add clojure.spec.alpha and clojure.spec.gen.alpha dependencies to project.clj
+- [x] T003 Verify dev.cljtoc.domain.bencode dependency is available (feature 002)
 
 ---
 
@@ -36,21 +36,21 @@ Following plan.md structure:
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T004 Create src/dev/cljtoc/protocol/tracker/spec.clj namespace with basic structure
-- [ ] T005 [P] Define spec ::info-hash (exactly 20 bytes) in tracker/spec.clj
-- [ ] T006 [P] Define spec ::peer-id (exactly 20 bytes) in tracker/spec.clj
-- [ ] T007 [P] Define spec ::port (range 1-65535) in tracker/spec.clj
-- [ ] T008 [P] Define spec ::ip-address (valid IPv4/IPv6 string) in tracker/spec.clj
-- [ ] T009 [P] Define spec ::event (enumeration: started/completed/stopped/nil) in tracker/spec.clj
-- [ ] T010 [P] Define spec ::protocol (enumeration: :http or :udp) in tracker/spec.clj
-- [ ] T011 Create custom generator for ::info-hash (generates exactly 20-byte arrays) in tracker/spec.clj
-- [ ] T012 Create custom generator for ::peer-id (generates exactly 20-byte arrays) in tracker/spec.clj
-- [ ] T013 Create custom generator for ::port (range 1024-65535) in tracker/spec.clj
-- [ ] T014 Create custom generator for ::ip-address (generates valid IPv4 addresses) in tracker/spec.clj
-- [ ] T015 Define spec ::peer with required keys (:ip, :port) and optional :peer-id in tracker/spec.clj
-- [ ] T016 Create src/dev/cljtoc/protocol/tracker.clj namespace with basic structure and require tracker.spec
-- [ ] T017 Create test/dev/cljtoc/protocol/tracker_test.clj namespace with test infrastructure
-- [ ] T018 Define helper function unsigned-short to convert Java signed short to unsigned 0-65535 in tracker.clj
+- [x] T004 Create src/dev/cljtoc/protocol/tracker/spec.clj namespace with basic structure
+- [x] T005 [P] Define spec ::info-hash (exactly 20 bytes) in tracker/spec.clj
+- [x] T006 [P] Define spec ::peer-id (exactly 20 bytes) in tracker/spec.clj
+- [x] T007 [P] Define spec ::port (range 1-65535) in tracker/spec.clj
+- [x] T008 [P] Define spec ::ip-address (valid IPv4/IPv6 string) in tracker/spec.clj
+- [x] T009 [P] Define spec ::event (enumeration: started/completed/stopped/nil) in tracker/spec.clj
+- [x] T010 [P] Define spec ::protocol (enumeration: :http or :udp) in tracker/spec.clj
+- [x] T011 Create custom generator for ::info-hash (generates exactly 20-byte arrays) in tracker/spec.clj
+- [x] T012 Create custom generator for ::peer-id (generates exactly 20-byte arrays) in tracker/spec.clj
+- [x] T013 Create custom generator for ::port (range 1024-65535) in tracker/spec.clj
+- [x] T014 Create custom generator for ::ip-address (generates valid IPv4 addresses) in tracker/spec.clj
+- [x] T015 Define spec ::peer with required keys (:ip, :port) and optional :peer-id in tracker/spec.clj
+- [x] T016 Create src/dev/cljtoc/protocol/tracker.clj namespace with basic structure and require tracker.spec
+- [x] T017 Create test/dev/cljtoc/protocol/tracker_test.clj namespace with test infrastructure
+- [x] T018 Define helper function unsigned-short to convert Java signed short to unsigned 0-65535 in tracker.clj
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 
@@ -66,27 +66,27 @@ Following plan.md structure:
 
 > **NOTE: Tests use generative testing with custom generators from tracker.spec**
 
-- [ ] T019 [P] [US1] Write generative test for parse-compact-peers-ipv4 (round-trip with generated peers) in tracker_test.clj
-- [ ] T020 [P] [US1] Write example-based test for parse-compact-peers-ipv4 with known peer bytes in tracker_test.clj
-- [ ] T021 [P] [US1] Write generative test for parse-compact-peers-ipv6 (18 bytes per peer) in tracker_test.clj
-- [ ] T022 [P] [US1] Write example-based test for parse-dictionary-peers with peer maps in tracker_test.clj
-- [ ] T023 [P] [US1] Write test for parse-http-tracker-response with compact peer format in tracker_test.clj
-- [ ] T024 [P] [US1] Write test for parse-http-tracker-response with dictionary peer format in tracker_test.clj
-- [ ] T025 [P] [US1] Write test for parse-http-tracker-response with failure reason in tracker_test.clj
-- [ ] T026 [P] [US1] Write test for parse-http-tracker-response extracting interval/complete/incomplete in tracker_test.clj
+- [x] T019 [P] [US1] Write generative test for parse-compact-peers-ipv4 (round-trip with generated peers) in tracker_test.clj
+- [x] T020 [P] [US1] Write example-based test for parse-compact-peers-ipv4 with known peer bytes in tracker_test.clj
+- [x] T021 [P] [US1] Write generative test for parse-compact-peers-ipv6 (18 bytes per peer) in tracker_test.clj
+- [x] T022 [P] [US1] Write example-based test for parse-dictionary-peers with peer maps in tracker_test.clj
+- [x] T023 [P] [US1] Write test for parse-http-tracker-response with compact peer format in tracker_test.clj
+- [x] T024 [P] [US1] Write test for parse-http-tracker-response with dictionary peer format in tracker_test.clj
+- [x] T025 [P] [US1] Write test for parse-http-tracker-response with failure reason in tracker_test.clj
+- [x] T026 [P] [US1] Write test for parse-http-tracker-response extracting interval/complete/incomplete in tracker_test.clj
 
 ### Implementation for User Story 1
 
-- [ ] T027 [P] [US1] Implement parse-compact-peers-ipv4 function using ByteBuffer (6 bytes per peer) in tracker.clj
-- [ ] T028 [P] [US1] Implement parse-compact-peers-ipv6 function using ByteBuffer (18 bytes per peer) in tracker.clj
-- [ ] T029 [P] [US1] Implement parse-dictionary-peers function for legacy peer format in tracker.clj
-- [ ] T030 [US1] Implement parse-http-tracker-response function using bencode parser in tracker.clj
-- [ ] T031 [US1] Add detection logic to choose compact vs dictionary peer format in parse-http-tracker-response
-- [ ] T032 [US1] Add extraction of interval, min-interval, complete, incomplete, tracker-id fields in tracker.clj
-- [ ] T033 [US1] Add failure reason extraction for HTTP tracker errors in tracker.clj
-- [ ] T034 [US1] Define spec ::tracker-response with discriminated union for success/failure in tracker/spec.clj
-- [ ] T035 [US1] Add input validation at parse-http-tracker-response boundary using specs
-- [ ] T036 [US1] Transform spec validation failures to {:error :invalid-input} format in tracker.clj
+- [x] T027 [P] [US1] Implement parse-compact-peers-ipv4 function using ByteBuffer (6 bytes per peer) in tracker.clj
+- [x] T028 [P] [US1] Implement parse-compact-peers-ipv6 function using ByteBuffer (18 bytes per peer) in tracker.clj
+- [x] T029 [P] [US1] Implement parse-dictionary-peers function for legacy peer format in tracker.clj
+- [x] T030 [US1] Implement parse-http-tracker-response function using bencode parser in tracker.clj
+- [x] T031 [US1] Add detection logic to choose compact vs dictionary peer format in parse-http-tracker-response
+- [x] T032 [US1] Add extraction of interval, min-interval, complete, incomplete, tracker-id fields in tracker.clj
+- [x] T033 [US1] Add failure reason extraction for HTTP tracker errors in tracker.clj
+- [x] T034 [US1] Define spec ::tracker-response with discriminated union for success/failure in tracker/spec.clj
+- [x] T035 [US1] Add input validation at parse-http-tracker-response boundary using specs
+- [x] T036 [US1] Transform spec validation failures to {:error :invalid-input} format in tracker.clj
 
 **Checkpoint**: At this point, User Story 1 should be fully functional and testable independently (can parse real tracker responses)
 
