@@ -13,12 +13,14 @@ The `dev.cljtoc.domain.bencode` and `dev.cljtoc.domain.torrent` namespaces provi
 
 ### Type Mapping
 
-| Bencode | Clojure |
-|---------|---------|
-| string | `String` (UTF-8) |
-| integer | `long` |
-| list | `vector` |
-| dict | `sorted-map` with string keys |
+| Bencode | Clojure (`decode-bencode`) | Clojure (`decode-bencode-raw`) |
+|---------|---------|---------|
+| string | `String` (UTF-8) | `byte[]` (raw bytes) |
+| integer | `long` | `long` |
+| list | `vector` | `vector` |
+| dict | `sorted-map` with string keys | `sorted-map` with string keys |
+
+**Note:** `decode-bencode-raw` preserves binary data (like piece hashes) without UTF-8 conversion, preventing corruption of non-text fields.
 
 ---
 
@@ -46,6 +48,17 @@ The `dev.cljtoc.domain.bencode` and `dev.cljtoc.domain.torrent` namespaces provi
 ;; Error case
 (bencode/decode-bencode (.getBytes "i03e" "UTF-8"))
 ;; => {:error :bencode-parse-error, :message "leading zeros in integer", :position 0}
+```
+
+### Decode bencode (raw, preserving binary data)
+
+Use `decode-bencode-raw` when you need lossless handling of binary data:
+
+```clojure
+(bencode/decode-bencode-raw (.getBytes "4:spam" "UTF-8"))
+;; => {:ok #<byte[] ...>}  ; byte array, not string
+
+;; This is used internally by the torrent parser to preserve binary piece hashes
 ```
 
 ### Encode bencode
@@ -135,6 +148,29 @@ The info hash is always computed from the original bencoded bytes of the info di
 
 Validation is automatically run inside `parse-torrent`. Use `validate-torrent` directly only if you are constructing torrent maps by hand.
 
+### Command-line interface
+
+Parse a `.torrent` file from the command line:
+
+```bash
+lein run path/to/file.torrent
+```
+
+This will parse the torrent file and print its metadata in a readable format. Example output:
+
+```clojure
+{:announce "http://tracker.example.com/announce",
+ :announce-list [["http://tracker1.com"] ["http://tracker2.com"]],
+ :info {:name "example-file.txt",
+        :piece-length 262144,
+        :pieces "42 pieces",
+        :length 11010048},
+ :info-hash "a1b2c3d4e5f6789...",
+ :comment "Example torrent file",
+ :created-by "qBittorrent",
+ :creation-date 1234567890}
+```
+
 ---
 
 ## Error Handling
@@ -176,7 +212,8 @@ Check for errors with `(:error result)`:
 
 | Function | Signature | Description |
 |----------|-----------|-------------|
-| `decode-bencode` | `[^bytes bs]` | Decode bencode bytes to Clojure data |
+| `decode-bencode` | `[^bytes bs]` | Decode bencode bytes to Clojure data (strings converted to UTF-8) |
+| `decode-bencode-raw` | `[^bytes bs]` | Decode bencode bytes preserving binary data (strings remain as byte arrays) |
 | `encode-bencode` | `[value]` | Encode Clojure data to bencode bytes |
 | `bencode-type` | `[^bytes bs pos]` | Peek type at byte position |
 | `bencode-roundtrip?` | `[value]` | Check encode/decode identity |
