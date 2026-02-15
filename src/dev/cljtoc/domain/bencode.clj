@@ -236,3 +236,35 @@
 
 (defn bencode-roundtrip? [value]
   (= value (:ok (decode-bencode (encode-bencode value)))))
+
+;; ---------------------------------------------------------------------------
+;; Dict value span — for extracting raw bytes of a dict value by key
+;; ---------------------------------------------------------------------------
+
+(defn find-dict-value-span [^bytes bs key-str]
+  (let [len (alength bs)]
+    (if (or (zero? len) (not= (aget bs 0) (byte 0x64))) ;; must start with 'd'
+      (bencode-error "expected dict at top level" 0)
+      (loop [i 1] ;; skip 'd'
+        (if (>= i len)
+          (bencode-error "unexpected end of input in dict" 0)
+          (if (= (aget bs i) (byte 0x65)) ;; 'e' — end of dict
+            (bencode-error (str "key not found: " key-str) 0)
+            (let [key-result (decode-string bs i)]
+              (if (map? key-result)
+                key-result
+                (let [[key-bytes key-next] key-result
+                      k (String. ^bytes key-bytes "UTF-8")]
+                  (if (= k key-str)
+                    ;; Found the key — value starts at key-next
+                    (let [val-result (decode-value bs key-next)]
+                      (if (map? val-result)
+                        val-result
+                        (let [[_ val-end] val-result]
+                          {:ok [key-next val-end]})))
+                    ;; Skip this value
+                    (let [val-result (decode-value bs key-next)]
+                      (if (map? val-result)
+                        val-result
+                        (let [[_ val-end] val-result]
+                          (recur val-end))))))))))))))
