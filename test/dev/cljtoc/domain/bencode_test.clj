@@ -1,6 +1,5 @@
 (ns dev.cljtoc.domain.bencode-test
-  (:require [clojure.test :refer :all]
-            [clojure.test.check :as tc]
+  (:require [clojure.test :refer [deftest is testing]]
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]

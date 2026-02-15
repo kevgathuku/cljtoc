@@ -1,5 +1,5 @@
 (ns dev.cljtoc.domain.torrent-test
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.domain.bencode :as bencode]))
 
@@ -298,10 +298,10 @@
       (is (= {:ok true} (torrent/validate-torrent t)))))
   (testing "multiple errors are aggregated"
     (let [t {:info {:piece-length 0
-                    :pieces [(byte-array 15)]}}]
-      (let [result (torrent/validate-torrent t)]
-        (is (vector? (:error result)))
-        (is (> (count (:error result)) 1))))))
+                    :pieces [(byte-array 15)]}}
+          result (torrent/validate-torrent t)]
+      (is (vector? (:error result)))
+      (is (> (count (:error result)) 1)))))
 
 (deftest bencode-error-positions-test
   (testing "truncated string includes position"

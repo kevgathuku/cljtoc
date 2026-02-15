@@ -1,6 +1,5 @@
 (ns dev.cljtoc.core-test
-  (:require [clojure.test :refer :all]
-            [dev.cljtoc.core :refer :all]))
+  (:require [clojure.test :refer [deftest is testing]]))
 
 (deftest a-test
   (testing "Placeholder test."

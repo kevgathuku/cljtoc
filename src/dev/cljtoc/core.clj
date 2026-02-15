@@ -54,13 +54,13 @@
 
 (defn- cmd-torrent-download
   "Download files from a torrent (not yet implemented)."
-  [args]
+  [_args]
   (println "torrent.download - Not yet implemented")
   (System/exit 1))
 
 (defn- cmd-torrent-seed
   "Seed a torrent (not yet implemented)."
-  [args]
+  [_args]
   (println "torrent.seed - Not yet implemented")
   (System/exit 1))
 
