@@ -1,5 +1,6 @@
 (ns dev.cljtoc.protocol.tracker-test
   (:require
+   [clojure.spec.alpha :as s]
    [clojure.string :as string]
    [clojure.test :refer [deftest is testing]]
    [clojure.test.check.clojure-test :refer [defspec]]
@@ -63,8 +64,8 @@
       (is (= [] (:ok result))))))
 
 (defspec parse-compact-peers-ipv4-generative-test 100
-  (prop/for-all [peers (gen/vector (gen/tuple spec/gen-ipv4-address
-                                              spec/gen-port)
+  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::spec/ip-address)
+                                              (s/gen ::spec/port))
                                    1 10)]
     ;; Property: parse(build(peers)) = peers
                 (let [bytes (byte-array
@@ -82,6 +83,30 @@
                                  (and (= (first expected-peer) (:ip actual-peer))
                                       (= (second expected-peer) (:port actual-peer))))
                                (map vector peers (:ok result)))))))
+
+(defspec generated-peers-satisfy-spec 100
+  (testing "All generated peers satisfy the peer spec"
+    (prop/for-all [peer (s/gen ::spec/peer)]
+                  (s/valid? ::spec/peer peer))))
+
+(defspec generated-peer-ids-are-valid 100
+  (testing "All generated peer-ids are exactly 20 bytes"
+    (prop/for-all [peer-id (s/gen ::spec/peer-id)]
+                  (and (bytes? peer-id)
+                       (= 20 (alength peer-id))))))
+
+(defspec generated-info-hashes-are-valid 100
+  (testing "All generated info-hashes are exactly 20 bytes"
+    (prop/for-all [info-hash (s/gen ::spec/info-hash)]
+                  (and (bytes? info-hash)
+                       (= 20 (alength info-hash))))))
+
+(defspec generated-ports-are-in-range 100
+  (testing "All generated ports are in valid range and realistic"
+    (prop/for-all [port (s/gen ::spec/port)]
+                  (and (int? port)
+                       (<= 1 port 65535)
+                       (>= port 1024)))))  ; Our generator uses 1024-65535
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 2: Dictionary peer parsing
