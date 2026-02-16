@@ -14,6 +14,7 @@
 ## Path Conventions
 
 Following plan.md structure:
+
 - Source: `src/dev/cljtoc/protocol/`
 - Tests: `test/dev/cljtoc/protocol/`
 - Spec namespace: `src/dev/cljtoc/protocol/tracker/spec.clj`
@@ -100,24 +101,24 @@ Following plan.md structure:
 
 ### Tests for User Story 2
 
-- [ ] T037 [P] [US2] Write test for url-encode-binary with empty bytes in tracker_test.clj
-- [ ] T038 [P] [US2] Write test for url-encode-binary with simple text "abc" in tracker_test.clj
-- [ ] T039 [P] [US2] Write test for url-encode-binary with binary data (0x12, 0x34, 0xFF) in tracker_test.clj
-- [ ] T040 [P] [US2] Write generative test for url-encode-binary (round-trip encode/decode) in tracker_test.clj
-- [ ] T041 [P] [US2] Write test for build-http-announce-url with required parameters in tracker_test.clj
-- [ ] T042 [P] [US2] Write test for build-http-announce-url with optional event parameter in tracker_test.clj
-- [ ] T043 [P] [US2] Write test for build-http-announce-url with existing query parameters in base URL in tracker_test.clj
-- [ ] T044 [P] [US2] Write test for build-http-announce-url input validation (invalid info-hash length) in tracker_test.clj
+- [x] T037 [P] [US2] Write test for url-encode-binary with empty bytes in tracker_test.clj
+- [x] T038 [P] [US2] Write test for url-encode-binary with simple text "abc" in tracker_test.clj
+- [x] T039 [P] [US2] Write test for url-encode-binary with binary data (0x12, 0x34, 0xFF) in tracker_test.clj
+- [x] T040 [P] [US2] Write generative test for url-encode-binary (round-trip encode/decode) in tracker_test.clj
+- [x] T041 [P] [US2] Write test for build-http-announce-url with required parameters in tracker_test.clj
+- [x] T042 [P] [US2] Write test for build-http-announce-url with optional event parameter in tracker_test.clj
+- [x] T043 [P] [US2] Write test for build-http-announce-url with existing query parameters in base URL in tracker_test.clj
+- [x] T044 [P] [US2] Write test for build-http-announce-url input validation (invalid info-hash length) in tracker_test.clj
 
 ### Implementation for User Story 2
 
-- [ ] T045 [P] [US2] Implement url-encode-binary function per RFC 3986 (unreserved chars: A-Z a-z 0-9 . - _ ~) in tracker.clj
-- [ ] T046 [US2] Implement build-http-announce-url function with required parameters in tracker.clj
-- [ ] T047 [US2] Add support for optional parameters (event, compact, no-peer-id, numwant, tracker-id) in build-http-announce-url
-- [ ] T048 [US2] Add query parameter appending logic for URLs with existing parameters in tracker.clj
-- [ ] T049 [US2] Define spec ::tracker-request for HTTP requests in tracker/spec.clj
-- [ ] T050 [US2] Add input validation at build-http-announce-url boundary using specs
-- [ ] T051 [US2] Transform spec validation failures to {:error :invalid-input} format in tracker.clj
+- [x] T045 [P] [US2] Implement url-encode-binary function per RFC 3986 (unreserved chars: A-Z a-z 0-9 . - _ ~) in tracker.clj
+- [x] T046 [US2] Implement build-http-announce-url function with required parameters in tracker.clj
+- [x] T047 [US2] Add support for optional parameters (event, compact, no-peer-id, numwant, tracker-id) in build-http-announce-url
+- [x] T048 [US2] Add query parameter appending logic for URLs with existing parameters in tracker.clj
+- [x] T049 [US2] Define spec ::tracker-request for HTTP requests in tracker/spec.clj
+- [x] T050 [US2] Add input validation at build-http-announce-url boundary using specs
+- [x] T051 [US2] Transform spec validation failures to {:error :invalid-input} format in tracker.clj
 
 **Checkpoint**: At this point, User Stories 1 AND 2 should both work independently (complete HTTP tracker cycle: build request → parse response)
 
@@ -319,6 +320,7 @@ Phase 5: US3 (P3) ────→ Phase 6: US4 (P4)
 **MVP = Phase 1 + Phase 2 + Phase 3 (User Story 1)**
 
 This delivers immediate value:
+
 - ✅ Parse HTTP tracker responses
 - ✅ Extract peer lists (IPv4 and IPv6)
 - ✅ Extract swarm statistics
