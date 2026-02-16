@@ -95,3 +95,34 @@
   (s/keys :req-un [::success ::protocol ::response-type]
           :opt-un [::peers ::interval ::min-interval ::complete ::incomplete
                    ::tracker-id ::failure-reason ::warning-message]))
+
+;; ---------------------------------------------------------------------------
+;; Request parameter specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::uploaded nat-int?)
+(s/def ::downloaded nat-int?)
+(s/def ::left nat-int?)
+(s/def ::num-want pos-int?)
+(s/def ::compact boolean?)
+(s/def ::no-peer-id boolean?)
+(s/def ::tracker-url string?)
+
+(s/def ::tracker-request
+  (s/keys :req-un [::info-hash ::peer-id ::port
+                   ::uploaded ::downloaded ::left]
+          :opt-un [::event ::compact ::num-want
+                   ::no-peer-id ::tracker-id]))
+
+;; ---------------------------------------------------------------------------
+;; Result/return value specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::ok any?)  ; Generic success value - type depends on function
+(s/def ::error keyword?)
+(s/def ::message string?)
+(s/def ::spec-explain (s/nilable map?))  ; clojure.spec explain-data
+
+(s/def ::error-result
+  (s/keys :req-un [::error ::message]
+          :opt-un [::spec-explain]))

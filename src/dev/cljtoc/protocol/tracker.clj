@@ -6,7 +6,8 @@
   Network I/O is handled by injectable ports (not part of this namespace)."
   (:require [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.protocol.tracker.spec :as spec]
-            [clojure.spec.alpha :as s])
+            [clojure.spec.alpha :as s]
+            [clojure.string :as string])
   (:import [java.nio ByteBuffer]
            [java.net InetAddress]))
 
@@ -31,6 +32,47 @@
   use unsigned shorts. This function performs the conversion."
   [s]
   (bit-and s 0xFFFF))
+
+;; ---------------------------------------------------------------------------
+;; URL Encoding
+;; ---------------------------------------------------------------------------
+
+(defn url-encode-binary
+  "URL-encode binary data per RFC 3986.
+
+  Unreserved characters (A-Z a-z 0-9 . - _ ~) are preserved.
+  All other bytes are encoded as %XX where XX is uppercase hexadecimal.
+
+  This implements percent-encoding for binary data, which is required for
+  encoding info-hash and peer-id in BitTorrent announce URLs.
+
+  Parameters:
+    data - Byte array to encode
+
+  Returns:
+    URL-encoded string"
+  [^bytes data]
+  (let [sb (StringBuilder.)]
+    (doseq [b data]
+      (let [byte-val (bit-and b 0xFF)]  ; Convert to unsigned
+        (if (or (and (<= 65 byte-val) (<= byte-val 90))   ; A-Z
+                (and (<= 97 byte-val) (<= byte-val 122))  ; a-z
+                (and (<= 48 byte-val) (<= byte-val 57))   ; 0-9
+                (= byte-val 46)   ; .
+                (= byte-val 45)   ; -
+                (= byte-val 95)   ; _
+                (= byte-val 126)) ; ~
+          (.append sb (char byte-val))
+          (.append sb (format "%%%02X" byte-val)))))
+    (.toString sb)))
+
+(s/fdef url-encode-binary
+  :args (s/cat :data bytes?)
+  :ret string?
+  :fn #(let [input-len (alength (-> % :args :data))
+             output (-> % :ret)]
+         ;; Output should never be longer than input * 3 (each byte -> %XX)
+         (<= (count output) (* input-len 3))))
 
 ;; ---------------------------------------------------------------------------
 ;; Spec validation helpers
@@ -82,6 +124,18 @@
                          "Failed to parse IP address from compact format"
                          :exception (.getMessage e)))))))
 
+(s/fdef parse-compact-peers-ipv4
+  :args (s/cat :peers-bytes bytes?)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+        ;; If successful, peer count should match input length / 6
+       :success #(let [input-len (alength (-> % :args :peers-bytes))
+                       peers (-> % :ret second :ok)]
+                   (or (not= :success (first (:ret %)))
+                       (= (count peers) (/ input-len 6))))
+       :error #(= :error (first (:ret %)))))
+
 (defn parse-compact-peers-ipv6
   "Parse compact IPv6 peer list (18 bytes per peer).
 
@@ -112,6 +166,18 @@
           (tracker-error :invalid-ip-address
                          "Failed to parse IP address from compact format"
                          :exception (.getMessage e)))))))
+
+(s/fdef parse-compact-peers-ipv6
+  :args (s/cat :peers-bytes bytes?)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+        ;; If successful, peer count should match input length / 18
+       :success #(let [input-len (alength (-> % :args :peers-bytes))
+                       peers (-> % :ret second :ok)]
+                   (or (not= :success (first (:ret %)))
+                       (= (count peers) (/ input-len 18))))
+       :error #(= :error (first (:ret %)))))
 
 (defn- bytes->string
   "Convert byte array to UTF-8 string, or return unchanged if already a string or nil"
@@ -155,6 +221,18 @@
       (tracker-error :invalid-peer-format
                      (.getMessage e)
                      :context (ex-data e)))))
+
+(s/fdef parse-dictionary-peers
+  :args (s/cat :peers-list sequential?)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+        ;; If successful, peer list should match input list length
+       :success #(let [input-count (count (-> % :args :peers-list))
+                       peers (-> % :ret second :ok)]
+                   (or (not= :success (first (:ret %)))
+                       (= (count peers) input-count)))
+       :error #(= :error (first (:ret %)))))
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP tracker response parsing
@@ -227,3 +305,113 @@
                 (tracker-error :protocol-error
                                "Failed to parse tracker response"
                                :exception (.getMessage e))))))))))
+
+(s/fdef parse-http-tracker-response
+  :args (s/cat :response-bytes bytes?)
+  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+                             #(s/valid? ::spec/tracker-response (:ok %)))
+             :error ::spec/error-result)
+  :fn (s/or
+        ;; If successful, result should be a valid tracker response
+       :success #(let [response (-> % :ret second :ok)]
+                   (or (not= :success (first (:ret %)))
+                       (and (contains? response :success)
+                            (contains? response :protocol)
+                            (= :http (:protocol response)))))
+       :error #(= :error (first (:ret %)))))
+
+;; ---------------------------------------------------------------------------
+;; HTTP Request Building
+;; ---------------------------------------------------------------------------
+
+(defn- build-query-string
+  "Build query string from parameter map. Values should be pre-encoded."
+  [params]
+  (->> params
+       (map (fn [[k v]] (str (name k) "=" v)))
+       (string/join "&")))
+
+(defn build-http-announce-url
+  "Build HTTP tracker announce request URL.
+
+  Constructs a properly formatted announce URL with all required and
+  optional BitTorrent protocol parameters. Binary data (info-hash, peer-id)
+  is URL-encoded per RFC 3986.
+
+  Parameters:
+    tracker-url - Base tracker URL (e.g., 'http://tracker.example.com/announce')
+    request - Map with required and optional parameters:
+      Required:
+        :info-hash - 20-byte torrent identifier
+        :peer-id - 20-byte client identifier
+        :port - Listening port (1-65535)
+        :uploaded - Total bytes uploaded this session
+        :downloaded - Total bytes downloaded this session
+        :left - Bytes remaining to download
+      Optional:
+        :event - :started | :completed | :stopped (keyword)
+        :compact - Boolean (default true) - request compact peer format
+        :num-want - Number of peers wanted (default 50)
+        :no-peer-id - Boolean (default false) - omit peer-id in response
+        :tracker-id - Tracker ID from previous response (string)
+
+  Returns:
+    {:ok url-string} or {:error ...}"
+  [tracker-url request]
+  ;; T050: Input validation
+  (if-let [validation-error (validate-input ::spec/tracker-request request)]
+    validation-error
+    ;; T046: Build required parameters
+    (let [{:keys [info-hash peer-id port uploaded downloaded left
+                  event compact num-want no-peer-id tracker-id]} request
+          params {:info_hash (url-encode-binary info-hash)
+                  :peer_id (url-encode-binary peer-id)
+                  :port (str port)
+                  :uploaded (str uploaded)
+                  :downloaded (str downloaded)
+                  :left (str left)}
+          ;; T047: Add optional parameters
+          params-with-opts (cond-> params
+                             ;; Event parameter
+                             event
+                             (assoc :event (name event))
+
+                             ;; Compact parameter (default true)
+                             (contains? request :compact)
+                             (assoc :compact (if compact "1" "0"))
+
+                             (not (contains? request :compact))
+                             (assoc :compact "1")  ; Default to compact
+
+                             ;; Num-want parameter
+                             num-want
+                             (assoc :numwant (str num-want))
+
+                             ;; No-peer-id parameter
+                             no-peer-id
+                             (assoc :no_peer_id (if no-peer-id "1" "0"))
+
+                             ;; Tracker ID parameter
+                             tracker-id
+                             (assoc :trackerid tracker-id))
+
+          query-string (build-query-string params-with-opts)
+          ;; T048: Handle existing query parameters
+          separator (if (.contains tracker-url "?") "&" "?")
+          full-url (str tracker-url separator query-string)]
+      {:ok full-url})))
+
+(s/fdef build-http-announce-url
+  :args (s/cat :tracker-url string?
+               :request ::spec/tracker-request)
+  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+                             #(string? (:ok %)))
+             :error ::spec/error-result)
+  :fn (s/or
+        ;; If successful, URL should start with the tracker-url base
+       :success #(let [tracker-url (-> % :args :tracker-url)
+                       result-url (-> % :ret second :ok)]
+                   (or (not= :success (first (:ret %)))
+                       (.startsWith result-url tracker-url)))
+        ;; If error, return value should match error pattern
+       :error #(= :error (first (:ret %)))))

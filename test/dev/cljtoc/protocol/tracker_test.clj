@@ -1,6 +1,7 @@
 (ns dev.cljtoc.protocol.tracker-test
   (:require
    [clojure.spec.alpha :as s]
+   [clojure.spec.test.alpha :as stest]
    [clojure.string :as string]
    [clojure.test :refer [deftest is testing]]
    [clojure.test.check.clojure-test :refer [defspec]]
@@ -281,3 +282,118 @@
       (is (contains? result :ok))
       (is (= 0 (:complete (:ok result))))
       (is (= 0 (:incomplete (:ok result)))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 4: URL Encoding
+;; ---------------------------------------------------------------------------
+
+(deftest url-encode-binary-empty-test
+  (testing "url-encode-binary handles empty byte array"
+    (is (= "" (tracker/url-encode-binary (byte-array []))))))
+
+(deftest url-encode-binary-ascii-test
+  (testing "url-encode-binary preserves unreserved ASCII characters"
+    (is (= "abc" (tracker/url-encode-binary (to-bytes "abc"))))
+    (is (= "test.file-name_v1~"
+           (tracker/url-encode-binary (to-bytes "test.file-name_v1~"))))))
+
+(deftest url-encode-binary-hex-test
+  (testing "url-encode-binary percent-encodes binary data"
+    (is (= "%12%AB%FF"
+           (tracker/url-encode-binary (byte-array [(unchecked-byte 0x12)
+                                                   (unchecked-byte 0xAB)
+                                                   (unchecked-byte 0xFF)]))))
+    (is (= "%00%01%FE"
+           (tracker/url-encode-binary (byte-array [(unchecked-byte 0x00)
+                                                   (unchecked-byte 0x01)
+                                                   (unchecked-byte 0xFE)]))))))
+
+(defspec url-encode-binary-generative-test 100
+  (testing "url-encode-binary is consistent and deterministic"
+    (prop/for-all [data (gen/fmap byte-array
+                                  (gen/vector (gen/choose -128 127) 1 50))]
+      ;; Property: encoding same data twice produces same result
+                  (= (tracker/url-encode-binary data)
+                     (tracker/url-encode-binary data)))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 5: HTTP Tracker Request Building
+;; ---------------------------------------------------------------------------
+
+(deftest build-http-announce-url-required-params-test
+  (testing "build-http-announce-url with required parameters only"
+    (let [info-hash (byte-array 20)  ; All zeros
+          peer-id (byte-array 20)
+          result (tracker/build-http-announce-url
+                  "http://tracker.example.com/announce"
+                  {:info-hash info-hash
+                   :peer-id peer-id
+                   :port 6881
+                   :uploaded 1024
+                   :downloaded 2048
+                   :left 4096})]
+      (is (contains? result :ok))
+      (let [url (:ok result)]
+        (is (.startsWith url "http://tracker.example.com/announce?"))
+        (is (.contains url "info_hash="))
+        (is (.contains url "peer_id="))
+        (is (.contains url "port=6881"))
+        (is (.contains url "uploaded=1024"))
+        (is (.contains url "downloaded=2048"))
+        (is (.contains url "left=4096"))))))
+
+(deftest build-http-announce-url-event-test
+  (testing "build-http-announce-url with event parameter"
+    (let [info-hash (byte-array 20)
+          peer-id (byte-array 20)
+          result (tracker/build-http-announce-url
+                  "http://tracker.example.com/announce"
+                  {:info-hash info-hash
+                   :peer-id peer-id
+                   :port 6881
+                   :uploaded 0
+                   :downloaded 0
+                   :left 1000000
+                   :event :started})]
+      (is (contains? result :ok))
+      (is (.contains (:ok result) "event=started")))))
+
+(deftest build-http-announce-url-existing-query-test
+  (testing "build-http-announce-url appends to existing query parameters"
+    (let [info-hash (byte-array 20)
+          peer-id (byte-array 20)
+          result (tracker/build-http-announce-url
+                  "http://tracker.example.com/announce?passkey=abc123"
+                  {:info-hash info-hash
+                   :peer-id peer-id
+                   :port 6881
+                   :uploaded 0
+                   :downloaded 0
+                   :left 0})]
+      (is (contains? result :ok))
+      (let [url (:ok result)]
+        (is (.contains url "passkey=abc123"))
+        (is (.contains url "&info_hash="))  ; Appended with &
+        (is (not (.contains url "?info_hash=")))))))  ; Not with ?
+
+(deftest build-http-announce-url-validation-test
+  (testing "build-http-announce-url validates input"
+    (let [invalid-hash (byte-array 10)  ; Wrong length!
+          peer-id (byte-array 20)
+          result (tracker/build-http-announce-url
+                  "http://tracker.example.com/announce"
+                  {:info-hash invalid-hash
+                   :peer-id peer-id
+                   :port 6881
+                   :uploaded 0
+                   :downloaded 0
+                   :left 0})]
+      (is (contains? result :error))
+      (is (= :invalid-input (:error result))))))
+
+(deftest build-http-announce-url-fdef-check-test
+  (testing "build-http-announce-url conforms to fdef spec"
+    (let [check-result (stest/check 'dev.cljtoc.protocol.tracker/build-http-announce-url
+                                    {:clojure.spec.test.check/opts {:num-tests 50}})]
+      (is (nil? (-> check-result first :failure))
+          "Function should pass all generative tests"))))
