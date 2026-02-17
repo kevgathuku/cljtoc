@@ -610,3 +610,132 @@
   :fn (s/or
        :success #(= :scrape (-> % :ret second :ok :action))
        :error   #(= :error (first (:ret %)))))
+
+;; ---------------------------------------------------------------------------
+;; UDP Tracker Request Building (BEP 15)
+;; ---------------------------------------------------------------------------
+
+(def ^:private udp-protocol-magic 0x41727101980)
+
+(def ^:private event->code
+  {nil 0, :completed 1, :started 2, :stopped 3})
+
+(defn build-udp-connect-request
+  "Build UDP tracker connect request (BEP 15).
+
+  Binary layout (big-endian, 16 bytes total):
+    Offset 0:  protocol_magic (8 bytes, 0x41727101980)
+    Offset 8:  action (4 bytes, 0 = connect)
+    Offset 12: transaction_id (4 bytes)
+
+  Parameters:
+    request - Map with :transaction-id
+
+  Returns:
+    {:ok byte-array} or {:error ...}"
+  [request]
+  (if-let [err (validate-input ::spec/udp-connect-request request)]
+    err
+    (let [{:keys [transaction-id]} request
+          buf (ByteBuffer/allocate 16)]
+      (.putLong buf udp-protocol-magic)
+      (.putInt  buf 0)
+      (.putInt  buf transaction-id)
+      {:ok (.array buf)})))
+
+(s/fdef build-udp-connect-request
+  :args (s/cat :request ::spec/udp-connect-request)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= 16 (alength ^bytes (-> % :ret second :ok)))
+       :error   #(= :error (first (:ret %)))))
+
+(defn build-udp-announce-request
+  "Build UDP tracker announce request (BEP 15).
+
+  Binary layout (big-endian, 98 bytes total):
+    Offset 0:  connection_id (8 bytes)
+    Offset 8:  action (4 bytes, 1 = announce)
+    Offset 12: transaction_id (4 bytes)
+    Offset 16: info_hash (20 bytes)
+    Offset 36: peer_id (20 bytes)
+    Offset 56: downloaded (8 bytes)
+    Offset 64: left (8 bytes)
+    Offset 72: uploaded (8 bytes)
+    Offset 80: event (4 bytes, 0=none 1=completed 2=started 3=stopped)
+    Offset 84: ip_address (4 bytes, 0 = use sender IP)
+    Offset 88: key (4 bytes)
+    Offset 92: num_want (4 bytes, -1 = no preference)
+    Offset 96: port (2 bytes)
+
+  Parameters:
+    request - Map with required/optional keys per ::spec/udp-announce-request
+
+  Returns:
+    {:ok byte-array} or {:error ...}"
+  [request]
+  (if-let [err (validate-input ::spec/udp-announce-request request)]
+    err
+    (let [{:keys [connection-id transaction-id info-hash peer-id
+                  downloaded left uploaded port event num-want]} request
+          buf (ByteBuffer/allocate 98)]
+      (.putLong  buf (long connection-id))
+      (.putInt   buf 1)
+      (.putInt   buf transaction-id)
+      (.put      buf ^bytes info-hash)
+      (.put      buf ^bytes peer-id)
+      (.putLong  buf downloaded)
+      (.putLong  buf left)
+      (.putLong  buf uploaded)
+      (.putInt   buf (get event->code event 0))
+      (.putInt   buf 0)
+      (.putInt   buf 0)
+      (.putInt   buf (or num-want -1))
+      (.putShort buf (unchecked-short port))
+      {:ok (.array buf)})))
+
+(s/fdef build-udp-announce-request
+  :args (s/cat :request ::spec/udp-announce-request)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= 98 (alength ^bytes (-> % :ret second :ok)))
+       :error   #(= :error (first (:ret %)))))
+
+(defn build-udp-scrape-request
+  "Build UDP tracker scrape request (BEP 15).
+
+  Binary layout (big-endian, 16+N*20 bytes):
+    Offset 0:    connection_id (8 bytes)
+    Offset 8:    action (4 bytes, 2 = scrape)
+    Offset 12:   transaction_id (4 bytes)
+    Offset 16+:  info_hashes (20 bytes each)
+
+  Parameters:
+    request - Map with :connection-id, :transaction-id, :info-hashes
+
+  Returns:
+    {:ok byte-array} or {:error ...}"
+  [request]
+  (if-let [err (validate-input ::spec/udp-scrape-request request)]
+    err
+    (let [{:keys [connection-id transaction-id info-hashes]} request
+          n   (count info-hashes)
+          buf (ByteBuffer/allocate (+ 16 (* 20 n)))]
+      (.putLong buf (long connection-id))
+      (.putInt  buf 2)
+      (.putInt  buf transaction-id)
+      (doseq [h info-hashes] (.put buf ^bytes h))
+      {:ok (.array buf)})))
+
+(s/fdef build-udp-scrape-request
+  :args (s/cat :request ::spec/udp-scrape-request)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(let [req (-> % :args :request)
+                       n   (count (:info-hashes req))]
+                   (= (+ 16 (* 20 n))
+                      (alength ^bytes (-> % :ret second :ok))))
+       :error   #(= :error (first (:ret %)))))
