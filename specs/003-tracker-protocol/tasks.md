@@ -164,21 +164,21 @@ Following plan.md structure:
 
 ### Tests for User Story 4
 
-- [ ] T068 [P] [US4] Write test for build-udp-connect-request (16 bytes with magic protocol ID) in tracker_test.clj
-- [ ] T069 [P] [US4] Write test for build-udp-announce-request (98 bytes) in tracker_test.clj
-- [ ] T070 [P] [US4] Write test for build-udp-scrape-request with multiple info-hashes in tracker_test.clj
-- [ ] T071 [P] [US4] Write generative round-trip test (build → parse → build) for UDP messages in tracker_test.clj
-- [ ] T072 [P] [US4] Write test for event code encoding (0=none, 1=completed, 2=started, 3=stopped) in tracker_test.clj
+- [x] T068 [P] [US4] Write test for build-udp-connect-request (16 bytes with magic protocol ID) in tracker_test.clj
+- [x] T069 [P] [US4] Write test for build-udp-announce-request (98 bytes) in tracker_test.clj
+- [x] T070 [P] [US4] Write test for build-udp-scrape-request with multiple info-hashes in tracker_test.clj
+- [x] T071 [P] [US4] Write generative round-trip test (build → parse → build) for UDP messages in tracker_test.clj
+- [x] T072 [P] [US4] Write test for event code encoding (0=none, 1=completed, 2=started, 3=stopped) in tracker_test.clj
 
 ### Implementation for User Story 4
 
-- [ ] T073 [P] [US4] Implement build-udp-connect-request function with magic protocol ID 0x41727101980 in tracker.clj
-- [ ] T074 [P] [US4] Implement build-udp-announce-request function (98 bytes, big-endian) in tracker.clj
-- [ ] T075 [P] [US4] Implement build-udp-scrape-request function (16 + N*20 bytes) in tracker.clj
-- [ ] T076 [US4] Add event code encoding logic in build-udp-announce-request in tracker.clj
-- [ ] T077 [US4] Define spec ::udp-tracker-request for UDP requests in tracker/spec.clj
-- [ ] T078 [US4] Add input validation at UDP building function boundaries using specs
-- [ ] T079 [US4] Add helper function for writing big-endian integers using ByteBuffer.putInt/putLong in tracker.clj
+- [x] T073 [P] [US4] Implement build-udp-connect-request function with magic protocol ID 0x41727101980 in tracker.clj
+- [x] T074 [P] [US4] Implement build-udp-announce-request function (98 bytes, big-endian) in tracker.clj
+- [x] T075 [P] [US4] Implement build-udp-scrape-request function (16 + N*20 bytes) in tracker.clj
+- [x] T076 [US4] Add event code encoding logic in build-udp-announce-request in tracker.clj
+- [x] T077 [US4] Define spec ::udp-tracker-request for UDP requests in tracker/spec.clj
+- [x] T078 [US4] Add input validation at UDP building function boundaries using specs
+- [x] T079 [US4] Add helper function for writing big-endian integers using ByteBuffer.putInt/putLong in tracker.clj
 
 **Checkpoint**: User Stories 3 AND 4 complete - full UDP tracker protocol cycle (build request → parse response)
 
