@@ -397,3 +397,246 @@
                                     {:clojure.spec.test.check/opts {:num-tests 50}})]
       (is (nil? (-> check-result first :failure))
           "Function should pass all generative tests"))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 6: UDP tracker response parsing (BEP 15)
+;; ---------------------------------------------------------------------------
+
+;; Binary builder helpers (test-only infrastructure)
+
+(defn- make-connect-response-bytes [action transaction-id connection-id]
+  (-> (java.nio.ByteBuffer/allocate 16)
+      (.putInt action) (.putInt transaction-id) (.putLong connection-id)
+      .array))
+
+(defn- make-announce-response-bytes
+  [action transaction-id interval leechers seeders peer-bytes]
+  (let [buf (java.nio.ByteBuffer/allocate (+ 20 (alength peer-bytes)))]
+    (.putInt buf action) (.putInt buf transaction-id)
+    (.putInt buf interval) (.putInt buf leechers) (.putInt buf seeders)
+    (.put buf peer-bytes)
+    (.array buf)))
+
+(defn- make-error-response-bytes [action transaction-id ^String message]
+  (let [msg-bytes (.getBytes message "UTF-8")
+        buf (java.nio.ByteBuffer/allocate (+ 8 (alength msg-bytes)))]
+    (.putInt buf action) (.putInt buf transaction-id)
+    (.put buf msg-bytes)
+    (.array buf)))
+
+(defn- make-scrape-response-bytes [action transaction-id scrape-entries]
+  (let [buf (java.nio.ByteBuffer/allocate (+ 8 (* 12 (count scrape-entries))))]
+    (.putInt buf action) (.putInt buf transaction-id)
+    (doseq [{:keys [seeders completed leechers]} scrape-entries]
+      (.putInt buf seeders) (.putInt buf completed) (.putInt buf leechers))
+    (.array buf)))
+
+;; T052: parse-udp-connect-response — valid message
+(deftest parse-udp-connect-response-valid-test
+  (testing "parses valid 16-byte connect response"
+    (let [bytes (make-connect-response-bytes 0 42 0x41727101980)
+          result (tracker/parse-udp-connect-response bytes)]
+      (is (contains? result :ok))
+      (is (= :connect (:action (:ok result))))
+      (is (= 42 (:transaction-id (:ok result))))
+      (is (= 0x41727101980 (:connection-id (:ok result))))))
+
+  (testing "parses connect response with negative transaction-id (signed int)"
+    (let [bytes (make-connect-response-bytes 0 -1 100)
+          result (tracker/parse-udp-connect-response bytes)]
+      (is (contains? result :ok))
+      (is (= -1 (:transaction-id (:ok result))))
+      (is (= 100 (:connection-id (:ok result)))))))
+
+;; T053: parse-udp-connect-response — invalid action code
+(deftest parse-udp-connect-response-invalid-action-test
+  (testing "returns error for wrong action code"
+    (let [bytes (make-connect-response-bytes 1 42 100)
+          result (tracker/parse-udp-connect-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-action-code (:error result)))))
+
+  (testing "returns error for wrong length (< 16 bytes)"
+    (let [bytes (byte-array 8)
+          result (tracker/parse-udp-connect-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-message-length (:error result)))))
+
+  (testing "returns error for wrong length (> 16 bytes)"
+    (let [bytes (byte-array 20)
+          result (tracker/parse-udp-connect-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-message-length (:error result)))))
+
+  (testing "returns error for non-bytes input"
+    (let [result (tracker/parse-udp-connect-response "not bytes")]
+      (is (contains? result :error))
+      (is (= :invalid-input (:error result))))))
+
+;; T054, T055: parse-udp-announce-response
+(deftest parse-udp-announce-response-test
+  (testing "parses announce response with no peers"
+    (let [bytes (make-announce-response-bytes 1 99 1800 10 50 (byte-array 0))
+          result (tracker/parse-udp-announce-response bytes)]
+      (is (contains? result :ok))
+      (is (= :announce (:action (:ok result))))
+      (is (= 99 (:transaction-id (:ok result))))
+      (is (= 1800 (:interval (:ok result))))
+      (is (= 10 (:leechers (:ok result))))
+      (is (= 50 (:seeders (:ok result))))
+      (is (= [] (:peers (:ok result))))))
+
+  (testing "parses announce response with IPv4 peers"
+    (let [peer-bytes (byte-array [192 168 1 1 0x1A 0xE1])   ; 192.168.1.1:6881
+          bytes (make-announce-response-bytes 1 7 900 3 12 peer-bytes)
+          result (tracker/parse-udp-announce-response bytes)]
+      (is (contains? result :ok))
+      (is (= 1 (count (:peers (:ok result)))))
+      (is (= "192.168.1.1" (:ip (first (:peers (:ok result))))))
+      (is (= 6881 (:port (first (:peers (:ok result))))))))
+
+  (testing "returns error for wrong action code"
+    (let [bytes (make-announce-response-bytes 0 7 900 3 12 (byte-array 0))
+          result (tracker/parse-udp-announce-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-action-code (:error result)))))
+
+  (testing "returns error for too-short message"
+    (let [bytes (byte-array 10)
+          result (tracker/parse-udp-announce-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-message-length (:error result)))))
+
+  (testing "returns error for non-bytes input"
+    (let [result (tracker/parse-udp-announce-response nil)]
+      (is (contains? result :error)))))
+
+;; T056: parse-udp-error-response
+(deftest parse-udp-error-response-test
+  (testing "parses error response with message"
+    (let [bytes (make-error-response-bytes 3 55 "Torrent not registered")
+          result (tracker/parse-udp-error-response bytes)]
+      (is (contains? result :ok))
+      (is (= :error (:action (:ok result))))
+      (is (= 55 (:transaction-id (:ok result))))
+      (is (false? (:success (:ok result))))
+      (is (= "Torrent not registered" (:failure-reason (:ok result))))))
+
+  (testing "parses error response with empty message"
+    (let [bytes (make-error-response-bytes 3 1 "")
+          result (tracker/parse-udp-error-response bytes)]
+      (is (contains? result :ok))
+      (is (= "" (:failure-reason (:ok result))))))
+
+  (testing "returns error for wrong action code"
+    (let [bytes (make-error-response-bytes 0 1 "msg")
+          result (tracker/parse-udp-error-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-action-code (:error result)))))
+
+  (testing "returns error for too-short message"
+    (let [bytes (byte-array 5)
+          result (tracker/parse-udp-error-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-message-length (:error result)))))
+
+  (testing "returns error for non-bytes input"
+    (let [result (tracker/parse-udp-error-response "not bytes")]
+      (is (contains? result :error))
+      (is (= :invalid-input (:error result))))))
+
+;; T057: parse-udp-scrape-response
+(deftest parse-udp-scrape-response-test
+  (testing "parses scrape response with one torrent"
+    (let [entries [{:seeders 100 :completed 500 :leechers 20}]
+          bytes (make-scrape-response-bytes 2 77 entries)
+          result (tracker/parse-udp-scrape-response bytes)]
+      (is (contains? result :ok))
+      (is (= :scrape (:action (:ok result))))
+      (is (= 77 (:transaction-id (:ok result))))
+      (is (= 1 (count (:torrents (:ok result)))))
+      (is (= 100 (:seeders (first (:torrents (:ok result))))))
+      (is (= 500 (:completed (first (:torrents (:ok result))))))
+      (is (= 20 (:leechers (first (:torrents (:ok result))))))))
+
+  (testing "parses scrape response with multiple torrents"
+    (let [entries [{:seeders 10 :completed 100 :leechers 5}
+                   {:seeders 20 :completed 200 :leechers 8}]
+          bytes (make-scrape-response-bytes 2 1 entries)
+          result (tracker/parse-udp-scrape-response bytes)]
+      (is (contains? result :ok))
+      (is (= 2 (count (:torrents (:ok result)))))
+      (is (= 20 (:seeders (second (:torrents (:ok result))))))
+      (is (= 200 (:completed (second (:torrents (:ok result))))))))
+
+  (testing "parses scrape response with no torrents"
+    (let [bytes (make-scrape-response-bytes 2 1 [])
+          result (tracker/parse-udp-scrape-response bytes)]
+      (is (contains? result :ok))
+      (is (= [] (:torrents (:ok result))))))
+
+  (testing "returns error for wrong action code"
+    (let [bytes (make-scrape-response-bytes 1 1 [])
+          result (tracker/parse-udp-scrape-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-action-code (:error result)))))
+
+  (testing "returns error for wrong length (not 8+12N)"
+    (let [bytes (byte-array 11)   ; 11 bytes: not 8+12N for any N
+          result (tracker/parse-udp-scrape-response bytes)]
+      (is (contains? result :error))
+      (is (= :invalid-message-length (:error result)))))
+
+  (testing "returns error for non-bytes input"
+    (let [result (tracker/parse-udp-scrape-response "not bytes")]
+      (is (contains? result :error))
+      (is (= :invalid-input (:error result))))))
+
+;; T058: Generative tests for UDP parsers
+(defspec parse-udp-connect-response-round-trip 100
+  (prop/for-all [txid gen/int
+                 cid  gen/large-integer]
+                (let [bytes (make-connect-response-bytes 0 txid cid)
+                      result (tracker/parse-udp-connect-response bytes)]
+                  (and (contains? result :ok)
+                       (= txid (:transaction-id (:ok result)))
+                       (= cid  (:connection-id  (:ok result)))))))
+
+(defspec parse-udp-announce-response-round-trip 50
+  (prop/for-all [txid gen/int
+                 interval (gen/fmap inc gen/nat)
+                 leechers gen/nat
+                 seeders  gen/nat]
+                (let [bytes (make-announce-response-bytes 1 txid interval leechers seeders (byte-array 0))
+                      result (tracker/parse-udp-announce-response bytes)]
+                  (and (contains? result :ok)
+                       (= txid     (:transaction-id (:ok result)))
+                       (= interval (:interval (:ok result)))
+                       (= leechers (:leechers (:ok result)))
+                       (= seeders  (:seeders  (:ok result)))))))
+
+(defspec parse-udp-scrape-response-round-trip 50
+  (prop/for-all [txid gen/int
+                 entries (gen/vector
+                          (gen/fmap (fn [[s c l]] {:seeders s :completed c :leechers l})
+                                    (gen/tuple gen/nat gen/nat gen/nat))
+                          0 5)]
+                (let [bytes (make-scrape-response-bytes 2 txid entries)
+                      result (tracker/parse-udp-scrape-response bytes)]
+                  (and (contains? result :ok)
+                       (= txid (:transaction-id (:ok result)))
+                       (= (count entries) (count (:torrents (:ok result))))
+                       (every? (fn [[expected actual]]
+                                 (and (= (:seeders expected)   (:seeders actual))
+                                      (= (:completed expected) (:completed actual))
+                                      (= (:leechers expected)  (:leechers actual))))
+                               (map vector entries (:torrents (:ok result))))))))
+
+(defspec parse-udp-error-response-round-trip 50
+  (prop/for-all [txid gen/int
+                 msg  gen/string-ascii]
+                (let [bytes (make-error-response-bytes 3 txid msg)
+                      result (tracker/parse-udp-error-response bytes)]
+                  (and (contains? result :ok)
+                       (= txid (:transaction-id (:ok result)))
+                       (= msg  (:failure-reason (:ok result)))))))

@@ -415,3 +415,198 @@
                        (.startsWith result-url tracker-url)))
         ;; If error, return value should match error pattern
        :error #(= :error (first (:ret %)))))
+
+;; ---------------------------------------------------------------------------
+;; UDP Tracker Response Parsing (BEP 15)
+;; ---------------------------------------------------------------------------
+
+(defn parse-udp-connect-response
+  "Parse UDP tracker connect response (BEP 15).
+
+  Binary layout (big-endian, 16 bytes total):
+    Offset 0: action (4 bytes, must be 0)
+    Offset 4: transaction_id (4 bytes)
+    Offset 8: connection_id (8 bytes)
+
+  Parameters:
+    response-bytes - 16-byte byte array
+
+  Returns:
+    {:ok {:action :connect, :transaction-id int, :connection-id long}} or {:error ...}"
+  [response-bytes]
+  (if-let [err (validate-input bytes? response-bytes)]
+    err
+    (if (not= 16 (alength ^bytes response-bytes))
+      (tracker-error :invalid-message-length "Connect response must be 16 bytes"
+                     :length (alength ^bytes response-bytes))
+      (let [buf (ByteBuffer/wrap response-bytes)
+            action (.getInt buf)
+            transaction-id (.getInt buf)
+            connection-id (.getLong buf)]
+        (if (not= 0 action)
+          (tracker-error :invalid-action-code "Expected action 0 (connect)"
+                         :action action)
+          {:ok {:action :connect
+                :transaction-id transaction-id
+                :connection-id connection-id}})))))
+
+(s/fdef parse-udp-connect-response
+  :args (s/cat :response-bytes bytes?)
+  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+                             #(s/valid? ::spec/udp-connect-response (:ok %)))
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= :connect (-> % :ret second :ok :action))
+       :error   #(= :error (first (:ret %)))))
+
+(defn parse-udp-announce-response
+  "Parse UDP tracker announce response (BEP 15).
+
+  Binary layout (big-endian, 20+ bytes):
+    Offset 0:  action (4 bytes, must be 1)
+    Offset 4:  transaction_id (4 bytes)
+    Offset 8:  interval (4 bytes)
+    Offset 12: leechers (4 bytes)
+    Offset 16: seeders (4 bytes)
+    Offset 20: peers (6 bytes each for IPv4, 18 bytes each for IPv6)
+
+  Parameters:
+    response-bytes - 20+ byte array
+
+  Returns:
+    {:ok {:action :announce, :transaction-id, :interval, :leechers, :seeders, :peers [...]}}
+    or {:error ...}"
+  [response-bytes]
+  (if-let [err (validate-input bytes? response-bytes)]
+    err
+    (let [len (alength ^bytes response-bytes)]
+      (if (< len 20)
+        (tracker-error :invalid-message-length "Announce response must be >= 20 bytes"
+                       :length len)
+        (let [buf (ByteBuffer/wrap response-bytes)
+              action (.getInt buf)
+              transaction-id (.getInt buf)
+              interval (.getInt buf)
+              leechers (.getInt buf)
+              seeders (.getInt buf)]
+          (if (not= 1 action)
+            (tracker-error :invalid-action-code "Expected action 1 (announce)"
+                           :action action)
+            (let [peer-bytes (byte-array (- len 20))
+                  _ (.get buf peer-bytes)
+                  peers-result (if (and (pos? (alength peer-bytes))
+                                        (= 0 (mod (alength peer-bytes) 18))
+                                        (not= 0 (mod (alength peer-bytes) 6)))
+                                 (parse-compact-peers-ipv6 peer-bytes)
+                                 (parse-compact-peers-ipv4 peer-bytes))]
+              (if (:error peers-result)
+                peers-result
+                {:ok {:action :announce
+                      :transaction-id transaction-id
+                      :interval interval
+                      :leechers leechers
+                      :seeders seeders
+                      :peers (:ok peers-result)}}))))))))
+
+(s/fdef parse-udp-announce-response
+  :args (s/cat :response-bytes bytes?)
+  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+                             #(s/valid? ::spec/udp-announce-response (:ok %)))
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= :announce (-> % :ret second :ok :action))
+       :error   #(= :error (first (:ret %)))))
+
+(defn parse-udp-error-response
+  "Parse UDP tracker error response (BEP 15).
+
+  Binary layout (big-endian, 8+ bytes):
+    Offset 0: action (4 bytes, must be 3)
+    Offset 4: transaction_id (4 bytes)
+    Offset 8: failure_reason (UTF-8 string, remainder of buffer)
+
+  Parameters:
+    response-bytes - 8+ byte array
+
+  Returns:
+    {:ok {:action :error, :transaction-id, :success false, :failure-reason \"...\"}}
+    or {:error ...}"
+  [response-bytes]
+  (if-let [err (validate-input bytes? response-bytes)]
+    err
+    (let [len (alength ^bytes response-bytes)]
+      (if (< len 8)
+        (tracker-error :invalid-message-length "Error response must be >= 8 bytes"
+                       :length len)
+        (let [buf (ByteBuffer/wrap response-bytes)
+              action (.getInt buf)
+              transaction-id (.getInt buf)
+              msg-bytes (byte-array (- len 8))
+              _ (.get buf msg-bytes)
+              failure-reason (String. msg-bytes "UTF-8")]
+          (if (not= 3 action)
+            (tracker-error :invalid-action-code "Expected action 3 (error)"
+                           :action action)
+            {:ok {:action :error
+                  :transaction-id transaction-id
+                  :success false
+                  :failure-reason failure-reason}}))))))
+
+(s/fdef parse-udp-error-response
+  :args (s/cat :response-bytes bytes?)
+  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+                             #(s/valid? ::spec/udp-error-response (:ok %)))
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= :error (-> % :ret second :ok :action))
+       :error   #(= :error (first (:ret %)))))
+
+(defn parse-udp-scrape-response
+  "Parse UDP tracker scrape response (BEP 15).
+
+  Binary layout (big-endian, 8+N*12 bytes):
+    Offset 0:       action (4 bytes, must be 2)
+    Offset 4:       transaction_id (4 bytes)
+    Offset 8+i*12:  seeders (4 bytes) per torrent i
+    Offset 12+i*12: completed (4 bytes) per torrent i
+    Offset 16+i*12: leechers (4 bytes) per torrent i
+
+  Parameters:
+    response-bytes - (8+N*12) byte array
+
+  Returns:
+    {:ok {:action :scrape, :transaction-id, :torrents [{:seeders, :completed, :leechers} ...]}}
+    or {:error ...}"
+  [response-bytes]
+  (if-let [err (validate-input bytes? response-bytes)]
+    err
+    (let [len (alength ^bytes response-bytes)]
+      (if (or (< len 8) (not= 0 (mod (- len 8) 12)))
+        (tracker-error :invalid-message-length "Scrape response must be 8+N*12 bytes"
+                       :length len)
+        (let [buf (ByteBuffer/wrap response-bytes)
+              action (.getInt buf)
+              transaction-id (.getInt buf)]
+          (if (not= 2 action)
+            (tracker-error :invalid-action-code "Expected action 2 (scrape)"
+                           :action action)
+            (let [torrent-count (/ (- len 8) 12)
+                  torrents (vec (for [_ (range torrent-count)]
+                                  (let [seeders (.getInt buf)
+                                        completed (.getInt buf)
+                                        leechers (.getInt buf)]
+                                    {:seeders seeders
+                                     :completed completed
+                                     :leechers leechers})))]
+              {:ok {:action :scrape
+                    :transaction-id transaction-id
+                    :torrents torrents}})))))))
+
+(s/fdef parse-udp-scrape-response
+  :args (s/cat :response-bytes bytes?)
+  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+                             #(s/valid? ::spec/udp-scrape-response (:ok %)))
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= :scrape (-> % :ret second :ok :action))
+       :error   #(= :error (first (:ret %)))))

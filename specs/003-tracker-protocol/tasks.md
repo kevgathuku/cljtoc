@@ -132,25 +132,25 @@ Following plan.md structure:
 
 ### Tests for User Story 3
 
-- [ ] T052 [P] [US3] Write test for parse-udp-connect-response with valid 16-byte message in tracker_test.clj
-- [ ] T053 [P] [US3] Write test for parse-udp-connect-response with invalid action code in tracker_test.clj
-- [ ] T054 [P] [US3] Write test for parse-udp-announce-response with peers in tracker_test.clj
-- [ ] T055 [P] [US3] Write test for parse-udp-announce-response extracting interval/leechers/seeders in tracker_test.clj
-- [ ] T056 [P] [US3] Write test for parse-udp-error-response with error message in tracker_test.clj
-- [ ] T057 [P] [US3] Write test for parse-udp-scrape-response with torrent statistics in tracker_test.clj
-- [ ] T058 [P] [US3] Write generative test for UDP message parsing (property: big-endian integers) in tracker_test.clj
+- [x] T052 [P] [US3] Write test for parse-udp-connect-response with valid 16-byte message in tracker_test.clj
+- [x] T053 [P] [US3] Write test for parse-udp-connect-response with invalid action code in tracker_test.clj
+- [x] T054 [P] [US3] Write test for parse-udp-announce-response with peers in tracker_test.clj
+- [x] T055 [P] [US3] Write test for parse-udp-announce-response extracting interval/leechers/seeders in tracker_test.clj
+- [x] T056 [P] [US3] Write test for parse-udp-error-response with error message in tracker_test.clj
+- [x] T057 [P] [US3] Write test for parse-udp-scrape-response with torrent statistics in tracker_test.clj
+- [x] T058 [P] [US3] Write generative test for UDP message parsing (property: big-endian integers) in tracker_test.clj
 
 ### Implementation for User Story 3
 
-- [ ] T059 [P] [US3] Implement parse-udp-connect-response function using ByteBuffer (16 bytes) in tracker.clj
-- [ ] T060 [P] [US3] Implement parse-udp-announce-response function using ByteBuffer (20+ bytes) in tracker.clj
-- [ ] T061 [P] [US3] Add compact peer parsing (IPv4) to parse-udp-announce-response in tracker.clj
-- [ ] T062 [P] [US3] Implement parse-udp-error-response function (8 bytes + error string) in tracker.clj
-- [ ] T063 [P] [US3] Implement parse-udp-scrape-response function (8 + N*12 bytes) in tracker.clj
-- [ ] T064 [US3] Add transaction ID validation in all UDP response parsers in tracker.clj
-- [ ] T065 [US3] Add action code validation in all UDP response parsers in tracker.clj
-- [ ] T066 [US3] Define spec ::udp-tracker-response for UDP responses in tracker/spec.clj
-- [ ] T067 [US3] Add input validation at UDP parsing function boundaries using specs
+- [x] T059 [P] [US3] Implement parse-udp-connect-response function using ByteBuffer (16 bytes) in tracker.clj
+- [x] T060 [P] [US3] Implement parse-udp-announce-response function using ByteBuffer (20+ bytes) in tracker.clj
+- [x] T061 [P] [US3] Add compact peer parsing (IPv4) to parse-udp-announce-response in tracker.clj
+- [x] T062 [P] [US3] Implement parse-udp-error-response function (8 bytes + error string) in tracker.clj
+- [x] T063 [P] [US3] Implement parse-udp-scrape-response function (8 + N*12 bytes) in tracker.clj
+- [x] T064 [US3] Add transaction ID validation in all UDP response parsers in tracker.clj
+- [x] T065 [US3] Add action code validation in all UDP response parsers in tracker.clj
+- [x] T066 [US3] Define spec ::udp-tracker-response for UDP responses in tracker/spec.clj
+- [x] T067 [US3] Add input validation at UDP parsing function boundaries using specs
 
 **Checkpoint**: User Story 3 complete - can parse all UDP tracker protocol messages
 

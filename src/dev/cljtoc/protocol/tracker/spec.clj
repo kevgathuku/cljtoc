@@ -115,6 +115,37 @@
                    ::no-peer-id ::tracker-id]))
 
 ;; ---------------------------------------------------------------------------
+;; UDP tracker field specs (BEP 15)
+;; ---------------------------------------------------------------------------
+
+(s/def ::transaction-id int?)      ; 32-bit signed int (opaque, echoed by tracker)
+(s/def ::connection-id int?)       ; 64-bit signed long (opaque identifier from tracker)
+(s/def ::leechers nat-int?)
+(s/def ::seeders nat-int?)
+(s/def ::completed nat-int?)
+(s/def ::action #{:connect :announce :scrape :error})
+
+;; Scrape entry per torrent
+(s/def ::scrape-stat
+  (s/keys :req-un [::seeders ::completed ::leechers]))
+(s/def ::torrents (s/coll-of ::scrape-stat))
+
+;; Per-response composite specs
+(s/def ::udp-connect-response
+  (s/keys :req-un [::action ::transaction-id ::connection-id]))
+(s/def ::udp-announce-response
+  (s/keys :req-un [::action ::transaction-id ::interval
+                   ::leechers ::seeders ::peers]))
+(s/def ::udp-error-response
+  (s/keys :req-un [::action ::transaction-id ::failure-reason ::success]))
+(s/def ::udp-scrape-response
+  (s/keys :req-un [::action ::transaction-id ::torrents]))
+
+;; Generators for UDP types
+(def gen-transaction-id gen/int)
+(def gen-connection-id gen/large-integer)
+
+;; ---------------------------------------------------------------------------
 ;; Result/return value specs
 ;; ---------------------------------------------------------------------------
 
