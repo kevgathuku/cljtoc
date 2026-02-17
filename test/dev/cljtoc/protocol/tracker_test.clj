@@ -640,3 +640,214 @@
                   (and (contains? result :ok)
                        (= txid (:transaction-id (:ok result)))
                        (= msg  (:failure-reason (:ok result)))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 7: UDP tracker request building (BEP 15) — T068-T072
+;; ---------------------------------------------------------------------------
+
+;; T068: build-udp-connect-request
+(deftest build-udp-connect-request-test
+  (testing "produces exactly 16 bytes"
+    (let [result (tracker/build-udp-connect-request {:transaction-id 42})]
+      (is (contains? result :ok))
+      (is (= 16 (alength ^bytes (:ok result))))))
+
+  (testing "encodes protocol magic at offset 0"
+    (let [result (tracker/build-udp-connect-request {:transaction-id 99})
+          buf    (java.nio.ByteBuffer/wrap (:ok result))]
+      (is (= 0x41727101980 (.getLong buf)))))
+
+  (testing "encodes action=0 at offset 8"
+    (let [result (tracker/build-udp-connect-request {:transaction-id 1})
+          buf    (java.nio.ByteBuffer/wrap (:ok result))]
+      (.getLong buf)   ; skip magic
+      (is (= 0 (.getInt buf)))))
+
+  (testing "encodes transaction-id at offset 12"
+    (let [txid   12345
+          result (tracker/build-udp-connect-request {:transaction-id txid})
+          buf    (java.nio.ByteBuffer/wrap (:ok result))]
+      (.getLong buf)   ; skip magic
+      (.getInt buf)    ; skip action
+      (is (= txid (.getInt buf)))))
+
+  (testing "returns error for missing transaction-id"
+    (let [result (tracker/build-udp-connect-request {})]
+      (is (contains? result :error))
+      (is (= :invalid-input (:error result))))))
+
+;; T069: build-udp-announce-request
+(deftest build-udp-announce-request-test
+  (let [info-hash (byte-array 20)
+        peer-id   (byte-array 20)
+        base-req  {:connection-id  0x41727101980
+                   :transaction-id 7
+                   :info-hash      info-hash
+                   :peer-id        peer-id
+                   :downloaded     1000
+                   :left           500
+                   :uploaded       200
+                   :port           6881}]
+
+    (testing "produces exactly 98 bytes"
+      (let [result (tracker/build-udp-announce-request base-req)]
+        (is (contains? result :ok))
+        (is (= 98 (alength ^bytes (:ok result))))))
+
+    (testing "encodes connection-id at offset 0"
+      (let [result (tracker/build-udp-announce-request base-req)
+            buf    (java.nio.ByteBuffer/wrap (:ok result))]
+        (is (= 0x41727101980 (.getLong buf)))))
+
+    (testing "encodes action=1 at offset 8"
+      (let [result (tracker/build-udp-announce-request base-req)
+            buf    (java.nio.ByteBuffer/wrap (:ok result))]
+        (.getLong buf)  ; connection-id
+        (is (= 1 (.getInt buf)))))
+
+    (testing "encodes transaction-id at offset 12"
+      (let [result (tracker/build-udp-announce-request base-req)
+            buf    (java.nio.ByteBuffer/wrap (:ok result))]
+        (.getLong buf)  ; connection-id
+        (.getInt buf)   ; action
+        (is (= 7 (.getInt buf)))))
+
+    (testing "encodes event :started as code 2 at offset 80"
+      (let [result (tracker/build-udp-announce-request (assoc base-req :event :started))
+            buf    (java.nio.ByteBuffer/wrap (:ok result))]
+        ;; Skip to offset 80
+        (.getLong buf) (.getInt buf) (.getInt buf)  ; 0-15
+        (let [ih (byte-array 20)] (.get buf ih))    ; 16-35 info-hash
+        (let [pi (byte-array 20)] (.get buf pi))    ; 36-55 peer-id
+        (.getLong buf) (.getLong buf) (.getLong buf) ; 56-79 downloaded/left/uploaded
+        (is (= 2 (.getInt buf)))))
+
+    (testing "defaults event code to 0 when :event is nil"
+      (let [result (tracker/build-udp-announce-request base-req)
+            buf    (java.nio.ByteBuffer/wrap (:ok result))]
+        (.getLong buf) (.getInt buf) (.getInt buf)
+        (let [ih (byte-array 20)] (.get buf ih))
+        (let [pi (byte-array 20)] (.get buf pi))
+        (.getLong buf) (.getLong buf) (.getLong buf)
+        (is (= 0 (.getInt buf)))))
+
+    (testing "returns error for missing required field"
+      (let [result (tracker/build-udp-announce-request (dissoc base-req :port))]
+        (is (contains? result :error))
+        (is (= :invalid-input (:error result)))))
+
+    (testing "returns error for invalid info-hash length"
+      (let [result (tracker/build-udp-announce-request
+                    (assoc base-req :info-hash (byte-array 10)))]
+        (is (contains? result :error))
+        (is (= :invalid-input (:error result)))))))
+
+;; T070: build-udp-scrape-request
+(deftest build-udp-scrape-request-test
+  (let [cid    0x41727101980
+        txid   55
+        hash1  (byte-array 20)
+        hash2  (byte-array 20)
+        hash3  (byte-array 20)]
+
+    (testing "1 info-hash → 36 bytes (16+20)"
+      (let [result (tracker/build-udp-scrape-request
+                    {:connection-id cid :transaction-id txid :info-hashes [hash1]})]
+        (is (contains? result :ok))
+        (is (= 36 (alength ^bytes (:ok result))))))
+
+    (testing "3 info-hashes → 76 bytes (16+60)"
+      (let [result (tracker/build-udp-scrape-request
+                    {:connection-id cid :transaction-id txid
+                     :info-hashes [hash1 hash2 hash3]})]
+        (is (contains? result :ok))
+        (is (= 76 (alength ^bytes (:ok result))))))
+
+    (testing "encodes action=2 at offset 8"
+      (let [result (tracker/build-udp-scrape-request
+                    {:connection-id cid :transaction-id txid :info-hashes [hash1]})
+            buf    (java.nio.ByteBuffer/wrap (:ok result))]
+        (.getLong buf)  ; connection-id
+        (is (= 2 (.getInt buf)))))
+
+    (testing "info-hash bytes appear at offset 16"
+      (let [marker (byte-array (map unchecked-byte (range 20)))
+            result (tracker/build-udp-scrape-request
+                    {:connection-id cid :transaction-id txid :info-hashes [marker]})
+            bytes  (:ok result)]
+        (is (= (seq marker) (seq (java.util.Arrays/copyOfRange bytes 16 36))))))
+
+    (testing "returns error for empty info-hashes"
+      (let [result (tracker/build-udp-scrape-request
+                    {:connection-id cid :transaction-id txid :info-hashes []})]
+        (is (contains? result :error))
+        (is (= :invalid-input (:error result)))))
+
+    (testing "returns error for missing info-hashes key"
+      (let [result (tracker/build-udp-scrape-request
+                    {:connection-id cid :transaction-id txid})]
+        (is (contains? result :error))
+        (is (= :invalid-input (:error result)))))))
+
+;; T072: event code encoding
+(deftest build-udp-announce-event-codes-test
+  (let [base {:connection-id 1 :transaction-id 1 :info-hash (byte-array 20)
+              :peer-id (byte-array 20) :downloaded 0 :left 0 :uploaded 0 :port 6881}]
+    (letfn [(read-event-code [req]
+              (let [buf (java.nio.ByteBuffer/wrap (:ok (tracker/build-udp-announce-request req)))]
+                (.getLong buf) (.getInt buf) (.getInt buf)
+                (let [ih (byte-array 20)] (.get buf ih))
+                (let [pi (byte-array 20)] (.get buf pi))
+                (.getLong buf) (.getLong buf) (.getLong buf)
+                (.getInt buf)))]
+      (testing "nil event → code 0"
+        (is (= 0 (read-event-code base))))
+      (testing ":completed → code 1"
+        (is (= 1 (read-event-code (assoc base :event :completed)))))
+      (testing ":started → code 2"
+        (is (= 2 (read-event-code (assoc base :event :started)))))
+      (testing ":stopped → code 3"
+        (is (= 3 (read-event-code (assoc base :event :stopped))))))))
+
+;; T071: generative round-trip tests
+(defspec build-udp-connect-request-round-trip 100
+  (prop/for-all [txid gen/int]
+                (let [result (tracker/build-udp-connect-request {:transaction-id txid})]
+                  (and (contains? result :ok)
+                       (let [buf (java.nio.ByteBuffer/wrap (:ok result))]
+                         (and (= 16 (alength ^bytes (:ok result)))
+                              (= 0x41727101980 (.getLong buf))
+                              (= 0 (.getInt buf))
+                              (= txid (.getInt buf))))))))
+
+(defspec build-udp-announce-request-round-trip 50
+  (prop/for-all [cid    gen/large-integer
+                 txid   gen/int
+                 port   (gen/choose 1 65535)
+                 dld    gen/nat
+                 lft    gen/nat
+                 upl    gen/nat]
+                (let [req    {:connection-id cid :transaction-id txid
+                              :info-hash (byte-array 20) :peer-id (byte-array 20)
+                              :downloaded dld :left lft :uploaded upl :port port}
+                      result (tracker/build-udp-announce-request req)]
+                  (and (contains? result :ok)
+                       (= 98 (alength ^bytes (:ok result)))
+                       (let [buf (java.nio.ByteBuffer/wrap (:ok result))]
+                         (and (= (long cid) (.getLong buf))
+                              (= 1 (.getInt buf))
+                              (= txid (.getInt buf))))))))
+
+(defspec build-udp-scrape-request-round-trip 50
+  (prop/for-all [cid      gen/large-integer
+                 txid     gen/int
+                 n-hashes (gen/choose 1 5)]
+                (let [hashes (vec (repeatedly n-hashes #(byte-array 20)))
+                      req    {:connection-id cid :transaction-id txid :info-hashes hashes}
+                      result (tracker/build-udp-scrape-request req)]
+                  (and (contains? result :ok)
+                       (= (+ 16 (* 20 n-hashes)) (alength ^bytes (:ok result)))
+                       (let [buf (java.nio.ByteBuffer/wrap (:ok result))]
+                         (and (= (long cid) (.getLong buf))
+                              (= 2 (.getInt buf))
+                              (= txid (.getInt buf))))))))
