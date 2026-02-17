@@ -4,7 +4,8 @@
   Provides specs for all tracker entities with custom generators for
   protocol-aware generative testing."
   (:require [clojure.spec.alpha :as s]
-            [clojure.spec.gen.alpha :as gen]))
+            [clojure.spec.gen.alpha :as gen]
+            [clojure.spec.test.alpha :as stest]))
 
 ;; ---------------------------------------------------------------------------
 ;; Custom generators for protocol-aware test data
@@ -177,3 +178,30 @@
 (s/def ::error-result
   (s/keys :req-un [::error ::message]
           :opt-un [::spec-explain]))
+
+;; US5: TrackerError spec (T088)
+;; Documents the shape of all tracker error maps (consistent with tracker-error fn)
+(s/def ::tracker-error
+  (s/keys :req-un [::error ::message]
+          :opt-un [::spec-explain]))
+
+;; US6: AnnounceSchedule specs (T101)
+(s/def ::interval-seconds pos-int?)
+(s/def ::retry-attempt nat-int?)
+(s/def ::backoff-delay-ms nat-int?)
+(s/def ::next-announce-time nat-int?)  ; ms since epoch (0 = immediate)
+
+(s/def ::announce-schedule
+  (s/keys :req-un [::next-announce-time ::interval-seconds
+                   ::retry-attempt ::backoff-delay-ms]))
+
+;; T104: Spec instrumentation toggle (opt-in, FR-032)
+(defn instrument-tracker!
+  "Enable spec instrumentation for all tracker functions (development/test use)."
+  []
+  (stest/instrument (stest/enumerate-namespace 'dev.cljtoc.protocol.tracker)))
+
+(defn unstrument-tracker!
+  "Disable spec instrumentation for all tracker functions."
+  []
+  (stest/unstrument (stest/enumerate-namespace 'dev.cljtoc.protocol.tracker)))
