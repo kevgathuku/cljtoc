@@ -146,6 +146,26 @@
 (def gen-connection-id gen/large-integer)
 
 ;; ---------------------------------------------------------------------------
+;; UDP request composite specs (BEP 15)
+;; ---------------------------------------------------------------------------
+
+(s/def ::info-hashes
+  (s/with-gen
+    (s/coll-of ::info-hash :min-count 1)
+    #(gen/vector gen-info-hash 1 5)))
+
+(s/def ::udp-connect-request
+  (s/keys :req-un [::transaction-id]))
+
+(s/def ::udp-announce-request
+  (s/keys :req-un [::connection-id ::transaction-id ::info-hash ::peer-id
+                   ::downloaded ::left ::uploaded ::port]
+          :opt-un [::event ::num-want]))
+
+(s/def ::udp-scrape-request
+  (s/keys :req-un [::connection-id ::transaction-id ::info-hashes]))
+
+;; ---------------------------------------------------------------------------
 ;; Result/return value specs
 ;; ---------------------------------------------------------------------------
 
