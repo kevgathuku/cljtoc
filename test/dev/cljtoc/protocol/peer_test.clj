@@ -1,0 +1,294 @@
+(ns dev.cljtoc.protocol.peer-test
+  "Tests for peer wire protocol functions.
+   
+   Includes example-based tests for specific cases and generative tests
+   for round-trip properties and spec compliance."
+  (:require [clojure.test :refer :all]
+            [clojure.spec.alpha :as s]
+            [clojure.spec.test.alpha :as stest]
+            [clojure.spec.gen.alpha :as gen]
+            [clojure.test.check.generators :as tc-gen]
+            [clojure.test.check.properties :as prop]
+            [clojure.test.check.clojure-test :refer [defspec]]
+            [dev.cljtoc.protocol.peer :as peer]))
+
+;; ============================================================================
+;; Test Helpers
+;; ============================================================================
+
+(defn make-bytes
+  "Create a byte array from a sequence of byte values."
+  [& vals]
+  (byte-array (map byte vals)))
+
+(defn bytes-equal?
+  "Compare two byte arrays for equality."
+  [^bytes a ^bytes b]
+  (and (= (count a) (count b))
+       (every? true? (map = a b))))
+
+(defn make-random-bytes
+  "Create a byte array of given length with random values."
+  [len]
+  (byte-array (repeatedly len #(byte (- (rand-int 256) 128)))))
+
+;; ============================================================================
+;; Byte Utility Tests
+;; ============================================================================
+
+(deftest int32-roundtrip-test
+  (testing "int32-to-bytes and bytes-to-int32 are inverse operations"
+    (let [test-values [0 1 -1 127 -128 255 256
+                       2147483647 -2147483648
+                       0x12345678 0x7FFFFFFF]]
+      (doseq [val test-values]
+        (let [encoded (peer/int32-to-bytes val)
+              decoded (peer/bytes-to-int32 encoded)]
+          (is (= val decoded)
+              (format "Round-trip failed for %d" val))
+          (is (= 4 (count encoded))
+              (format "Encoded %d should be 4 bytes" val)))))))
+
+(deftest int32-bigendian-test
+  (testing "int32 encoding is big-endian"
+    (let [encoded (peer/int32-to-bytes 0x12345678)]
+      (is (= 0x12 (bit-and (aget encoded 0) 0xFF)))
+      (is (= 0x34 (bit-and (aget encoded 1) 0xFF)))
+      (is (= 0x56 (bit-and (aget encoded 2) 0xFF)))
+      (is (= 0x78 (bit-and (aget encoded 3) 0xFF))))))
+
+(deftest int16-roundtrip-test
+  (testing "int16-to-bytes and bytes-to-int16 are inverse operations"
+    (let [test-values [0 1 127 -128
+                       32767 -32768 1000 -1000]]
+      (doseq [val test-values]
+        (let [encoded (peer/int16-to-bytes val)
+              decoded (peer/bytes-to-int16 encoded)]
+          (is (= val decoded)
+              (format "Round-trip failed for %d" val))
+          (is (= 2 (count encoded))
+              (format "Encoded %d should be 2 bytes" val)))))))
+
+(deftest bytes-to-int32-offset-test
+  (testing "bytes-to-int32 respects offset parameter"
+    (let [data (make-bytes 0x00 0x00 0x12 0x34 0x56 0x78)]
+      (is (= 0x1234 (peer/bytes-to-int16 data 2)))
+      (is (= 0x12345678 (peer/bytes-to-int32 data 2))))))
+
+(deftest concat-bytes-test
+  (testing "concat-bytes combines byte arrays"
+    (let [a (make-bytes 0x01 0x02)
+          b (make-bytes 0x03 0x04)
+          c (make-bytes 0x05)
+          result (peer/concat-bytes a b c)]
+      (is (= 5 (count result)))
+      (is (= 0x01 (bit-and (aget result 0) 0xFF)))
+      (is (= 0x02 (bit-and (aget result 1) 0xFF)))
+      (is (= 0x03 (bit-and (aget result 2) 0xFF)))
+      (is (= 0x04 (bit-and (aget result 3) 0xFF)))
+      (is (= 0x05 (bit-and (aget result 4) 0xFF))))))
+
+;; ============================================================================
+;; Generative Tests for Byte Utilities
+;; ============================================================================
+
+(defspec int32-roundtrip-generative 100
+  (prop/for-all [val (tc-gen/choose -2147483648 2147483647)]
+                (let [encoded (peer/int32-to-bytes val)
+                      decoded (peer/bytes-to-int32 encoded)]
+                  (and (= val decoded)
+                       (= 4 (count encoded))))))
+
+(defspec int16-roundtrip-generative 100
+  (prop/for-all [val (tc-gen/choose -32768 32767)]
+                (let [encoded (peer/int16-to-bytes val)
+                      decoded (peer/bytes-to-int16 encoded)]
+                  (and (= val decoded)
+                       (= 2 (count encoded))))))
+
+;; ============================================================================
+;; PeerHandshake Record Tests
+;; ============================================================================
+
+(deftest peer-handshake-creation-test
+  (testing "Can create PeerHandshake record"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          handshake (peer/->peer-handshake info-hash peer-id reserved)]
+      (is (some? (:ok handshake)) "Should return ok key")
+      (let [hs (:ok handshake)]
+        (is (= "BitTorrent protocol" (:protocol hs)))
+        (is (bytes-equal? reserved (:reserved hs)))
+        (is (bytes-equal? info-hash (:info-hash hs)))
+        (is (bytes-equal? peer-id (:peer-id hs)))))))
+
+(deftest peer-handshake-default-reserved-test
+  (testing "PeerHandshake uses default reserved bytes"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          result (peer/->peer-handshake info-hash peer-id)]
+      (is (some? (:ok result)) "Should return ok key")
+      (let [hs (:ok result)]
+        (is (= 8 (count (:reserved hs))))
+        (is (every? zero? (:reserved hs)))))))
+
+(deftest peer-handshake-validation-test
+  (testing "Invalid info-hash length returns error"
+    (let [info-hash (make-random-bytes 19)  ; Wrong length
+          peer-id (make-random-bytes 20)
+          result (peer/->peer-handshake info-hash peer-id)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-input (:error result)))))
+
+  (testing "Invalid peer-id length returns error"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 21)  ; Wrong length
+          result (peer/->peer-handshake info-hash peer-id)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-input (:error result)))))
+
+  (testing "Invalid reserved length returns error"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (make-random-bytes 7)  ; Wrong length
+          result (peer/->peer-handshake info-hash peer-id reserved)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-input (:error result))))))
+
+;; ============================================================================
+;; Handshake Parsing Tests
+;; ============================================================================
+
+(deftest parse-handshake-valid-test
+  (testing "Valid 68-byte handshake parses correctly"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          built (peer/build-handshake info-hash peer-id reserved)
+          handshake-bytes (:ok built)
+          parsed (peer/parse-handshake handshake-bytes)]
+      (is (some? (:ok parsed)) "Should parse successfully")
+      (let [hs (:ok parsed)]
+        (is (= "BitTorrent protocol" (:protocol hs)))
+        (is (bytes-equal? info-hash (:info-hash hs)))
+        (is (bytes-equal? peer-id (:peer-id hs)))
+        (is (bytes-equal? reserved (:reserved hs)))))))
+
+(deftest parse-handshake-incomplete-test
+  (testing "Incomplete handshake returns error"
+    (let [short-bytes (make-random-bytes 67)
+          result (peer/parse-handshake short-bytes)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :incomplete-handshake (:error result)))
+      (is (re-find #"must be 68 bytes" (:message result))))))
+
+(deftest parse-handshake-wrong-protocol-test
+  (testing "Wrong protocol string returns error"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          ;; Build valid handshake then corrupt protocol
+          built (peer/build-handshake info-hash peer-id reserved)
+          handshake-bytes (:ok built)
+          _ (aset handshake-bytes 1 (byte 0x41))  ; Corrupt protocol with 'A'
+          result (peer/parse-handshake handshake-bytes)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :unsupported-protocol (:error result))))))
+
+(deftest parse-handshake-preserves-reserved-test
+  (testing "Non-zero reserved bytes are preserved"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (make-bytes 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x01)
+          built (peer/build-handshake info-hash peer-id reserved)
+          handshake-bytes (:ok built)
+          parsed (peer/parse-handshake handshake-bytes)]
+      (is (some? (:ok parsed)))
+      (is (bytes-equal? reserved (:reserved (:ok parsed)))))))
+
+;; ============================================================================
+;; Handshake Building Tests
+;; ============================================================================
+
+(deftest build-handshake-length-test
+  (testing "Built handshake is exactly 68 bytes"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          result (peer/build-handshake info-hash peer-id)]
+      (is (some? (:ok result)) "Should return ok key")
+      (is (= 68 (count (:ok result)))))))
+
+(deftest build-handshake-layout-test
+  (testing "Handshake has correct byte layout"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          result (peer/build-handshake info-hash peer-id reserved)
+          bytes (:ok result)]
+      ;; Byte 0: pstrlen = 19
+      (is (= 19 (bit-and (aget bytes 0) 0xFF)))
+      ;; Bytes 1-19: "BitTorrent protocol"
+      (is (= "BitTorrent protocol" (String. bytes 1 19 "US-ASCII")))
+      ;; Bytes 20-27: reserved
+      (is (= 0 (bit-and (aget bytes 20) 0xFF)))
+      ;; Bytes 28-47: info-hash
+      (is (bytes-equal? info-hash (byte-array (take 20 (drop 28 bytes)))))
+      ;; Bytes 48-67: peer-id
+      (is (bytes-equal? peer-id (byte-array (take 20 (drop 48 bytes))))))))
+
+(deftest build-handshake-validation-test
+  (testing "Invalid info-hash length returns error"
+    (let [info-hash (make-random-bytes 19)
+          peer-id (make-random-bytes 20)
+          result (peer/build-handshake info-hash peer-id)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-input (:error result)))))
+
+  (testing "Invalid peer-id length returns error"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 21)
+          result (peer/build-handshake info-hash peer-id)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-input (:error result))))))
+
+;; ============================================================================
+;; Round-trip Generative Tests
+;; ============================================================================
+
+(defspec handshake-roundtrip-generative 100
+  (prop/for-all [info-hash (tc-gen/vector (tc-gen/choose -128 127) 20)
+                 peer-id (tc-gen/vector (tc-gen/choose -128 127) 20)
+                 reserved (tc-gen/vector (tc-gen/choose 0 255) 8)]
+                 (let [info-bytes (byte-array (map unchecked-byte info-hash))
+                       peer-bytes (byte-array (map unchecked-byte peer-id))
+                       reserved-bytes (byte-array (map unchecked-byte reserved))
+                      built (peer/build-handshake info-bytes peer-bytes reserved-bytes)
+                      handshake-bytes (:ok built)
+                      parsed (peer/parse-handshake handshake-bytes)]
+                  (and (some? (:ok parsed))
+                       (bytes-equal? info-bytes (:info-hash (:ok parsed)))
+                       (bytes-equal? peer-bytes (:peer-id (:ok parsed)))
+                       (bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
+
+;; ============================================================================
+;; Spec Compliance Tests
+;; ============================================================================
+
+(deftest spec-validation-test
+  (testing "clojure.spec validates PeerHandshake correctly"
+    (let [valid-handshake {:protocol "BitTorrent protocol"
+                           :reserved (byte-array 8)
+                           :info-hash (byte-array 20)
+                           :peer-id (byte-array 20)}
+          invalid-handshake {:protocol "Wrong protocol"
+                             :reserved (byte-array 8)
+                             :info-hash (byte-array 20)
+                             :peer-id (byte-array 20)}]
+      (is (s/valid? ::peer/peer-handshake valid-handshake))
+      (is (not (s/valid? ::peer/peer-handshake invalid-handshake))))))
+
+(deftest spec-generates-valid-handshakes
+  (testing "Spec generator produces valid handshakes"
+    (let [samples (gen/sample (peer/gen-byte-array 20) 10)]
+      (is (every? #(= 20 (count %)) samples)))))
