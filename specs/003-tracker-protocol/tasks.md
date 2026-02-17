@@ -252,8 +252,8 @@ Following plan.md structure:
 - [x] T109 Write integration test combining build-http-announce-url → parse-http-tracker-response in tracker_test.clj
 - [x] T110 Write integration test combining build-udp-connect-request → parse-udp-connect-response in tracker_test.clj
 - [ ] T111 Verify 90%+ test coverage without network I/O (SC-005) using test coverage tool
-- [ ] T112 Add usage examples to quickstart.md demonstrating all public API functions
-- [ ] T113 Update README.md with tracker protocol feature status and capabilities
+- [x] T112 Add usage examples to quickstart.md demonstrating all public API functions
+- [x] T113 Update README.md with tracker protocol feature status and capabilities
 
 **Final Checkpoint**: All user stories complete and independently testable. Feature ready for integration with coordination layer (future feature 006).
 

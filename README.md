@@ -12,12 +12,17 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
 - ✅ **Torrent Metadata Parser** - Parse `.torrent` files and extract metadata
 - ✅ **Info Hash Computation** - SHA-1 hash computation preserving original encoding
 - ✅ **CLI Interface** - Namespace-based command structure
+- ✅ **Tracker Protocol** - HTTP and UDP tracker communication (BEP 3, BEP 15)
+  - Build and parse HTTP announce requests/responses (compact + dictionary peer formats)
+  - Full UDP tracker protocol: connect, announce, scrape, error (BEP 15)
+  - Re-announce scheduling with exponential backoff
+  - clojure.spec validation on all public functions with `s/fdef`
+  - 49 tests, 270 assertions — 100% pure (no network I/O in tests)
 
 ### Roadmap
 
 - 🚧 Peer wire protocol
 - 🚧 Piece selection strategies
-- 🚧 Tracker communication (HTTP & UDP)
 - 🚧 DHT (Distributed Hash Table)
 - 🚧 File I/O and verification
 
@@ -98,23 +103,32 @@ lein repl
 torrent-client-clj/
 ├── src/dev/cljtoc/
 │   ├── core.clj                    # CLI entry point
-│   └── domain/
-│       ├── bencode.clj             # Bencode encoder/decoder
-│       └── torrent.clj             # Torrent metadata parser
+│   ├── domain/
+│   │   ├── bencode.clj             # Bencode encoder/decoder
+│   │   └── torrent.clj             # Torrent metadata parser
+│   └── protocol/
+│       ├── tracker.clj             # Tracker protocol (HTTP + UDP)
+│       └── tracker/
+│           └── spec.clj            # clojure.spec definitions
 ├── test/dev/cljtoc/
 │   ├── core_test.clj
-│   └── domain/
-│       ├── bencode_test.clj        # Bencode tests (property-based)
-│       ├── torrent_test.clj        # Torrent parser tests
-│       └── fixtures/torrents/      # Test torrent files
+│   ├── domain/
+│   │   ├── bencode_test.clj        # Bencode tests (property-based)
+│   │   └── torrent_test.clj        # Torrent parser tests
+│   ├── protocol/
+│   │   └── tracker_test.clj        # Tracker tests (49 tests)
+│   └── test_utils.clj              # Shared test helpers
 ├── specs/                          # Feature specifications
-│   └── 002-bencode-parser/
+│   ├── 002-bencode-parser/
+│   └── 003-tracker-protocol/
 │       ├── spec.md                 # Feature requirements
 │       ├── plan.md                 # Implementation plan
 │       ├── tasks.md                # Task breakdown
-│       └── contracts/              # API contracts
+│       ├── quickstart.md           # API usage examples
+│       ├── data-model.md           # Data structures
+│       └── contracts/              # HTTP + UDP API contracts
 └── doc/
-    └── bencode-parser.md           # Detailed API documentation
+    └── bencode-parser.md           # Bencode API documentation
 ```
 
 ## Development
@@ -130,10 +144,10 @@ lein test
 ```
 
 The test suite includes:
-- 37 unit tests
-- 155 assertions
-- Property-based tests using test.check
-- Round-trip verification tests
+- 49 tests, 270 assertions
+- Property-based generative tests using test.check
+- Round-trip verification tests (build → parse → verify)
+- 100% pure — no network I/O required
 
 ### Development Workflow
 
@@ -182,6 +196,7 @@ The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hash
 ## Documentation
 
 - **[Bencode Parser API](doc/bencode-parser.md)** - Detailed API documentation with examples
+- **[Tracker Protocol Quickstart](specs/003-tracker-protocol/quickstart.md)** - Usage examples for all tracker functions
 - **[Feature Specs](specs/)** - Detailed feature specifications and implementation plans
 
 ## CLI Commands
