@@ -54,9 +54,9 @@ Each sub-feature follows the full spec-kit workflow independently:
 
 | ID | Feature | Dependencies | Priority | Command to Start | Status |
 |----|---------|--------------|----------|------------------|--------|
-| 002 | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files...` | ✅ In Progress |
-| 003 | Tracker Protocol | 002 | P1 | `/speckit.specify Implement HTTP/UDP tracker communication` | Not Started |
-| 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | Not Started |
+| 002 | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files...` | ✅ Complete |
+| 003 | Tracker Protocol | 002 | P1 | `/speckit.specify Implement HTTP/UDP tracker communication` | ✅ Complete |
+| 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | 🚧 In Progress (spec) |
 | 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | Not Started |
 | 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | Not Started |
 
@@ -170,13 +170,15 @@ See [spec.md](spec.md) for full details on each principle.
 
 ## Next Steps
 
-To begin implementation:
+To continue implementation:
 
-1. **Complete Feature 002**: Currently in progress (bencode parser)
-2. **Proceed to 003-005**: Can work in parallel once 002 is merged
-3. **Integrate at 006**: Brings all pieces together into working download engine
-4. **Add CLI at 011**: Makes the engine usable by end users - **completes MVP**
-5. **Add value with 007-010**: Each adds independent functionality (seeding, multi-torrent, monitoring, hardening)
+1. ~~**Complete Feature 002**: Bencode parser~~ ✅ Merged to main
+2. ~~**Proceed to 003**: Tracker protocol (HTTP + UDP, BEP 3/15)~~ ✅ Merged to main
+3. **Complete Feature 004**: Peer wire protocol — spec written, planning and implementation next
+4. **Complete Feature 005**: Piece selection — can start in parallel with 004
+5. **Integrate at 006**: Brings all pieces together into working download engine
+6. **Add CLI at 011**: Makes the engine usable by end users - **completes MVP**
+7. **Add value with 007-010**: Each adds independent functionality (seeding, multi-torrent, monitoring, hardening)
 
 **True MVP**: Features 002-006 + 011 (Foundation + Engine + CLI)
 **Enhanced Product**: Add features 007-010 incrementally
