@@ -3,7 +3,8 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
-            [dev.cljtoc.domain.bencode :as bencode]))
+            [dev.cljtoc.domain.bencode :as bencode]
+            [dev.cljtoc.test-utils :refer [to-bytes]]))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: Error constructors, SHA-1, byte utilities
@@ -47,9 +48,6 @@
 ;; ---------------------------------------------------------------------------
 ;; GROUP 2: Decode strings and integers
 ;; ---------------------------------------------------------------------------
-
-(defn- to-bytes [^String s]
-  (.getBytes s "UTF-8"))
 
 (deftest decode-string-test
   (testing "decodes basic string"
