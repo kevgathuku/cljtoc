@@ -303,6 +303,358 @@
            peer-id)})))               ; 20-byte peer id
 
 ;; ============================================================================
+;; Peer Message Records
+;; ============================================================================
+
+(defrecord KeepAlive [])
+(defrecord Choke [])
+(defrecord Unchoke [])
+(defrecord Interested [])
+(defrecord NotInterested [])
+(defrecord Have [piece-index])
+(defrecord Bitfield [bytes])
+(defrecord Request [piece-index begin length])
+(defrecord Piece [piece-index begin data])
+(defrecord Cancel [piece-index begin length])
+
+;; ============================================================================
+;; Peer Message Specs
+;; ============================================================================
+
+(s/def ::keep-alive (s/keys))
+(s/def ::choke (s/keys))
+(s/def ::unchoke (s/keys))
+(s/def ::interested (s/keys))
+(s/def ::not-interested (s/keys))
+(s/def ::have (s/keys :req-un [::piece-index]))
+(s/def ::bitfield (s/keys :req-un [::bytes]))
+(s/def ::request (s/keys :req-un [::piece-index ::begin ::length]))
+(s/def ::piece (s/keys :req-un [::piece-index ::begin ::data]))
+(s/def ::cancel (s/keys :req-un [::piece-index ::begin ::length]))
+
+(s/def ::peer-message
+  (s/or :keep-alive ::keep-alive
+        :choke ::choke
+        :unchoke ::unchoke
+        :interested ::interested
+        :not-interested ::not-interested
+        :have ::have
+        :bitfield ::bitfield
+        :request ::request
+        :piece ::piece
+        :cancel ::cancel))
+
+;; Shared message fields
+(s/def ::piece-index nat-int?)
+(s/def ::begin nat-int?)
+(s/def ::length (s/int-in 0 16385)) ;; Max 16 KiB + 1 for upper bound
+(s/def ::data ::bytes)
+
+;; ============================================================================
+;; Peer Message Parsing
+;; ============================================================================
+
+(def ^:const max-block-size 16384)
+
+(defn- parse-keep-alive [^bytes b]
+  (if (= 0 (count b))
+    {:ok (->KeepAlive)}
+    {:error :invalid-message :message "Keep-alive message must have 0 length"}))
+
+(defn- parse-choke [^bytes b]
+  (if (= 0 (count b))
+    {:ok (->Choke)}
+    {:error :invalid-message :message "Choke message must have 0 length"}))
+
+(defn- parse-unchoke [^bytes b]
+  (if (= 0 (count b))
+    {:ok (->Unchoke)}
+    {:error :invalid-message :message "Unchoke message must have 0 length"}))
+
+(defn- parse-interested [^bytes b]
+  (if (= 0 (count b))
+    {:ok (->Interested)}
+    {:error :invalid-message :message "Interested message must have 0 length"}))
+
+(defn- parse-not-interested [^bytes b]
+  (if (= 0 (count b))
+    {:ok (->NotInterested)}
+    {:error :invalid-message :message "Not-interested message must have 0 length"}))
+
+(defn- parse-have [^bytes b]
+  (if (= 4 (count b))
+    (let [piece-index (bytes-to-int32 b)]
+      {:ok (->Have piece-index)})
+    {:error :incomplete-message :message "Have message must have 4-byte payload"}))
+
+(defn- parse-bitfield [^bytes b]
+  (if (> (count b) 0)
+    {:ok (->Bitfield b)}
+    {:error :incomplete-message :message "Bitfield message must have non-empty payload"}))
+
+(defn- parse-request [^bytes b]
+  (if (= 12 (count b))
+    (let [piece-index (bytes-to-int32 b 0)
+          begin (bytes-to-int32 b 4)
+          length (bytes-to-int32 b 8)]
+      (if (<= length max-block-size)
+        {:ok (->Request piece-index begin length)}
+        {:error :invalid-input :message (format "Request length exceeds max block size (%d > %d)" length max-block-size)}))
+    {:error :incomplete-message :message "Request message must have 12-byte payload"}))
+
+(defn- parse-piece [^bytes b]
+  (if (>= (count b) 8)
+    (let [piece-index (bytes-to-int32 b 0)
+          begin (bytes-to-int32 b 4)
+          data-len (- (count b) 8)
+          data (byte-array data-len)]
+      (System/arraycopy b 8 data 0 data-len)
+      (if (<= data-len max-block-size)
+        {:ok (->Piece piece-index begin data)}
+        {:error :invalid-input :message (format "Piece data length exceeds max block size (%d > %d)" data-len max-block-size)}))
+    {:error :incomplete-message :message "Piece message must have at least 8-byte header"}))
+
+(defn- parse-cancel [^bytes b]
+  (if (= 12 (count b))
+    (let [piece-index (bytes-to-int32 b 0)
+          begin (bytes-to-int32 b 4)
+          length (bytes-to-int32 b 8)]
+      (if (<= length max-block-size)
+        {:ok (->Cancel piece-index begin length)}
+        {:error :invalid-input :message (format "Cancel length exceeds max block size (%d > %d)" length max-block-size)}))
+    {:error :incomplete-message :message "Cancel message must have 12-byte payload"}))
+
+(defmulti parse-message-payload (fn [id _] id))
+
+(defmethod parse-message-payload 0 [_ b] (parse-choke b))
+(defmethod parse-message-payload 1 [_ b] (parse-unchoke b))
+(defmethod parse-message-payload 2 [_ b] (parse-interested b))
+(defmethod parse-message-payload 3 [_ b] (parse-not-interested b))
+(defmethod parse-message-payload 4 [_ b] (parse-have b))
+(defmethod parse-message-payload 5 [_ b] (parse-bitfield b))
+(defmethod parse-message-payload 6 [_ b] (parse-request b))
+(defmethod parse-message-payload 7 [_ b] (parse-piece b))
+(defmethod parse-message-payload 8 [_ b] (parse-cancel b))
+(defmethod parse-message-payload :default [_ _]
+  {:error :unknown-message-type :message "Unknown message ID"})
+
+(defn parse-message
+  "Parse a single BitTorrent peer wire message from a byte array.
+   
+   Args:
+     bytes - byte array containing the full length-prefixed message
+   
+   Returns:
+     {:ok PeerMessage} on success
+     {:error keyword :message string} on failure"
+  [^bytes b]
+  (if (< (count b) 4)
+    {:error :incomplete-message :message "Message too short for length prefix"}
+    (let [message-length (bytes-to-int32 b 0)]
+      (cond
+        (= 0 message-length)
+        (parse-keep-alive (byte-array 0))
+
+        (< (count b) (+ 4 message-length))
+        {:error :incomplete-message
+         :message (format "Declared message length %d exceeds available bytes %d"
+                          message-length (- (count b) 4))}
+        
+        :else
+        (let [message-id (aget b 4)
+              payload-bytes (byte-array (- message-length 1))] 
+          (System/arraycopy b 5 payload-bytes 0 (- message-length 1))
+          (parse-message-payload (bit-and message-id 0xFF) payload-bytes))))))
+
+(defn parse-messages
+  "Parse multiple BitTorrent peer wire messages from a byte buffer.
+   
+   Args:
+     bytes - byte array containing one or more full or partial messages
+   
+   Returns:
+     {:ok [PeerMessage] :remaining bytes} on success
+     {:error keyword :message string} on the first parsing failure"
+  [^bytes b]
+  (loop [offset 0
+         messages []]
+    (if (>= (- (count b) offset) 4) ;; At least 4 bytes for length prefix
+      (let [message-length (bytes-to-int32 b offset)
+            full-message-len (+ 4 message-length)]
+        (if (<= full-message-len (- (count b) offset))
+          (let [message-bytes (byte-array full-message-len)
+                _ (System/arraycopy b offset message-bytes 0 full-message-len)
+                parse-result (parse-message message-bytes)]
+            (if (:ok parse-result)
+              (recur (+ offset full-message-len) (conj messages (:ok parse-result)))
+              parse-result)) ;; Propagate error
+          {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))})) ;; Incomplete message
+      {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))}))) ;; No full message or too short for length prefix
+
+(defn parse-messages
+  "Parse multiple BitTorrent peer wire messages from a byte buffer.
+   
+   Args:
+     bytes - byte array containing one or more full or partial messages
+   
+   Returns:
+     {:ok [PeerMessage] :remaining bytes} on success
+     {:error keyword :message string} on the first parsing failure"
+  [^bytes b]
+  (loop [offset 0
+         messages []]
+    (if (>= (- (count b) offset) 4) ;; At least 4 bytes for length prefix
+      (let [message-length (bytes-to-int32 b offset)
+            full-message-len (+ 4 message-length)]
+        (if (<= full-message-len (- (count b) offset))
+          (let [message-bytes (byte-array full-message-len)
+                _ (System/arraycopy b offset message-bytes 0 full-message-len)
+                parse-result (parse-message message-bytes)]
+            (if (:ok parse-result)
+              (recur (+ offset full-message-len) (conj messages (:ok parse-result)))
+              parse-result)) ;; Propagate error
+          {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))})) ;; Incomplete message
+      {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))}))) ;; No full message or too short for length prefix
+
+;; ============================================================================
+;; Peer Message Building
+;; ============================================================================
+
+(defmulti build-message-payload (fn [msg] (type msg)))
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.KeepAlive [_]
+  {:ok (byte-array 0)})
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Choke [_]
+  {:ok (byte-array 0)})
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Unchoke [_]
+  {:ok (byte-array 0)})
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Interested [_]
+  {:ok (byte-array 0)})
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.NotInterested [_]
+  {:ok (byte-array 0)})
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Have [msg]
+  (if (s/valid? ::piece-index (:piece-index msg))
+    {:ok (int32-to-bytes (:piece-index msg))}
+    {:error :invalid-input :message (format "Invalid piece index for Have message: %s" (:piece-index msg))}))
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Bitfield [msg]
+  (if (s/valid? ::bytes (:bytes msg))
+    {:ok (:bytes msg)}
+    {:error :invalid-input :message "Bitfield payload must be a byte array"}))
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Request [msg]
+  (let [{:keys [piece-index begin length]} msg]
+    (cond
+      (not (s/valid? ::piece-index piece-index))
+      {:error :invalid-input :message (format "Invalid piece index for Request message: %s" piece-index)}
+      (not (s/valid? ::begin begin))
+      {:error :invalid-input :message (format "Invalid begin offset for Request message: %s" begin)}
+      (not (s/valid? ::length length))
+      {:error :invalid-input :message (format "Invalid length for Request message: %s" length)}
+      (> length max-block-size)
+      {:error :invalid-input :message (format "Request length exceeds max block size (%d > %d)" length max-block-size)}
+      :else
+      {:ok (concat-bytes (int32-to-bytes piece-index)
+                         (int32-to-bytes begin)
+                         (int32-to-bytes length))})))
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Piece [msg]
+  (let [{:keys [piece-index begin data]} msg]
+    (cond
+      (not (s/valid? ::piece-index piece-index))
+      {:error :invalid-input :message (format "Invalid piece index for Piece message: %s" piece-index)}
+      (not (s/valid? ::begin begin))
+      {:error :invalid-input :message (format "Invalid begin offset for Piece message: %s" begin)}
+      (not (s/valid? ::data data))
+      {:error :invalid-input :message "Piece data must be a byte array"}
+      (> (count data) max-block-size)
+      {:error :invalid-input :message (format "Piece data length exceeds max block size (%d > %d)" (count data) max-block-size)}
+      :else
+      {:ok (concat-bytes (int32-to-bytes piece-index)
+                         (int32-to-bytes begin)
+                         data)})))
+
+(defmethod build-message-payload dev.cljtoc.protocol.peer.Cancel [msg]
+  (let [{:keys [piece-index begin length]} msg]
+    (cond
+      (not (s/valid? ::piece-index piece-index))
+      {:error :invalid-input :message (format "Invalid piece index for Cancel message: %s" piece-index)}
+      (not (s/valid? ::begin begin))
+      {:error :invalid-input :message (format "Invalid begin offset for Cancel message: %s" begin)}
+      (not (s/valid? ::length length))
+      {:error :invalid-input :message (format "Invalid length for Cancel message: %s" length)}
+      (> length max-block-size)
+      {:error :invalid-input :message (format "Cancel length exceeds max block size (%d > %d)" length max-block-size)}
+      :else
+      {:ok (concat-bytes (int32-to-bytes piece-index)
+                         (int32-to-bytes begin)
+                         (int32-to-bytes length))})))
+
+(defmethod build-message-payload :default [msg]
+  {:error :unknown-message-type :message (str "Unknown message type for building: " (type msg))})
+
+(defn build-message
+  "Build a single BitTorrent peer wire message into a byte array.
+   
+   Args:
+     message-record - A PeerMessage record (e.g., ->Choke, ->Have)
+   
+   Returns:
+     {:ok byte-array} on success
+     {:error keyword :message string} on validation or unknown type failure"
+  [message-record]
+  (if-let [payload-result (build-message-payload message-record)]
+    (if (:ok payload-result)
+      (let [payload (:ok payload-result)
+            message-id (condp instance? message-record
+                           KeepAlive -1
+                           Choke 0
+                           Unchoke 1
+                           Interested 2
+                           NotInterested 3
+                           Have 4
+                           Bitfield 5
+                           Request 6
+                           Piece 7
+                           Cancel 8
+                           nil)]
+        (if (= -1 message-id)
+          {:ok (int32-to-bytes 0)}
+          (if (nil? message-id)
+            {:error :unknown-message-type :message (str "Cannot build unknown message type: " (type message-record))}
+            {:ok (concat-bytes
+                  (int32-to-bytes (+ 1 (count payload)))
+                  (byte-array [(unchecked-byte message-id)])
+                  payload)})))
+      payload-result)
+    {:error :unknown-message-type :message (str "No builder for message type: " (type message-record))}))
+
+(defn build-messages
+  "Build a collection of PeerMessage records into a single concatenated byte array.
+   
+   Args:
+     message-records - A collection of PeerMessage records
+   
+   Returns:
+     {:ok byte-array} on success
+     {:error keyword :message string} on the first building failure"
+  [message-records]
+  (loop [remaining-messages (seq message-records)
+         acc-bytes []]
+    (if remaining-messages
+      (let [msg (first remaining-messages)
+            build-result (build-message msg)]
+        (if (:ok build-result)
+          (recur (next remaining-messages) (conj acc-bytes (:ok build-result)))
+          build-result)) ;; Propagate error
+      {:ok (apply concat-bytes acc-bytes)})))
+
+;; ============================================================================
 ;; Spec Generators for Testing
 ;; ============================================================================
 

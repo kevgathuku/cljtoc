@@ -19,18 +19,18 @@
 (defn make-bytes
   "Create a byte array from a sequence of byte values."
   [& vals]
-  (byte-array (map byte vals)))
+  (byte-array (map unchecked-byte vals)))
 
 (defn bytes-equal?
   "Compare two byte arrays for equality."
   [^bytes a ^bytes b]
   (and (= (count a) (count b))
-       (every? true? (map = a b))))
+       (every? true? (map = (seq a) (seq b)))))
 
 (defn make-random-bytes
   "Create a byte array of given length with random values."
   [len]
-  (byte-array (repeatedly len #(byte (- (rand-int 256) 128)))))
+  (byte-array (repeatedly len #(unchecked-byte (- (rand-int 256) 128)))))
 
 ;; ============================================================================
 ;; Byte Utility Tests
@@ -253,6 +253,179 @@
       (is (= :invalid-input (:error result))))))
 
 ;; ============================================================================
+;; Peer Message Parsing Tests
+;; ============================================================================
+
+(deftest parse-keep-alive-test
+  (testing "Keep-alive message parses correctly"
+    (let [message-bytes (peer/int32-to-bytes 0)  ; Length = 0
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.KeepAlive (:ok result))))))
+
+(deftest parse-simple-messages-test
+  (testing "Choke, Unchoke, Interested, Not-interested messages parse correctly"
+    (doseq [[id expected-type] [[0 dev.cljtoc.protocol.peer.Choke]
+                                [1 dev.cljtoc.protocol.peer.Unchoke]
+                                [2 dev.cljtoc.protocol.peer.Interested]
+                                [3 dev.cljtoc.protocol.peer.NotInterested]]]
+      (let [message-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte id)]))
+            result (peer/parse-message message-bytes)]
+        (is (some? (:ok result)) (str "Should parse " expected-type " successfully"))
+        (is (instance? expected-type (:ok result)))))))
+
+(deftest parse-have-message-test
+  (testing "Have message parses with correct piece index"
+    (let [piece-index 123
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes 5)
+                                           (byte-array [(unchecked-byte 4)])
+                                           (peer/int32-to-bytes piece-index))
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.Have (:ok result)))
+      (is (= piece-index (:piece-index (:ok result)))))))
+
+(deftest parse-bitfield-message-test
+  (testing "Bitfield message parses with accessible bytes"
+    (let [bitfield-payload (make-bytes 0xFF 0x00 0x80)  ; Example bitfield
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count bitfield-payload)))
+                                           (byte-array [(unchecked-byte 5)])
+                                           bitfield-payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.Bitfield (:ok result)))
+      (is (bytes-equal? bitfield-payload (:bytes (:ok result)))))))
+
+(deftest parse-request-message-test
+  (testing "Request message parses with all three fields"
+    (let [piece-index 10
+          begin 16384
+          length 16384
+          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
+                                     (peer/int32-to-bytes begin)
+                                     (peer/int32-to-bytes length))
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
+                                           (byte-array [(unchecked-byte 6)])
+                                           payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.Request (:ok result)))
+      (is (= piece-index (:piece-index (:ok result))))
+      (is (= begin (:begin (:ok result))))
+      (is (= length (:length (:ok result)))))))
+
+(deftest parse-piece-message-test
+  (testing "Piece message parses with index, begin, and data"
+    (let [piece-index 10
+          begin 16384
+          data (make-random-bytes 1024)
+          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
+                                     (peer/int32-to-bytes begin)
+                                     data)
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
+                                           (byte-array [(unchecked-byte 7)])
+                                           payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.Piece (:ok result)))
+      (is (= piece-index (:piece-index (:ok result))))
+      (is (= begin (:begin (:ok result))))
+      (is (bytes-equal? data (:data (:ok result)))))))
+
+(deftest parse-cancel-message-test
+  (testing "Cancel message parses with all three fields"
+    (let [piece-index 10
+          begin 16384
+          length 16384
+          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
+                                     (peer/int32-to-bytes begin)
+                                     (peer/int32-to-bytes length))
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
+                                           (byte-array [(unchecked-byte 8)])
+                                           payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.Cancel (:ok result)))
+      (is (= piece-index (:piece-index (:ok result))))
+      (is (= begin (:begin (:ok result))))
+      (is (= length (:length (:ok result)))))))
+
+(deftest parse-unknown-message-id-test
+  (testing "Unknown message id returns :unknown-message-type error"
+    (let [message-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 99)])) ; ID 99
+          result (peer/parse-message message-bytes)]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :unknown-message-type (:error result))))))
+
+(deftest parse-incomplete-message-test
+  (testing "Incomplete message (declared length > available) returns :incomplete-message error"
+    (let [message-bytes (peer/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
+          result (peer/parse-message message-bytes)]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :incomplete-message (:error result))))))
+
+(deftest parse-messages-test
+  (testing "`parse-messages` handles multiple complete messages"
+    (let [msg1-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
+          msg2-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 1)])) ; Unchoke
+          buffer (peer/concat-bytes msg1-bytes msg2-bytes)
+          result (peer/parse-messages buffer)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (= 2 (count (:ok result))))
+(is (instance? dev.cljtoc.protocol.peer.Choke (first (:ok result))))
+        (is (instance? dev.cljtoc.protocol.peer.Unchoke (second (:ok result))))
+      (is (zero? (count (:remaining result)))))))
+
+(deftest parse-messages-with-incomplete-tail-test
+  (testing "`parse-messages` returns remaining bytes for incomplete final message"
+    (let [msg1-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
+          incomplete-msg-bytes (peer/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
+          buffer (peer/concat-bytes msg1-bytes incomplete-msg-bytes)
+          result (peer/parse-messages buffer)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (= 1 (count (:ok result))))
+      (is (instance? dev.cljtoc.protocol.peer.Choke (first (:ok result))))
+      (is (= (count incomplete-msg-bytes) (count (:remaining result)))))))
+
+(deftest parse-messages-only-incomplete-test
+  (testing "`parse-messages` returns only remaining bytes if first message is incomplete"
+    (let [incomplete-msg-bytes (peer/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
+          result (peer/parse-messages incomplete-msg-bytes)]
+      (is (some? (:ok result)) "Should return ok key even if no messages parsed")
+      (is (zero? (count (:ok result))))
+      (is (= (count incomplete-msg-bytes) (count (:remaining result)))))))
+
+(deftest parse-request-oversize-length-test
+  (testing "Request with length > max-block-size returns :invalid-input error"
+    (let [piece-index 10
+          begin 0
+          length (+ peer/max-block-size 1) ; > 16384
+          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
+                                     (peer/int32-to-bytes begin)
+                                     (peer/int32-to-bytes length))
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
+                                           (byte-array [(unchecked-byte 6)])
+                                           payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :invalid-input (:error result))))))
+
+(deftest parse-piece-oversize-data-test
+  (testing "Piece with data length > max-block-size returns :invalid-input error"
+    (let [piece-index 10
+          begin 0
+          data (make-random-bytes (+ peer/max-block-size 1)) ; > 16384
+          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
+                                     (peer/int32-to-bytes begin)
+                                     data)
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
+                                           (byte-array [(unchecked-byte 7)])
+                                           payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :invalid-input (:error result))))))
+
+;; ============================================================================
 ;; Round-trip Generative Tests
 ;; ============================================================================
 
@@ -263,13 +436,49 @@
                  (let [info-bytes (byte-array (map unchecked-byte info-hash))
                        peer-bytes (byte-array (map unchecked-byte peer-id))
                        reserved-bytes (byte-array (map unchecked-byte reserved))
-                      built (peer/build-handshake info-bytes peer-bytes reserved-bytes)
-                      handshake-bytes (:ok built)
-                      parsed (peer/parse-handshake handshake-bytes)]
-                  (and (some? (:ok parsed))
-                       (bytes-equal? info-bytes (:info-hash (:ok parsed)))
-                       (bytes-equal? peer-bytes (:peer-id (:ok parsed)))
-                       (bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
+                       built (peer/build-handshake info-bytes peer-bytes reserved-bytes)
+                       handshake-bytes (:ok built)
+                       parsed (peer/parse-handshake handshake-bytes)]
+                   (and (some? (:ok parsed))
+                        (bytes-equal? info-bytes (:info-hash (:ok parsed)))
+                        (bytes-equal? peer-bytes (:peer-id (:ok parsed)))
+                        (bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
+
+(defspec peer-message-parsing-generative 100
+  (prop/for-all [msg-type (tc-gen/elements [:choke :unchoke :interested :not-interested :have :bitfield :request :piece :cancel])
+                 piece-idx (tc-gen/choose 0 100)
+                 begin (tc-gen/choose 0 1000)
+                 length (tc-gen/choose 1 16384)
+                 data (tc-gen/fmap make-random-bytes (tc-gen/choose 1 16384))]
+    (let [msg (case msg-type
+                :choke (peer/->Choke)
+                :unchoke (peer/->Unchoke)
+                :interested (peer/->Interested)
+                :not-interested (peer/->NotInterested)
+                :have (peer/->Have piece-idx)
+                :bitfield (peer/->Bitfield (make-random-bytes 10))
+                :request (peer/->Request piece-idx begin length)
+                :piece (peer/->Piece piece-idx begin data)
+                :cancel (peer/->Cancel piece-idx begin length))
+          built-msg (peer/build-message msg)
+          parsed-result (peer/parse-message (:ok built-msg))]
+      (if (:ok built-msg)
+        (and (some? (:ok parsed-result))
+             (s/valid? ::peer/peer-message (:ok parsed-result)))
+        true))))
+
+(defspec parse-messages-multiple-generative 100
+  (prop/for-all [messages-vec (tc-gen/bind (tc-gen/choose 1 5)
+                                           (fn [n]
+                                             (tc-gen/vector
+                                               (tc-gen/one-of [(tc-gen/fmap (fn [p] (peer/->Have p)) (tc-gen/choose 0 100))
+                                                               (tc-gen/fmap (fn [l] (peer/->Request 0 0 l)) (tc-gen/choose 1 16384))])
+                                               n)))]
+    (let [built-bytes (peer/build-messages messages-vec)
+          parse-result (peer/parse-messages (:ok built-bytes))]
+      (and (some? (:ok parse-result))
+           (= (count messages-vec) (count (:ok parse-result)))
+           (every? (fn [[original parsed]] (s/valid? ::peer/peer-message parsed)) (map vector messages-vec (:ok parse-result)))))))
 
 ;; ============================================================================
 ;; Spec Compliance Tests

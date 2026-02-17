@@ -53,12 +53,12 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Tasks**:
 
-- [ ] T011 [US1] Implement `parse-handshake` function in `src/dev/cljtoc/protocol/peer.clj` with error handling for incomplete input
-- [ ] T012 [US1] [P] Add test: valid handshake parses correctly with all fields extracted
-- [ ] T013 [US1] [P] Add test: wrong protocol string returns `:unsupported-protocol` error
-- [ ] T014 [US1] [P] Add test: incomplete handshake (< 68 bytes) returns `:incomplete-handshake` error
-- [ ] T015 [US1] [P] Add test: non-zero reserved bytes are preserved in parsed record
-- [ ] T016 [US1] [P] Add generative test: random valid handshakes parse correctly
+- [x] T011 [US1] Implement `parse-handshake` function in `src/dev/cljtoc/protocol/peer.clj` with error handling for incomplete input
+- [x] T012 [US1] [P] Add test: valid handshake parses correctly with all fields extracted
+- [x] T013 [US1] [P] Add test: wrong protocol string returns `:unsupported-protocol` error
+- [x] T014 [US1] [P] Add test: incomplete handshake (< 68 bytes) returns `:incomplete-handshake` error
+- [x] T015 [US1] [P] Add test: non-zero reserved bytes are preserved in parsed record
+- [x] T016 [US1] [P] Add generative test: random valid handshakes parse correctly
 
 **Independent Test Criteria**: Run `parse-handshake` tests - all 5 acceptance scenarios pass
 
