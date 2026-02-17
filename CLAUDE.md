@@ -113,6 +113,11 @@ Implementation is split into independently deliverable features in `specs/`:
 
 Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/`
 
+## Project Conventions
+
+- Torrent/bencode data is binary — do not apply UTF-8 encoding/decoding; treat all byte arrays as raw binary
+- Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
+
 ## Code Review Gates
 
 All PRs must verify:
