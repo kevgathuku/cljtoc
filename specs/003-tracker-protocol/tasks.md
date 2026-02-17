@@ -192,19 +192,19 @@ Following plan.md structure:
 
 ### Tests for User Story 5
 
-- [ ] T080 [P] [US5] Write test for distinguishing network errors vs protocol errors vs tracker failures in tracker_test.clj
-- [ ] T081 [P] [US5] Write test for malformed tracker response handling (invalid bencode) in tracker_test.clj
-- [ ] T082 [P] [US5] Write test for missing required fields in tracker response in tracker_test.clj
-- [ ] T083 [P] [US5] Write test for spec validation failure error messages include explain-data in tracker_test.clj
+- [x] T080 [P] [US5] Write test for distinguishing network errors vs protocol errors vs tracker failures in tracker_test.clj
+- [x] T081 [P] [US5] Write test for malformed tracker response handling (invalid bencode) in tracker_test.clj
+- [x] T082 [P] [US5] Write test for missing required fields in tracker response in tracker_test.clj
+- [x] T083 [P] [US5] Write test for spec validation failure error messages include explain-data in tracker_test.clj
 
 ### Implementation for User Story 5
 
-- [ ] T084 [P] [US5] Add error context preservation (tracker URL, error message, error type) in all parsers
-- [ ] T085 [P] [US5] Implement validate-input wrapper function that transforms spec failures to {:error ...} format
-- [ ] T086 [US5] Add malformed response handling (try-catch for bencode parse errors) in parse-http-tracker-response
-- [ ] T087 [US5] Add missing field detection and error reporting in parse-http-tracker-response
-- [ ] T088 [US5] Define spec ::tracker-error with enumerated error types in tracker/spec.clj
-- [ ] T089 [US5] Add spec explain-data to error context for debugging in validate-input function
+- [x] T084 [P] [US5] Add error context preservation (tracker URL, error message, error type) in all parsers
+- [x] T085 [P] [US5] Implement validate-input wrapper function that transforms spec failures to {:error ...} format
+- [x] T086 [US5] Add malformed response handling (try-catch for bencode parse errors) in parse-http-tracker-response
+- [x] T087 [US5] Add missing field detection and error reporting in parse-http-tracker-response
+- [x] T088 [US5] Define spec ::tracker-error with enumerated error types in tracker/spec.clj
+- [x] T089 [US5] Add spec explain-data to error context for debugging in validate-input function
 
 **Checkpoint**: Error handling complete - all parsing functions handle malformed input gracefully
 
@@ -218,22 +218,22 @@ Following plan.md structure:
 
 ### Tests for User Story 6
 
-- [ ] T090 [P] [US6] Write test for calculate-next-announce with interval 1800 seconds in tracker_test.clj
-- [ ] T091 [P] [US6] Write test for calculate-next-announce using min-interval when present in tracker_test.clj
-- [ ] T092 [P] [US6] Write test for calculate-next-announce using default 1800 when no interval in tracker_test.clj
-- [ ] T093 [P] [US6] Write test for calculate-exponential-backoff (1s, 2s, 4s, 8s...) in tracker_test.clj
-- [ ] T094 [P] [US6] Write test for calculate-exponential-backoff respects max delay cap in tracker_test.clj
-- [ ] T095 [P] [US6] Write test for update-schedule-success (resets retry attempt to 0) in tracker_test.clj
-- [ ] T096 [P] [US6] Write test for update-schedule-failure (increments retry attempt) in tracker_test.clj
+- [x] T090 [P] [US6] Write test for calculate-next-announce with interval 1800 seconds in tracker_test.clj
+- [x] T091 [P] [US6] Write test for calculate-next-announce using min-interval when present in tracker_test.clj
+- [x] T092 [P] [US6] Write test for calculate-next-announce using default 1800 when no interval in tracker_test.clj
+- [x] T093 [P] [US6] Write test for calculate-exponential-backoff (1s, 2s, 4s, 8s...) in tracker_test.clj
+- [x] T094 [P] [US6] Write test for calculate-exponential-backoff respects max delay cap in tracker_test.clj
+- [x] T095 [P] [US6] Write test for update-schedule-success (resets retry attempt to 0) in tracker_test.clj
+- [x] T096 [P] [US6] Write test for update-schedule-failure (increments retry attempt) in tracker_test.clj
 
 ### Implementation for User Story 6
 
-- [ ] T097 [P] [US6] Implement calculate-next-announce function (current-time + interval * 1000) in tracker.clj
-- [ ] T098 [P] [US6] Implement calculate-exponential-backoff function (base * 2^attempt) in tracker.clj
-- [ ] T099 [P] [US6] Implement update-schedule-success function (pure state transition) in tracker.clj
-- [ ] T100 [P] [US6] Implement update-schedule-failure function (pure state transition) in tracker.clj
-- [ ] T101 [US6] Define spec ::announce-schedule with timestamp and interval constraints in tracker/spec.clj
-- [ ] T102 [US6] Add default interval constant (1800 seconds) in tracker.clj
+- [x] T097 [P] [US6] Implement calculate-next-announce function (current-time + interval * 1000) in tracker.clj
+- [x] T098 [P] [US6] Implement calculate-exponential-backoff function (base * 2^attempt) in tracker.clj
+- [x] T099 [P] [US6] Implement update-schedule-success function (pure state transition) in tracker.clj
+- [x] T100 [P] [US6] Implement update-schedule-failure function (pure state transition) in tracker.clj
+- [x] T101 [US6] Define spec ::announce-schedule with timestamp and interval constraints in tracker/spec.clj
+- [x] T102 [US6] Add default interval constant (1800 seconds) in tracker.clj
 
 **Checkpoint**: Re-announce timing complete - can schedule periodic announces and handle failures
 
@@ -244,13 +244,13 @@ Following plan.md structure:
 **Purpose**: Final integration, documentation, and performance verification
 
 - [ ] T103 [P] Add comprehensive docstrings to all public functions in tracker.clj
-- [ ] T104 [P] Add spec instrumentation enable/disable functions for dev/prod toggle in tracker/spec.clj
+- [x] T104 [P] Add spec instrumentation enable/disable functions for dev/prod toggle in tracker/spec.clj
 - [ ] T105 [P] Write performance test for parsing 1000+ peer lists (SC-007) in tracker_test.clj
 - [ ] T106 [P] Write performance test for URL encoding speed <1ms (plan.md goal) in tracker_test.clj
 - [ ] T107 [P] Verify all functions return {:ok value} or {:error ...} (no exceptions for expected failures)
 - [ ] T108 [P] Run linter (clj-kondo) and fix any warnings in tracker.clj and tracker/spec.clj
-- [ ] T109 Write integration test combining build-http-announce-url → parse-http-tracker-response in tracker_test.clj
-- [ ] T110 Write integration test combining build-udp-connect-request → parse-udp-connect-response in tracker_test.clj
+- [x] T109 Write integration test combining build-http-announce-url → parse-http-tracker-response in tracker_test.clj
+- [x] T110 Write integration test combining build-udp-connect-request → parse-udp-connect-response in tracker_test.clj
 - [ ] T111 Verify 90%+ test coverage without network I/O (SC-005) using test coverage tool
 - [ ] T112 Add usage examples to quickstart.md demonstrating all public API functions
 - [ ] T113 Update README.md with tracker protocol feature status and capabilities
