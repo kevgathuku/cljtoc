@@ -851,3 +851,197 @@
                          (and (= (long cid) (.getLong buf))
                               (= 2 (.getInt buf))
                               (= txid (.getInt buf))))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 8: US5 Error Handling (T080-T083)
+;; ---------------------------------------------------------------------------
+
+;; T080: Verify distinct error keywords across parsers
+(deftest error-type-classification-test
+  (testing "validate-input produces :invalid-input"
+    (let [result (tracker/validate-input bytes? "not bytes")]
+      (is (= :invalid-input (:error result)))))
+
+  (testing "parse-compact-peers-ipv4 produces :invalid-peer-data for bad length"
+    (let [result (tracker/parse-compact-peers-ipv4 (byte-array 3))]
+      (is (= :invalid-peer-data (:error result)))))
+
+  (testing "parse-udp-connect-response produces :invalid-action-code for wrong action"
+    (let [result (tracker/parse-udp-connect-response (make-connect-response-bytes 1 42 100))]
+      (is (= :invalid-action-code (:error result)))))
+
+  (testing "parse-udp-connect-response produces :invalid-message-length for wrong size"
+    (let [result (tracker/parse-udp-connect-response (byte-array 8))]
+      (is (= :invalid-message-length (:error result)))))
+
+  (testing "parse-dictionary-peers produces :invalid-peer-format for missing ip"
+    (let [result (tracker/parse-dictionary-peers [{"port" 6881}])]
+      (is (= :invalid-peer-format (:error result))))))
+
+;; T081/T082: Verify all error maps have required :error and :message keys
+;; and satisfy ::tracker-error spec
+(deftest error-map-structure-test
+  (let [error-cases [(tracker/validate-input bytes? "not bytes")
+                     (tracker/parse-compact-peers-ipv4 (byte-array 3))
+                     (tracker/parse-udp-connect-response (byte-array 8))
+                     (tracker/parse-udp-connect-response (make-connect-response-bytes 1 0 0))
+                     (tracker/parse-dictionary-peers [{"port" 6881}])]]
+    (doseq [err error-cases]
+      (testing (str "error map has :error and :message: " err)
+        (is (contains? err :error))
+        (is (contains? err :message))
+        (is (s/valid? ::spec/tracker-error err))))))
+
+;; T083: Verify :spec-explain is present in validate-input errors
+(deftest validate-input-spec-explain-test
+  (testing "validate-input includes :spec-explain for registered spec failures"
+    (let [result (tracker/validate-input ::spec/info-hash (byte-array 10))]
+      (is (= :invalid-input (:error result)))
+      (is (contains? result :spec-explain))
+      (is (some? (:spec-explain result))))))
+
+;; T083 generative: all validate-input error maps satisfy ::tracker-error
+(defspec error-maps-satisfy-spec 50
+  (prop/for-all [bad-len (gen/choose 1 19)]
+                (let [result (tracker/validate-input ::spec/info-hash (byte-array bad-len))]
+                  (s/valid? ::spec/tracker-error result))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 9: US6 Re-Announce Timing (T090-T096)
+;; ---------------------------------------------------------------------------
+
+;; T090-T092: calculate-next-announce
+(deftest calculate-next-announce-test
+  (testing "T090: uses interval-seconds when min-interval is nil"
+    (let [result (tracker/calculate-next-announce 1000000 1800 nil)]
+      (is (= {:ok 2800000} result))))
+
+  (testing "T091: uses min-interval-seconds when present (prefers min-interval)"
+    (let [result (tracker/calculate-next-announce 1000000 1800 300)]
+      (is (= {:ok 1300000} result))))
+
+  (testing "T092: uses default 1800 when both interval and min-interval are nil"
+    (let [result (tracker/calculate-next-announce 1000000 nil nil)]
+      (is (= {:ok 2800000} result)))))
+
+;; T093-T094: calculate-exponential-backoff
+(deftest calculate-exponential-backoff-test
+  (testing "T093: exponential growth (1s, 2s, 4s, 8s)"
+    (is (= {:ok 1000} (tracker/calculate-exponential-backoff 1)))
+    (is (= {:ok 2000} (tracker/calculate-exponential-backoff 2)))
+    (is (= {:ok 4000} (tracker/calculate-exponential-backoff 3)))
+    (is (= {:ok 8000} (tracker/calculate-exponential-backoff 4))))
+
+  (testing "T094: capped at max 1 hour (3600000 ms)"
+    (let [result (tracker/calculate-exponential-backoff 100)]
+      (is (= {:ok 3600000} result)))))
+
+;; T095: update-schedule-success
+(deftest update-schedule-success-test
+  (testing "T095: resets retry-attempt to 0 and updates schedule"
+    (let [schedule {:next-announce-time 0
+                    :interval-seconds 1800
+                    :retry-attempt 3
+                    :backoff-delay-ms 4000}
+          result (tracker/update-schedule-success schedule 900 1000000)]
+      (is (contains? result :ok))
+      (let [new-sched (:ok result)]
+        (is (= 0 (:retry-attempt new-sched)))
+        (is (= 0 (:backoff-delay-ms new-sched)))
+        (is (= 1900000 (:next-announce-time new-sched)))
+        (is (= 900 (:interval-seconds new-sched)))))))
+
+;; T096: update-schedule-failure
+(deftest update-schedule-failure-test
+  (testing "T096: increments retry-attempt and applies exponential backoff"
+    (let [schedule {:next-announce-time 0
+                    :interval-seconds 1800
+                    :retry-attempt 2
+                    :backoff-delay-ms 2000}
+          result (tracker/update-schedule-failure schedule 5000)]
+      (is (contains? result :ok))
+      (let [new-sched (:ok result)]
+        (is (= 3 (:retry-attempt new-sched)))
+        (is (= 4000 (:backoff-delay-ms new-sched)))
+        (is (= 9000 (:next-announce-time new-sched)))))))
+
+;; Generative: result :ok > current-time-ms
+(defspec calculate-next-announce-round-trip 100
+  (prop/for-all [t        gen/nat
+                 interval (gen/fmap inc gen/nat)]
+                (let [result (tracker/calculate-next-announce t interval nil)]
+                  (> (:ok result) t))))
+
+;; Generative: failure always increments retry-attempt by 1
+(defspec update-schedule-failure-increments-attempt 50
+  (prop/for-all [schedule (s/gen ::spec/announce-schedule)]
+                (let [result (tracker/update-schedule-failure schedule 0)]
+                  (and (contains? result :ok)
+                       (= (inc (:retry-attempt schedule))
+                          (:retry-attempt (:ok result)))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 10: Integration Tests (T109-T110)
+;; ---------------------------------------------------------------------------
+
+;; T109: HTTP round-trip — build URL then parse a simulated response
+(deftest http-round-trip-integration-test
+  (testing "T109: build HTTP announce URL and parse simulated tracker response"
+    (let [info-hash  (byte-array 20)
+          peer-id    (byte-array 20)
+          url-result (tracker/build-http-announce-url
+                      "http://tracker.example.com/announce"
+                      {:info-hash info-hash :peer-id peer-id
+                       :port 6881 :uploaded 0 :downloaded 0 :left 1000})]
+      (is (contains? url-result :ok))
+      (is (.startsWith (:ok url-result) "http://tracker.example.com/announce"))
+      ;; Simulate tracker response
+      (let [response-data  {"interval" 900
+                            "complete" 5
+                            "incomplete" 10
+                            "peers" (byte-array [192 168 1 1 0x1A 0xE1])}
+            response-bytes (bencode/encode-bencode response-data)
+            parse-result   (tracker/parse-http-tracker-response response-bytes)]
+        (is (contains? parse-result :ok))
+        (is (= :http (:protocol (:ok parse-result))))
+        (is (= :announce (:response-type (:ok parse-result))))
+        (is (= 900 (:interval (:ok parse-result))))
+        (is (= 1 (count (:peers (:ok parse-result)))))
+        (is (= "192.168.1.1" (:ip (first (:peers (:ok parse-result))))))
+        (is (= 6881 (:port (first (:peers (:ok parse-result))))))))))
+
+;; T110: UDP round-trip — build request, parse simulated response
+(deftest udp-round-trip-integration-test
+  (testing "T110: build UDP connect request, parse simulated connect response"
+    (let [txid       12345
+          conn-id    0x41727101980
+          req-result (tracker/build-udp-connect-request {:transaction-id txid})]
+      (is (contains? req-result :ok))
+      (is (= 16 (alength ^bytes (:ok req-result))))
+      (let [resp-bytes   (make-connect-response-bytes 0 txid conn-id)
+            parse-result (tracker/parse-udp-connect-response resp-bytes)]
+        (is (contains? parse-result :ok))
+        (is (= :connect (:action (:ok parse-result))))
+        (is (= txid (:transaction-id (:ok parse-result))))
+        (is (= conn-id (:connection-id (:ok parse-result)))))))
+
+  (testing "UDP announce request/response cycle"
+    (let [info-hash  (byte-array 20)
+          peer-id    (byte-array 20)
+          txid       99
+          conn-id    0x41727101980
+          req-result (tracker/build-udp-announce-request
+                      {:connection-id conn-id :transaction-id txid
+                       :info-hash info-hash :peer-id peer-id
+                       :downloaded 0 :left 1000 :uploaded 0 :port 6881})]
+      (is (contains? req-result :ok))
+      (is (= 98 (alength ^bytes (:ok req-result))))
+      (let [peer-bytes   (byte-array [10 0 0 1 0x1F 0x90])  ; 10.0.0.1:8080
+            resp-bytes   (make-announce-response-bytes 1 txid 1800 5 20 peer-bytes)
+            parse-result (tracker/parse-udp-announce-response resp-bytes)]
+        (is (contains? parse-result :ok))
+        (is (= :announce (:action (:ok parse-result))))
+        (is (= txid (:transaction-id (:ok parse-result))))
+        (is (= 1800 (:interval (:ok parse-result))))
+        (is (= 1 (count (:peers (:ok parse-result)))))
+        (is (= "10.0.0.1" (:ip (first (:peers (:ok parse-result))))))))))
