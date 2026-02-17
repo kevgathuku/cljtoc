@@ -84,26 +84,26 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Tasks**:
 
-- [ ] T017 [US2] Define all PeerMessage records in `src/dev/cljtoc/protocol/peer.clj`: KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, Bitfield, Request, Piece, Cancel
-- [ ] T018 [US2] [P] Implement `parse-message` function dispatcher in `src/dev/cljtoc/protocol/peer.clj` with message type routing
-- [ ] T019 [US2] [P] Implement keep-alive parser in `src/dev/cljtoc/protocol/peer.clj` (length = 0)
-- [ ] T020 [US2] [P] Implement simple message parsers (choke, unchoke, interested, not-interested) in `src/dev/cljtoc/protocol/peer.clj`
-- [ ] T021 [US2] [P] Implement Have parser in `src/dev/cljtoc/protocol/peer.clj` (extract piece-index)
-- [ ] T022 [US2] [P] Implement Bitfield parser in `src/dev/cljtoc/protocol/peer.clj` (extract byte array)
-- [ ] T023 [US2] [P] Implement Request parser in `src/dev/cljtoc/protocol/peer.clj` (extract index, begin, length)
-- [ ] T024 [US2] [P] Implement Piece parser in `src/dev/cljtoc/protocol/peer.clj` (extract index, begin, data)
-- [ ] T025 [US2] [P] Implement Cancel parser in `src/dev/cljtoc/protocol/peer.clj` (extract index, begin, length)
-- [ ] T026 [US2] [P] Implement `parse-messages` function in `src/dev/cljtoc/protocol/peer.clj` for parsing multiple messages from buffer
-- [ ] T027 [US2] [P] Add test: keep-alive message parses correctly
-- [ ] T028 [US2] [P] Add tests: choke, unchoke, interested, not-interested parse correctly
-- [ ] T029 [US2] [P] Add test: have message parses with correct piece index
-- [ ] T030 [US2] [P] Add test: bitfield message parses with accessible bytes
-- [ ] T031 [US2] [P] Add test: request message parses with all three fields
-- [ ] T032 [US2] [P] Add test: piece message parses with index, begin, and data
-- [ ] T033 [US2] [P] Add test: cancel message parses with all three fields
-- [ ] T034 [US2] [P] Add test: unknown message id returns `:unknown-message-type` error
-- [ ] T035 [US2] [P] Add test: incomplete message returns `:incomplete-message` error
-- [ ] T036 [US2] [P] Add test: `parse-messages` handles multiple messages and returns remaining bytes
+- [x] T017 [US2] Define all PeerMessage records in `src/dev/cljtoc/protocol/peer.clj`: KeepAlive, Choke, Unchoke, Interested, NotInterested, Have, Bitfield, Request, Piece, Cancel
+- [x] T018 [US2] [P] Implement `parse-message` function dispatcher in `src/dev/cljtoc/protocol/peer.clj` with message type routing
+- [x] T019 [US2] [P] Implement keep-alive parser in `src/dev/cljtoc/protocol/peer.clj` (length = 0)
+- [x] T020 [US2] [P] Implement simple message parsers (choke, unchoke, interested, not-interested) in `src/dev/cljtoc/protocol/peer.clj`
+- [x] T021 [US2] [P] Implement Have parser in `src/dev/cljtoc/protocol/peer.clj` (extract piece-index)
+- [x] T022 [US2] [P] Implement Bitfield parser in `src/dev/cljtoc/protocol/peer.clj` (extract byte array)
+- [x] T023 [US2] [P] Implement Request parser in `src/dev/cljtoc/protocol/peer.clj` (extract index, begin, length)
+- [x] T024 [US2] [P] Implement Piece parser in `src/dev/cljtoc/protocol/peer.clj` (extract index, begin, data)
+- [x] T025 [US2] [P] Implement Cancel parser in `src/dev/cljtoc/protocol/peer.clj` (extract index, begin, length)
+- [x] T026 [US2] [P] Implement `parse-messages` function in `src/dev/cljtoc/protocol/peer.clj` for parsing multiple messages from buffer
+- [x] T027 [US2] [P] Add test: keep-alive message parses correctly
+- [x] T028 [US2] [P] Add tests: choke, unchoke, interested, not-interested parse correctly
+- [x] T029 [US2] [P] Add test: have message parses with correct piece index
+- [x] T030 [US2] [P] Add test: bitfield message parses with accessible bytes
+- [x] T031 [US2] [P] Add test: request message parses with all three fields
+- [x] T032 [US2] [P] Add test: piece message parses with index, begin, and data
+- [x] T033 [US2] [P] Add test: cancel message parses with all three fields
+- [x] T034 [US2] [P] Add test: unknown message id returns `:unknown-message-type` error
+- [x] T035 [US2] [P] Add test: incomplete message returns `:incomplete-message` error
+- [x] T036 [US2] [P] Add test: `parse-messages` handles multiple messages and returns remaining bytes
 
 **Independent Test Criteria**: Run `parse-message` tests - all 9 message types parse correctly, error cases handled
 
@@ -122,12 +122,12 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Tasks**:
 
-- [ ] T037 [US3] Implement `build-handshake` function in `src/dev/cljtoc/protocol/peer.clj` with optional reserved parameter
-- [ ] T038 [US3] [P] Add test: valid handshake builds to exactly 68 bytes with correct layout
-- [ ] T039 [US3] [P] Add test: reserved bytes appear at correct offset
-- [ ] T040 [US3] [P] Add test: invalid info_hash length returns `:invalid-input` error
-- [ ] T041 [US3] [P] Add test: invalid peer_id length returns `:invalid-input` error
-- [ ] T042 [US3] [P] Add generative test: round-trip (build then parse) returns original fields
+- [x] T037 [US3] Implement `build-handshake` function in `src/dev/cljtoc/protocol/peer.clj` with optional reserved parameter
+- [x] T038 [US3] [P] Add test: valid handshake builds to exactly 68 bytes with correct layout
+- [x] T039 [US3] [P] Add test: reserved bytes appear at correct offset
+- [x] T040 [US3] [P] Add test: invalid info_hash length returns `:invalid-input` error
+- [x] T041 [US3] [P] Add test: invalid peer_id length returns `:invalid-input` error
+- [x] T042 [US3] [P] Add generative test: round-trip (build then parse) returns original fields
 
 **Independent Test Criteria**: Run `build-handshake` tests - all 5 acceptance scenarios pass, round-trip property holds
 
@@ -148,25 +148,25 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Tasks**:
 
-- [ ] T043 [US4] Implement `build-message` dispatcher in `src/dev/cljtoc/protocol/peer.clj` with message type routing
-- [ ] T044 [US4] [P] Implement `build-keep-alive` convenience function in `src/dev/cljtoc/protocol/peer.clj`
-- [ ] T045 [US4] [P] Implement `build-choke`, `build-unchoke`, `build-interested`, `build-not-interested` convenience functions
-- [ ] T046 [US4] [P] Implement `build-have` function in `src/dev/cljtoc/protocol/peer.clj` with piece-index validation
-- [ ] T047 [US4] [P] Implement `build-bitfield` function in `src/dev/cljtoc/protocol/peer.clj` with payload validation
-- [ ] T048 [US4] [P] Implement `build-request` function in `src/dev/cljtoc/protocol/peer.clj` with 16 KiB limit validation
-- [ ] T049 [US4] [P] Implement `build-piece` function in `src/dev/cljtoc/protocol/peer.clj` with data length validation
-- [ ] T050 [US4] [P] Implement `build-cancel` function in `src/dev/cljtoc/protocol/peer.clj` with 16 KiB limit validation
-- [ ] T051 [US4] [P] Implement `build-messages` function in `src/dev/cljtoc/protocol/peer.clj` for building multiple messages
-- [ ] T052 [US4] [P] Add test: keep-alive builds to 4 zero bytes
-- [ ] T053 [US4] [P] Add tests: no-payload messages build to 5 bytes with correct id
-- [ ] T054 [US4] [P] Add test: have message builds with correct index at offset 5
-- [ ] T055 [US4] [P] Add test: bitfield message builds with correct length
-- [ ] T056 [US4] [P] Add test: request message builds with fields at correct offsets
-- [ ] T057 [US4] [P] Add test: cancel message builds with fields at correct offsets
-- [ ] T058 [US4] [P] Add test: piece message builds with data at offset 13
-- [ ] T059 [US4] [P] Add test: negative piece index returns `:invalid-input` error
-- [ ] T060 [US4] [P] Add test: block length > 16 KiB returns `:invalid-input` error
-- [ ] T061 [US4] [P] Add generative tests: round-trip for all message types
+- [x] T043 [US4] Implement `build-message` dispatcher in `src/dev/cljtoc/protocol/peer.clj` with message type routing
+- [~] T044 [US4] [P] Implement `build-keep-alive` convenience function in `src/dev/cljtoc/protocol/peer.clj` - using multimethod approach instead
+- [~] T045 [US4] [P] Implement `build-choke`, `build-unchoke`, `build-interested`, `build-not-interested` convenience functions - using multimethod approach instead
+- [~] T046 [US4] [P] Implement `build-have` function in `src/dev/cljtoc/protocol/peer.clj` with piece-index validation - using multimethod approach instead
+- [~] T047 [US4] [P] Implement `build-bitfield` function in `src/dev/cljtoc/protocol/peer.clj` with payload validation - using multimethod approach instead
+- [~] T048 [US4] [P] Implement `build-request` function in `src/dev/cljtoc/protocol/peer.clj` with 16 KiB limit validation - using multimethod approach instead
+- [~] T049 [US4] [P] Implement `build-piece` function in `src/dev/cljtoc/protocol/peer.clj` with data length validation - using multimethod approach instead
+- [~] T050 [US4] [P] Implement `build-cancel` function in `src/dev/cljtoc/protocol/peer.clj` with 16 KiB limit validation - using multimethod approach instead
+- [x] T051 [US4] [P] Implement `build-messages` function in `src/dev/cljtoc/protocol/peer.clj` for building multiple messages
+- [x] T052 [US4] [P] Add test: keep-alive builds to 4 zero bytes
+- [x] T053 [US4] [P] Add tests: no-payload messages build to 5 bytes with correct id
+- [x] T054 [US4] [P] Add test: have message builds with correct index at offset 5
+- [x] T055 [US4] [P] Add test: bitfield message builds with correct length
+- [x] T056 [US4] [P] Add test: request message builds with fields at correct offsets
+- [x] T057 [US4] [P] Add test: cancel message builds with fields at correct offsets
+- [x] T058 [US4] [P] Add test: piece message builds with data at offset 13
+- [x] T059 [US4] [P] Add test: negative piece index returns `:invalid-input` error
+- [x] T060 [US4] [P] Add test: block length > 16 KiB returns `:invalid-input` error
+- [x] T061 [US4] [P] Add generative tests: round-trip for all message types
 
 **Independent Test Criteria**: Run `build-*` tests - all 9 message types build correctly, validation errors work, round-trip property holds
 
@@ -186,27 +186,27 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Tasks**:
 
-- [ ] T062 [US5] Define `PeerState` record in `src/dev/cljtoc/protocol/peer_state.clj` with all fields
-- [ ] T063 [US5] [P] Implement `initial-peer-state` function in `src/dev/cljtoc/protocol/peer_state.clj` with default values
-- [ ] T064 [US5] [P] Implement bitfield wrapper using Java BitSet in `src/dev/cljtoc/protocol/peer_state.clj` with immutability guarantees
-- [ ] T065 [US5] [P] Implement `peer-has-piece?` function in `src/dev/cljtoc/protocol/peer_state.clj`
-- [ ] T066 [US5] [P] Implement `mark-piece-available` function in `src/dev/cljtoc/protocol/peer_state.clj`
-- [ ] T067 [US5] [P] Implement `update-bitfield` function in `src/dev/cljtoc/protocol/peer_state.clj` handling extra bits
-- [ ] T068 [US5] [P] Implement `apply-message` function in `src/dev/cljtoc/protocol/peer_state.clj` with state transitions
-- [ ] T069 [US5] [P] Implement `peer-piece-count` function in `src/dev/cljtoc/protocol/peer_state.clj`
-- [ ] T070 [US5] [P] Implement `can-request?` function in `src/dev/cljtoc/protocol/peer_state.clj`
-- [ ] T071 [US5] [P] Add test: initial peer state has correct default values
-- [ ] T072 [US5] [P] Add test: unchoke message transitions peer-choking to false
-- [ ] T073 [US5] [P] Add test: choke message transitions peer-choking to true
-- [ ] T074 [US5] [P] Add test: interested message transitions peer-interested to true
-- [ ] T075 [US5] [P] Add test: not-interested message transitions peer-interested to false
-- [ ] T076 [US5] [P] Add test: have message marks piece available in bitfield
-- [ ] T077 [US5] [P] Add test: bitfield message updates entire bitfield
-- [ ] T078 [US5] [P] Add test: peer-has-piece? returns false for unknown pieces
-- [ ] T079 [US5] [P] Add test: peer-has-piece? returns true for available pieces
-- [ ] T080 [US5] [P] Add test: bitfield with extra bits ignores extras (per A-005)
-- [ ] T081 [US5] [P] Add test: can-request? returns true only when unchoked and interested
-- [ ] T082 [US5] [P] Add generative test: state transitions are deterministic (same input → same output)
+- [x] T062 [US5] Define `PeerState` record in `src/dev/cljtoc/protocol/peer_state.clj` with all fields
+- [x] T063 [US5] [P] Implement `initial-peer-state` function in `src/dev/cljtoc/protocol/peer_state.clj` with default values
+- [x] T064 [US5] [P] Implement bitfield wrapper using Java BitSet in `src/dev/cljtoc/protocol/peer_state.clj` with immutability guarantees
+- [x] T065 [US5] [P] Implement `peer-has-piece?` function in `src/dev/cljtoc/protocol/peer_state.clj`
+- [x] T066 [US5] [P] Implement `mark-piece-available` function in `src/dev/cljtoc/protocol/peer_state.clj`
+- [x] T067 [US5] [P] Implement `update-bitfield` function in `src/dev/cljtoc/protocol/peer_state.clj` handling extra bits
+- [x] T068 [US5] [P] Implement `apply-message` function in `src/dev/cljtoc/protocol/peer_state.clj` with state transitions
+- [x] T069 [US5] [P] Implement `peer-piece-count` function in `src/dev/cljtoc/protocol/peer_state.clj`
+- [x] T070 [US5] [P] Implement `can-request?` function in `src/dev/cljtoc/protocol/peer_state.clj`
+- [x] T071 [US5] [P] Add test: initial peer state has correct default values
+- [x] T072 [US5] [P] Add test: unchoke message transitions peer-choking to false
+- [x] T073 [US5] [P] Add test: choke message transitions peer-choking to true
+- [x] T074 [US5] [P] Add test: interested message transitions peer-interested to true
+- [x] T075 [US5] [P] Add test: not-interested message transitions peer-interested to false
+- [x] T076 [US5] [P] Add test: have message marks piece available in bitfield
+- [x] T077 [US5] [P] Add test: bitfield message updates entire bitfield
+- [x] T078 [US5] [P] Add test: peer-has-piece? returns false for unknown pieces
+- [x] T079 [US5] [P] Add test: peer-has-piece? returns true for available pieces
+- [x] T080 [US5] [P] Add test: bitfield with extra bits ignores extras (per A-005)
+- [x] T081 [US5] [P] Add test: can-request? returns true only when unchoked and interested
+- [x] T082 [US5] [P] Add generative test: state transitions are deterministic (same input → same output)
 
 **Independent Test Criteria**: Run `peer-state` tests - all 6 acceptance scenarios pass, state transitions are pure and deterministic
 
