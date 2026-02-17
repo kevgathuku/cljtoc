@@ -16,13 +16,13 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Goal**: Initialize project structure and core utilities
 
-- [ ] T001 Create directory structure per implementation plan: `src/dev/cljtoc/protocol/` and `test/dev/cljtoc/protocol/`
-- [ ] T002 Create `src/dev/cljtoc/protocol/peer.clj` with namespace declaration and docstring
-- [ ] T003 Create `src/dev/cljtoc/protocol/peer_state.clj` with namespace declaration and docstring
-- [ ] T004 Create `test/dev/cljtoc/protocol/peer_test.clj` with namespace declaration and test scaffolding
-- [ ] T005 Create `test/dev/cljtoc/protocol/peer_state_test.clj` with namespace declaration and test scaffolding
-- [ ] T006 [P] Implement byte utility functions in `src/dev/cljtoc/protocol/peer.clj`: `bytes-to-int32`, `int32-to-bytes`, `bytes-to-int16`, `int16-to-bytes`, `concat-bytes`
-- [ ] T007 [P] Add tests for byte utilities in `test/dev/cljtoc/protocol/peer_test.clj`: verify big-endian encoding/decoding
+- [x] T001 Create directory structure per implementation plan: `src/dev/cljtoc/protocol/` and `test/dev/cljtoc/protocol/`
+- [x] T002 Create `src/dev/cljtoc/protocol/peer.clj` with namespace declaration and docstring
+- [x] T003 Create `src/dev/cljtoc/protocol/peer_state.clj` with namespace declaration and docstring
+- [x] T004 Create `test/dev/cljtoc/protocol/peer_test.clj` with namespace declaration and test scaffolding
+- [x] T005 Create `test/dev/cljtoc/protocol/peer_state_test.clj` with namespace declaration and test scaffolding
+- [x] T006 [P] Implement byte utility functions in `src/dev/cljtoc/protocol/peer.clj`: `bytes-to-int32`, `int32-to-bytes`, `bytes-to-int16`, `int16-to-bytes`, `concat-bytes`
+- [x] T007 [P] Add tests for byte utilities in `test/dev/cljtoc/protocol/peer_test.clj`: verify big-endian encoding/decoding
 
 **Independent Test Criteria**: Byte utilities round-trip correctly (encode then decode returns original value)
 
@@ -32,9 +32,9 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Goal**: Define PeerHandshake record and validation utilities
 
-- [ ] T008 Define `PeerHandshake` record in `src/dev/cljtoc/protocol/peer.clj` with fields: protocol, reserved, info-hash, peer-id
-- [ ] T009 [P] Implement handshake validation function in `src/dev/cljtoc/protocol/peer.clj`: validate protocol string and byte lengths
-- [ ] T010 [P] Add PeerHandshake record tests in `test/dev/cljtoc/protocol/peer_test.clj`: verify record creation and field access
+- [x] T008 Define `PeerHandshake` record in `src/dev/cljtoc/protocol/peer.clj` with fields: protocol, reserved, info-hash, peer-id
+- [x] T009 [P] Implement handshake validation function in `src/dev/cljtoc/protocol/peer.clj`: validate protocol string and byte lengths
+- [x] T010 [P] Add PeerHandshake record tests in `test/dev/cljtoc/protocol/peer_test.clj`: verify record creation and field access
 
 **Independent Test Criteria**: PeerHandshake record can be created and fields accessed correctly
 
