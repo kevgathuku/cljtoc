@@ -739,3 +739,113 @@
                    (= (+ 16 (* 20 n))
                       (alength ^bytes (-> % :ret second :ok))))
        :error   #(= :error (first (:ret %)))))
+
+;; ---------------------------------------------------------------------------
+;; Re-Announce Timing (US6)
+;; ---------------------------------------------------------------------------
+
+(def ^:private default-interval-seconds 1800)  ; T102
+(def ^:private max-backoff-ms 3600000)          ; 1 hour cap
+(def ^:private backoff-base-ms 1000)            ; 1 second base
+
+(defn calculate-next-announce
+  "Calculate next announce timestamp (ms since epoch).
+
+  Uses min-interval-seconds if provided, otherwise interval-seconds,
+  otherwise the default of 1800 seconds.
+
+  Parameters:
+    current-time-ms       - Current timestamp in milliseconds
+    interval-seconds      - Tracker-provided interval, or nil
+    min-interval-seconds  - Tracker-provided min-interval, or nil
+
+  Returns: {:ok next-announce-time-ms}"
+  [current-time-ms interval-seconds min-interval-seconds]
+  (let [effective (or min-interval-seconds interval-seconds default-interval-seconds)]
+    {:ok (+ current-time-ms (* effective 1000))}))
+
+(s/fdef calculate-next-announce
+  :args (s/cat :current-time-ms nat-int?
+               :interval-seconds (s/nilable pos-int?)
+               :min-interval-seconds (s/nilable pos-int?))
+  :ret (s/keys :req-un [::spec/ok])
+  :fn #(> (-> % :ret :ok) (-> % :args :current-time-ms)))
+
+(defn calculate-exponential-backoff
+  "Calculate exponential backoff delay for retry attempt N.
+
+  Formula: base * 2^(attempt-1), capped at max-backoff-ms (1 hour).
+  attempt=1 → 1000ms, attempt=2 → 2000ms, attempt=3 → 4000ms, etc.
+
+  Parameters:
+    attempt - 1-based retry attempt number (positive integer)
+
+  Returns: {:ok delay-ms}"
+  [attempt]
+  {:ok (long (min (* backoff-base-ms (Math/pow 2 (dec attempt)))
+                  max-backoff-ms))})
+
+(s/fdef calculate-exponential-backoff
+  :args (s/cat :attempt pos-int?)
+  :ret (s/keys :req-un [::spec/ok])
+  :fn #(<= (-> % :ret :ok) max-backoff-ms))
+
+(defn update-schedule-success
+  "Pure state transition: update AnnounceSchedule after successful announce.
+
+  Resets retry state and schedules next announce at current-time + interval.
+
+  Parameters:
+    schedule          - Current ::spec/announce-schedule map
+    interval-seconds  - Interval from tracker response
+    current-time-ms   - Current timestamp in milliseconds
+
+  Returns: {:ok updated-schedule} or {:error ...}"
+  [schedule interval-seconds current-time-ms]
+  (if-let [err (validate-input ::spec/announce-schedule schedule)]
+    err
+    {:ok (assoc schedule
+                :next-announce-time (+ current-time-ms (* interval-seconds 1000))
+                :interval-seconds interval-seconds
+                :retry-attempt 0
+                :backoff-delay-ms 0)}))
+
+(s/fdef update-schedule-success
+  :args (s/cat :schedule ::spec/announce-schedule
+               :interval-seconds pos-int?
+               :current-time-ms nat-int?)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= 0 (-> % :ret second :ok :retry-attempt))
+       :error   #(= :error (first (:ret %)))))
+
+(defn update-schedule-failure
+  "Pure state transition: update AnnounceSchedule after failed announce.
+
+  Increments retry-attempt and schedules next attempt using exponential backoff.
+
+  Parameters:
+    schedule        - Current ::spec/announce-schedule map
+    current-time-ms - Current timestamp in milliseconds
+
+  Returns: {:ok updated-schedule} or {:error ...}"
+  [schedule current-time-ms]
+  (if-let [err (validate-input ::spec/announce-schedule schedule)]
+    err
+    (let [attempt (inc (:retry-attempt schedule))
+          backoff (:ok (calculate-exponential-backoff attempt))]
+      {:ok (assoc schedule
+                  :next-announce-time (+ current-time-ms backoff)
+                  :retry-attempt attempt
+                  :backoff-delay-ms backoff)})))
+
+(s/fdef update-schedule-failure
+  :args (s/cat :schedule ::spec/announce-schedule
+               :current-time-ms nat-int?)
+  :ret (s/or :success (s/keys :req-un [::spec/ok])
+             :error ::spec/error-result)
+  :fn (s/or
+       :success #(= (inc (-> % :args :schedule :retry-attempt))
+                    (-> % :ret second :ok :retry-attempt))
+       :error   #(= :error (first (:ret %)))))
