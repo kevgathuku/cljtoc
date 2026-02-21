@@ -134,6 +134,8 @@ All PRs must verify:
 ## Active Technologies
 - Clojure 1.11+ (JVM-based) (003-tracker-protocol)
 - N/A (stateless protocol parsing) (003-tracker-protocol)
+- Clojure 1.11+ (JVM-based) + None (pure domain — no core.async, no network). Reuses `dev.cljtoc.domain.bencode/sha1-hash` (within same layer). (005-piece-management)
+- N/A — all in-memory, no disk I/O (005-piece-management)
 
 ## Recent Changes
 - 003-tracker-protocol: Added Clojure 1.11+ (JVM-based)
