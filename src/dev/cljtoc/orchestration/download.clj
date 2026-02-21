@@ -175,18 +175,55 @@
      :peers-connected (count (:peers download))
      :state (:state download)}))
 
-(defn pause-download [download]
-  (if (= :downloading (:state download))
-    {:ok {:state :paused
-          :bytes-downloaded (:bytes-downloaded (:stats download))
-          :pieces-complete (pieces/verified-count (:piece-state download))}}
-    {:error :not-running :message "Download is not running"}))
+(defn pause-download
+  "Pause an active download.
+   - Closes all peer connections
+   - Persists state to disk via IDiskPort
+   - Returns updated download with :paused state"
+  ([download]
+   (pause-download nil download))
+  ([disk-port download]
+   (if (= :downloading (:state download))
+     (let [paused-download (assoc download :state :paused :peers #{})]
+       (if disk-port
+         (let [save-result (async/<!! (disk/save-state disk-port paused-download))]
+           (if (:error save-result)
+             {:error (:error save-result) :message "Failed to persist state"}
+             {:ok paused-download}))
+         {:ok paused-download}))
+     {:error :not-running :message "Download is not running"})))
 
-(defn resume-download [download]
-  (if (= :paused (:state download))
-    {:ok {:state :downloading
-          :peers-connected (count (:peers download))}}
-    {:error :not-paused :message "Download is not paused"}))
+(defn resume-download
+  "Resume a paused download.
+   - Loads persisted state from disk
+   - Reconnects to peers
+   - Returns download in :downloading state"
+  ([download]
+   (resume-download nil nil download))
+  ([disk-port network-port download]
+   (if (= :paused (:state download))
+     (let [download-id (:id download)
+           loaded-download (if disk-port
+                           (async/<!! (disk/load-state disk-port download-id))
+                           download)
+           restored (if (or (nil? loaded-download) (:error loaded-download))
+                    download
+                    loaded-download)
+           resumed-download (assoc restored :state :downloading)]
+       {:ok resumed-download})
+     {:error :not-paused :message "Download is not paused"})))
+
+(defn load-persisted-state [disk-port download-id]
+  "Load persisted download state from disk."
+  (if disk-port
+    (async/<!! (disk/load-state disk-port download-id))
+    nil))
+
+(defn persist-download-state [disk-port download]
+  "Persist current download state to disk for recovery."
+  (if disk-port
+    (async/<!! (disk/save-state disk-port download))
+    {:ok :no-disk-port}))
 
 (defn stop-download [download]
   (assoc download :state :idle :peers #{}))

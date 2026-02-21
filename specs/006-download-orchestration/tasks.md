@@ -121,13 +121,13 @@ State persistence: pause closes peers and saves state, resume restores and conti
 
 ### Implementation
 
-- [ ] T045 [US4] Implement pause-download in src/dev/cljtoc/orchestration/download.clj
-- [ ] T046 [US4] Implement state persistence via IDiskPort in src/dev/cljtoc/orchestration/download.clj
-- [ ] T047 [US4] Implement resume-download in src/dev/cljtoc/orchestration/download.clj
+- [x] T045 [US4] Implement pause-download in src/dev/cljtoc/orchestration/download.clj
+- [x] T046 [US4] Implement state persistence via IDiskPort in src/dev/cljtoc/orchestration/download.clj
+- [x] T047 [US4] Implement resume-download in src/dev/cljtoc/orchestration/download.clj
 
 ### Tests
 
-- [ ] T048 [US4] Create unit tests for pause/resume in test/dev/cljtoc/orchestration/download_test.clj
+- [x] T048 [US4] Create unit tests for pause/resume in test/dev/cljtoc/orchestration/download_test.clj
 
 ---
 
