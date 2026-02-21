@@ -57,7 +57,7 @@ Each sub-feature follows the full spec-kit workflow independently:
 | 002 | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files...` | ✅ Complete |
 | 003 | Tracker Protocol | 002 | P1 | `/speckit.specify Implement HTTP/UDP tracker communication` | ✅ Complete |
 | 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | ✅ Complete |
-| 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | Not Started |
+| 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | ✅ Complete |
 | 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | Not Started |
 
 #### User Interface Features
@@ -127,7 +127,7 @@ src/
         ├── domain/          # Pure domain logic (002, 005)
         │   ├── bencode.clj      ✅ implemented
         │   ├── torrent.clj      ✅ implemented
-        │   └── pieces.clj       (005 - not started)
+        │   └── pieces.clj       ✅ implemented
         ├── protocol/        # Protocol implementations (003, 004)
         │   ├── tracker.clj      ✅ implemented
         │   ├── tracker/
