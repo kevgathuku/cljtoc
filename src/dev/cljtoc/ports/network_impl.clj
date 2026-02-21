@@ -2,15 +2,29 @@
   "Real network I/O implementation for download orchestration.
    
    Provides functions for TCP peer connections and tracker communication."
-  (:require [dev.cljtoc.protocol.peer :as peer]
-            [dev.cljtoc.protocol.tracker :as tracker]
+  (:require [dev.cljtoc.protocol.tracker :as tracker]
             [clojure.core.async :as async]
             [clojure.string :as str])
-  (:import [java.net InetSocketAddress Socket]
-           [java.util.concurrent Executors]))
+  (:import [java.net InetSocketAddress Socket]))
 
 (defrecord NetworkPort
            [config peer-connections])
+
+(defn try-announce-tier
+  "Try to announce to a tier of trackers."
+  [tier torrent-metadata]
+  (let [ch (async/chan 1)]
+    (async/go
+      (loop [[url & rest] tier]
+        (if url
+          (let [result (try
+                         (tracker/http-announce url torrent-metadata "test-client-id")
+                         (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
+            (if (and (:ok result) (seq (get-in result [:ok :peers])))
+              (async/>! ch result)
+              (recur rest)))
+          (async/>! ch {:ok #{}}))))
+    ch))
 
 (defn connect-peer [network address]
   "Open TCP connection to a peer at the given address.
@@ -40,9 +54,8 @@
   (let [ch (async/chan 1)]
     (async/go
       (try
-        (let [bytes (peer/build-message message)
-              out (:out peer)]
-          (.write out bytes)
+        (let [out (:out peer)]
+          (.write out message)
           (.flush out)
           (async/>! ch {:ok :sent}))
         (catch Exception e
@@ -100,46 +113,9 @@
       (async/>! ch {:ok {:seeders 0 :leechers 0 :complete 0}}))
     ch))
 
-(defn try-announce-tier
-  "Try to announce to a tier of trackers."
-  [tier torrent-metadata]
-  (let [ch (async/chan 1)]
-    (async/go
-      (loop [[url & rest] tier]
-        (if url
-          (let [result (try
-                         (tracker/http-announce url torrent-metadata "test-client-id")
-                         (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
-            (if (and (:ok result) (seq (get-in result [:ok :peers])))
-              (async/>! ch result)
-              (recur rest)))
-          (async/>! ch {:ok #{}}))))
-    ch))
-
-(defn try-announce-tier
-  "Try to announce to a tier of trackers."
-  [tier torrent-metadata]
-  (let [ch (async/chan 1)]
-    (async/go
-      (loop [[url & rest] tier]
-        (if url
-          (let [result (try
-                         (tracker/http-announce url torrent-metadata "test-client-id")
-                         (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
-            (if (and (:ok result) (seq (get-in result [:ok :peers])))
-              (async/>! ch result)
-              (recur rest)))
-          (async/>! ch {:ok #{}}))))
-    ch))
-
 (defn create
-  "Create a NetworkPort instance.
-   
-   Options:
-   - :timeout-ms - connection timeout in milliseconds (default: 10000)
-   - :max-connections - max peer connections (default: 50)"
+  "Create a NetworkPort instance."
   ([]
    (create {}))
-  ([{:keys [timeout-ms max-connections config]
-     :or {timeout-ms 10000 max-connections 50}}]
-   (->NetworkPort config (atom {}))))
+  ([opts]
+   (->NetworkPort opts (atom {}))))
