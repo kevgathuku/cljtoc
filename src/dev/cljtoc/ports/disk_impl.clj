@@ -48,12 +48,12 @@
     (let [ch (async/chan 1)]
       (async/go
         (try
-          (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
-                parent (.getParentFile piece-file)]
-            (when-not (.exists parent)
-              (.mkdirs parent))
-            (Files/write (.toPath piece-file) bytes)
-            (async/>! ch {:ok :written}))
+            (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
+                  parent (.getParentFile piece-file)]
+              (when-not (.exists parent)
+                (.mkdirs parent))
+              (clojure.java.io/copy bytes piece-file)
+              (async/>! ch {:ok :written}))
           (catch Exception e
             (async/>! ch {:error :write-error :message (.getMessage e)}))))
       ch))
