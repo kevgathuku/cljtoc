@@ -29,9 +29,9 @@ This architecture is implemented through the following independently deliverable
 
 | Feature | Description | Status | Dependencies | Priority |
 |---------|-------------|--------|--------------|----------|
-| [002-bencode-parser](../002-bencode-parser/) | Parse .torrent files (bencode format) to domain model | **In Progress** | None | P1 - Foundation |
-| 003-tracker-protocol | HTTP/UDP tracker communication for peer discovery | Not Started | 002 | P1 - Required |
-| 004-peer-wire-protocol | BitTorrent peer message protocol implementation | Not Started | 002 | P1 - Required |
+| [002-bencode-parser](../002-bencode-parser/) | Parse .torrent files (bencode format) to domain model | **Complete** | None | P1 - Foundation |
+| [003-tracker-protocol](../003-tracker-protocol/) | HTTP/UDP tracker communication for peer discovery | **Complete** | 002 | P1 - Required |
+| [004-peer-wire-protocol](../004-peer-wire-protocol/) | BitTorrent peer message protocol implementation | **Complete** | 002 | P1 - Required |
 | 005-piece-selection | Pure domain logic for piece management & verification | Not Started | 002 | P1 - Required |
 | 006-download-orchestration | End-to-end single torrent download coordination | Not Started | 002-005 | P1 - Engine Core |
 
@@ -261,9 +261,6 @@ These requirements apply to all sub-features:
 
 ## Technology Constraints
 
-
-## Technology Constraints
-
 - **Language**: Clojure (JVM) for core implementation
 - **Concurrency**: core.async for managing concurrent processes
 - **Testing**: clojure.test or similar for unit/integration tests
@@ -346,10 +343,11 @@ The functional requirements from the original spec are distributed across sub-fe
 
 To begin implementing this architecture:
 
-1. **Start with 001a** (bencode parser): This is the foundation with zero dependencies
-2. **Proceed with 001b-d in parallel**: These can be developed independently once 001a is complete
-3. **Integrate with 001e**: Brings together all pieces into working MVP
-4. **Add value incrementally with 001f-i**: Each adds independent value on top of MVP
+1. **Start with 002** (bencode parser): Foundation with zero dependencies ✅ Complete
+2. **Proceed with 003–005 in parallel**: Can be developed independently once 002 is complete
+3. **Integrate at 006**: Brings all pieces together into working download engine
+4. **Add CLI at 011**: Makes the engine usable by end users — completes MVP
+5. **Add value with 007–010**: Each adds independent functionality (seeding, multi-torrent, monitoring, hardening)
 
 Each sub-feature has its own specification with detailed user stories, acceptance criteria, and success metrics. Refer to the sub-feature specs for implementation details.
 

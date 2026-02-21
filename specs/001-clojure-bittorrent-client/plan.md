@@ -56,7 +56,7 @@ Each sub-feature follows the full spec-kit workflow independently:
 |----|---------|--------------|----------|------------------|--------|
 | 002 | Bencode Parser | None | P1 | `/speckit.specify Parse .torrent files...` | ✅ Complete |
 | 003 | Tracker Protocol | 002 | P1 | `/speckit.specify Implement HTTP/UDP tracker communication` | ✅ Complete |
-| 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | 🚧 In Progress (spec) |
+| 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | ✅ Complete |
 | 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | Not Started |
 | 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | Not Started |
 
@@ -110,19 +110,12 @@ specs/001-clojure-bittorrent-client/
 ### Sub-Feature Documentation (Created Independently)
 
 ```text
-specs/001a-bencode-parser/
-├── spec.md              # Feature specification
-├── plan.md              # Implementation plan
-├── tasks.md             # Task breakdown
-└── checklists/          # Feature checklists
-
-specs/001b-tracker-protocol/
-├── spec.md
-├── plan.md
-├── tasks.md
-└── checklists/
-
-[... etc for 001c-001i ...]
+specs/002-bencode-parser/         ✅ Complete
+specs/003-tracker-protocol/       ✅ Complete
+specs/004-peer-wire-protocol/     ✅ Complete
+specs/005-piece-selection/        (not started)
+specs/006-download-orchestration/ (not started)
+specs/011-cli-interface/          (not started)
 ```
 
 ### Source Code (Shared Repository Root)
@@ -131,30 +124,34 @@ specs/001b-tracker-protocol/
 src/
 └── dev/
     └── cljtoc/
-        ├── domain/          # Pure domain logic (001a, 001d)
-        │   ├── bencode.clj
-        │   ├── torrent.clj
-        │   └── pieces.clj
-        ├── protocol/        # Protocol implementations (001b, 001c)
-        │   ├── tracker.clj
-        │   └── peer.clj
-        ├── ports/           # Effect interfaces (all features)
-        │   ├── network.clj
-        │   ├── disk.clj
-        │   └── time.clj
-        ├── orchestration/   # Coordination (001e, 001g)
-        │   ├── download.clj
-        │   └── manager.clj
-        └── supervision/     # Lifecycle (001i)
-            └── supervisor.clj
+        ├── domain/          # Pure domain logic (002, 005)
+        │   ├── bencode.clj      ✅ implemented
+        │   ├── torrent.clj      ✅ implemented
+        │   └── pieces.clj       (005 - not started)
+        ├── protocol/        # Protocol implementations (003, 004)
+        │   ├── tracker.clj      ✅ implemented
+        │   ├── tracker/
+        │   │   └── spec.clj     ✅ implemented
+        │   ├── peer.clj         ✅ implemented
+        │   └── peer_state.clj   ✅ implemented
+        ├── ports/           # Effect interfaces (006+)
+        │   ├── network.clj      (not started)
+        │   ├── disk.clj         (not started)
+        │   └── time.clj         (not started)
+        ├── orchestration/   # Coordination (006)
+        │   ├── download.clj     (not started)
+        │   └── manager.clj      (not started)
+        └── supervision/     # Lifecycle (010)
+            └── supervisor.clj   (not started)
 
 test/
 └── dev/
     └── cljtoc/
-        ├── domain/
-        ├── protocol/
-        ├── integration/
-        └── test_doubles/    # Fake implementations of ports
+        ├── domain/              ✅ bencode_test, torrent_test
+        ├── protocol/            ✅ peer_test, peer_state_test, tracker_test
+        ├── integration/         (not started)
+        ├── test_utils.clj       ✅ shared test helpers
+        └── test_doubles/        (not started)
 ```
 
 ## Architectural Principles (All Sub-Features MUST Follow)
@@ -174,8 +171,8 @@ To continue implementation:
 
 1. ~~**Complete Feature 002**: Bencode parser~~ ✅ Merged to main
 2. ~~**Proceed to 003**: Tracker protocol (HTTP + UDP, BEP 3/15)~~ ✅ Merged to main
-3. **Complete Feature 004**: Peer wire protocol — spec written, planning and implementation next
-4. **Complete Feature 005**: Piece selection — can start in parallel with 004
+3. ~~**Complete Feature 004**: Peer wire protocol~~ ✅ Merged to main
+4. **Complete Feature 005**: Piece selection — pure domain logic for piece management
 5. **Integrate at 006**: Brings all pieces together into working download engine
 6. **Add CLI at 011**: Makes the engine usable by end users - **completes MVP**
 7. **Add value with 007-010**: Each adds independent functionality (seeding, multi-torrent, monitoring, hardening)
