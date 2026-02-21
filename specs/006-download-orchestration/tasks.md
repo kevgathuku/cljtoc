@@ -133,10 +133,10 @@ State persistence: pause closes peers and saves state, resume restores and conti
 
 ## Phase 7: Polish & Cross-Cutting Concerns
 
-- [ ] T049 [P] Add spec validation to all public functions in src/dev/cljtoc/orchestration/download.clj
-- [ ] T050 [P] Add spec validation to all public functions in src/dev/cljtoc/orchestration/manager.clj
-- [ ] T051 Run full test suite and fix any failures
-- [ ] T052 Verify all Success Criteria from spec.md are met
+- [x] T049 [P] Add spec validation to all public functions in src/dev/cljtoc/orchestration/download.clj
+- [x] T050 [P] Add spec validation to all public functions in src/dev/cljtoc/orchestration/manager.clj
+- [x] T051 Run full test suite and fix any failures
+- [x] T052 Verify all Success Criteria from spec.md are met
 
 ---
 

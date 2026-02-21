@@ -304,3 +304,53 @@
        :message "No peers available for download"
        :failed-piece nil})))
 
+;; ============================================================================
+;; Spec Validation
+;; ============================================================================
+
+(s/def ::download-id uuid?)
+(s/def ::state keyword?)
+(s/def ::output-dir string?)
+(s/def ::bytes-downloaded nat-int?)
+(s/def ::pieces-complete nat-int?)
+(s/def ::pieces-total nat-int?)
+(s/def ::peers-connected nat-int?)
+(s/def ::rate-bytes-per-sec nat-int?)
+(s/def ::percent number?)
+
+(s/def ::download-state #{:idle :starting :downloading :paused :completed :failed})
+
+(s/def ::progress-response
+  (s/keys :req-un [::percent
+                    ::pieces-complete
+                    ::pieces-total
+                    ::bytes-downloaded
+                    ::rate-bytes-per-sec
+                    ::peers-connected
+                    ::state]))
+
+(s/fdef initial-stats
+  :ret (s/keys :req-un [::started-at]))
+
+(s/fdef initial-download
+  :args (s/cat :torrent map? :output-dir string?)
+  :ret (s/keys :req-un [::download-id ::state]))
+
+(s/fdef progress
+  :args (s/cat :download map?)
+  :ret ::progress-response)
+
+(s/fdef pause-download
+  :args (s/cat :disk-port (s/? any?) :download map?)
+  :ret (s/or :ok (s/keys :req-un [::state])
+              :error map?))
+
+(s/fdef resume-download
+  :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)
+  :ret (s/or :ok (s/keys :req-un [::state])
+              :error map?))
+
+(s/fdef stop-download
+  :args (s/cat :download map?)
+  :ret (s/keys :req-un [::state ::peers]))
+
