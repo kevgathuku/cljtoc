@@ -91,12 +91,12 @@
             (let [torrent-meta (:ok parse-result)
                   info (:info torrent-meta)
                   required-size (or (:length info)
-                                   (reduce + (map :length (:files info))))
+                                    (reduce + (map :length (:files info))))
                   _ (println (str "Torrent: " (:name info)))
                   _ (println (str "Size: " (format-bytes required-size)))
                   _ (println (str "Piece length: " (:piece-length info)))
-                  _ (println (str "Pieces class: " (class (:pieces info))))
-                  piece-count (try (count (torrent/parse-pieces (:pieces info))) (catch Exception e (str "error: " (.getMessage e))))
+                  _ (println (str "Pieces type: " (type (:pieces info))))
+                  piece-count (count (:pieces info))
                   _ (println (str "Pieces: " piece-count))
                   space-check (disk-impl/check-disk-space output-dir required-size)]
               (if (:error space-check)
@@ -117,17 +117,17 @@
                     (System/exit 1))
                   (let [download-id (cli-state/id-from-path torrent-path)]
                     (cli-state/save-state (assoc result :id download-id
-                                                  :torrent-path torrent-path
-                                                  :output-dir output-dir))
+                                                 :torrent-path torrent-path
+                                                 :output-dir output-dir))
                     (println (str "Download started: " download-id))
                     (println)
                     (print-progress (download/progress result))))))))))))
 
 (defn- cmd-torrent-pause
   [args]
-  (let [download-id (or (first args)
-                       (cli-state/load-most-recent))
-        state (when download-id (cli-state/load-state download-id))]
+  (let [state (if (seq args)
+                (cli-state/load-state (first args))
+                (cli-state/load-most-recent))]
     (if (nil? state)
       (do
         (println "No active download found.")
@@ -144,9 +144,9 @@
 
 (defn- cmd-torrent-resume
   [args]
-  (let [download-id (or (first args)
-                       (cli-state/load-most-recent))
-        state (when download-id (cli-state/load-state download-id))]
+  (let [state (if (seq args)
+                (cli-state/load-state (first args))
+                (cli-state/load-most-recent))]
     (if (nil? state)
       (do
         (println "No paused download found.")
@@ -163,9 +163,9 @@
 
 (defn- cmd-torrent-status
   [args]
-  (let [download-id (or (first args)
-                       (cli-state/load-most-recent))
-        state (when download-id (cli-state/load-state download-id))]
+  (let [state (if (seq args)
+                (cli-state/load-state (first args))
+                (cli-state/load-most-recent))]
     (if (nil? state)
       (do
         (println "No download found.")
@@ -178,15 +178,15 @@
 
 (defn- cmd-torrent-stop
   [args]
-  (let [download-id (or (first args)
-                       (cli-state/load-most-recent))
-        state (when download-id (cli-state/load-state download-id))]
+  (let [state (if (seq args)
+                (cli-state/load-state (first args))
+                (cli-state/load-most-recent))]
     (if (nil? state)
       (do
         (println "No download found.")
         (System/exit 1))
       (let [stopped (download/stop-download state)]
-        (cli-state/delete-state download-id)
+        (cli-state/delete-state (:id state))
         (println "Download stopped.")
         (print-progress (download/progress stopped))))))
 
@@ -204,7 +204,7 @@
    "torrent.pause" {:fn cmd-torrent-pause
                     :desc "Pause an active download"}
    "torrent.resume" {:fn cmd-torrent-resume
-                      :desc "Resume a paused download"}
+                     :desc "Resume a paused download"}
    "torrent.status" {:fn cmd-torrent-status
                      :desc "Show download status"}
    "torrent.stop" {:fn cmd-torrent-stop
