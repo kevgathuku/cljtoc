@@ -22,6 +22,12 @@
           :message message}
          context))
 
+(s/fdef tracker-error
+  :args (s/cat :error-type keyword? :message string? :context (s/* any?))
+  :ret  (s/keys :req-un [::spec/error ::spec/message])
+  :fn   #(and (= (-> % :args :error-type) (-> % :ret :error))
+              (= (-> % :args :message)    (-> % :ret :message))))
+
 ;; ---------------------------------------------------------------------------
 ;; Binary utilities
 ;; ---------------------------------------------------------------------------
@@ -32,6 +38,11 @@
   use unsigned shorts. This function performs the conversion."
   [s]
   (bit-and s 0xFFFF))
+
+(s/fdef unsigned-short
+  :args (s/cat :s int?)
+  :ret  (s/int-in 0 65536)
+  :fn   #(<= 0 (:ret %) 65535))
 
 ;; ---------------------------------------------------------------------------
 ;; URL Encoding
@@ -88,6 +99,13 @@
       (tracker-error :invalid-input
                      (str "Input validation failed for " spec-key)
                      :spec-explain explain-data))))
+
+(s/fdef validate-input
+  :args (s/cat :spec-key any? :data any?)
+  :ret  (s/nilable (s/keys :req-un [::spec/error ::spec/message]))
+  :fn   #(if (s/valid? (-> % :args :spec-key) (-> % :args :data))
+           (nil? (:ret %))
+           (some? (:ret %))))
 
 ;; ---------------------------------------------------------------------------
 ;; Peer parsing functions

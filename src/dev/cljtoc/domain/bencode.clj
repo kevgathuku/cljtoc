@@ -10,6 +10,7 @@
     bencode integer → long
     bencode list    → vector
     bencode dict    → sorted-map with string keys"
+  (:require [clojure.spec.alpha :as s])
   (:import [java.security MessageDigest]
            [java.io ByteArrayOutputStream]))
 
@@ -289,6 +290,47 @@
 ;; Dict value span — for extracting raw bytes of a dict value by key
 ;; ---------------------------------------------------------------------------
 
+;; ============================================================================
+;; Function Specs
+;; ============================================================================
+
+(s/fdef sha1-hash
+  :args (s/cat :bs bytes?)
+  :ret  (s/and bytes? #(= 20 (alength %))))
+
+(s/fdef bytes->hex-string
+  :args (s/cat :bs bytes?)
+  :ret  string?
+  :fn   #(= (* 2 (alength (-> % :args :bs))) (count (:ret %))))
+
+(s/fdef decode-bencode
+  :args (s/cat :bs bytes?)
+  :ret  map?
+  :fn   #(or (contains? (:ret %) :ok)
+             (= :bencode-parse-error (-> % :ret :error))))
+
+(s/fdef decode-bencode-raw
+  :args (s/cat :bs bytes?)
+  :ret  map?
+  :fn   #(or (contains? (:ret %) :ok)
+             (= :bencode-parse-error (-> % :ret :error))))
+
+(s/fdef bencode-type
+  :args (s/cat :bs bytes? :pos nat-int?)
+  :ret  #{:string :integer :list :dict :unknown})
+
+(s/fdef encode-bencode
+  :args (s/cat :value (s/or :str   string?
+                            :int   integer?
+                            :bytes bytes?
+                            :vec   vector?
+                            :map   map?))
+  :ret  bytes?)
+
+(s/fdef bencode-roundtrip?
+  :args (s/cat :value (s/or :str string? :int integer? :vec vector? :map map?))
+  :ret  boolean?)
+
 (defn find-dict-value-span
   "Walks a bencoded dict to find the byte range [start, end) of the value
   for the given key. Returns {:ok [start end]} or an error map.
@@ -318,3 +360,9 @@
                         val-result
                         (let [[_ val-end] val-result]
                           (recur val-end))))))))))))))
+
+(s/fdef find-dict-value-span
+  :args (s/cat :bs bytes? :key-str string?)
+  :ret  map?
+  :fn   #(or (vector? (-> % :ret :ok))
+             (= :bencode-parse-error (-> % :ret :error))))

@@ -7,7 +7,8 @@
   with comprehensive validation.
 
   All errors are returned as data maps, never thrown as exceptions."
-  (:require [dev.cljtoc.domain.bencode :as bencode])
+  (:require [dev.cljtoc.domain.bencode :as bencode]
+            [clojure.spec.alpha :as s])
   (:import [java.util Arrays]))
 
 ;; ---------------------------------------------------------------------------
@@ -224,3 +225,53 @@
                         (if (:ok validation)
                           {:ok parsed}
                           validation)))))))))))))
+
+;; ============================================================================
+;; Function Specs
+;; ============================================================================
+
+(s/fdef extract-info-dict-bytes
+  :args (s/cat :torrent-bytes bytes?)
+  :ret  map?
+  :fn   #(or (bytes? (-> % :ret :ok))
+             (keyword? (-> % :ret :error))))
+
+(s/fdef compute-info-hash
+  :args (s/cat :torrent-bytes bytes?)
+  :ret  map?
+  :fn   #(or (and (bytes? (-> % :ret :ok))
+                  (= 20 (alength ^bytes (-> % :ret :ok))))
+             (keyword? (-> % :ret :error))))
+
+(s/fdef parse-pieces
+  :args (s/cat :piece-data bytes?)
+  :ret  vector?
+  :fn   #(every? bytes? (:ret %)))
+
+(s/fdef validate-required-fields
+  :args (s/cat :torrent map?)
+  :ret  vector?)
+
+(s/fdef validate-field-types
+  :args (s/cat :torrent map?)
+  :ret  vector?)
+
+(s/fdef validate-pieces-length
+  :args (s/cat :torrent map?)
+  :ret  vector?)
+
+(s/fdef validate-piece-length
+  :args (s/cat :torrent map?)
+  :ret  vector?)
+
+(s/fdef validate-torrent
+  :args (s/cat :torrent map?)
+  :ret  map?
+  :fn   #(or (true? (-> % :ret :ok))
+             (vector? (-> % :ret :error))))
+
+(s/fdef parse-torrent
+  :args (s/cat :torrent-bytes bytes?)
+  :ret  map?
+  :fn   #(or (map? (-> % :ret :ok))
+             (keyword? (-> % :ret :error))))
