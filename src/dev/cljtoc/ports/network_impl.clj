@@ -1,13 +1,14 @@
 (ns dev.cljtoc.ports.network-impl
   "Real network I/O implementation for download orchestration.
-   
+
    Provides functions for TCP peer connections and tracker communication."
   (:require [clojure.core.async :as async]
             [clojure.string :as str]
             [dev.cljtoc.ports.network :as network]
+            [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker])
   (:import [java.net InetSocketAddress Socket HttpURLConnection URL]
-           [java.io ByteArrayOutputStream]
+           [java.io ByteArrayOutputStream InputStream]
            [java.security SecureRandom]))
 
 (defrecord NetworkPort
@@ -60,20 +61,56 @@
           (async/>! ch {:error :send-failed :message (.getMessage e)}))))
     ch))
 
-(defn receive-message
-  "Receive the next message from a peer.
-   Returns a channel that will deliver the message or error."
+(defn- read-fully
+  "Read exactly n bytes from an InputStream. Returns byte array or throws on EOF."
+  [^InputStream in n]
+  (let [buf (byte-array n)]
+    (loop [offset 0]
+      (if (= offset n)
+        buf
+        (let [read-count (.read in buf offset (- n offset))]
+          (if (= read-count -1)
+            (throw (java.io.EOFException. (str "EOF after " offset " of " n " bytes")))
+            (recur (+ offset read-count))))))))
+
+(defn receive-handshake
+  "Read a 68-byte peer handshake from the connection.
+   Returns a channel that will deliver {:ok PeerHandshake} or {:error ...}."
   [network peer]
   (let [ch (async/chan 1)]
-    (async/go
+    (async/thread
       (try
         (let [in (:in peer)
-              first-byte (int (.read in))]
-          (if (= first-byte -1)
-            (async/>! ch {:error :disconnected :message "Peer disconnected"})
-            (async/>! ch {:ok {:type :keep-alive}})))
+              handshake-bytes (read-fully in 68)
+              result (peer/parse-handshake handshake-bytes)]
+          (async/>!! ch result))
+        (catch java.io.EOFException _
+          (async/>!! ch {:error :disconnected :message "Peer disconnected during handshake"}))
         (catch Exception e
-          (async/>! ch {:error :receive-failed :message (.getMessage e)}))))
+          (async/>!! ch {:error :receive-failed :message (.getMessage e)}))))
+    ch))
+
+(defn receive-message
+  "Receive the next peer wire protocol message from a peer.
+   Reads 4-byte length prefix, then length bytes of payload.
+   Returns a channel that will deliver {:ok PeerMessage} or {:error ...}."
+  [network peer]
+  (let [ch (async/chan 1)]
+    (async/thread
+      (try
+        (let [in (:in peer)
+              len-bytes (read-fully in 4)
+              msg-len (peer/bytes-to-int32 len-bytes)]
+          (if (zero? msg-len)
+            (async/>!! ch {:ok (peer/->KeepAlive)})
+            (let [payload (read-fully in msg-len)
+                  full-msg (peer/concat-bytes len-bytes payload)
+                  result (peer/parse-message full-msg)]
+              (async/>!! ch result))))
+        (catch java.io.EOFException _
+          (async/>!! ch {:error :disconnected :message "Peer disconnected"}))
+        (catch Exception e
+          (async/>!! ch {:error :receive-failed :message (.getMessage e)}))))
     ch))
 
 (defn close-peer
@@ -168,6 +205,24 @@
     ch))
 
 (extend-type NetworkPort
+  network/INetworkPort
+  (connect-peer [this address]
+    (connect-peer this address))
+  (send-message [this peer message]
+    (send-message this peer message))
+  (receive-message [this peer]
+    (receive-message this peer))
+  (close-peer [this peer]
+    (close-peer this peer))
+  (peer-loop [this peer handler]
+    (async/thread
+      (loop []
+        (let [result (async/<!! (receive-message this peer))]
+          (when result
+            (handler result)
+            (when (:ok result)
+              (recur)))))))
+
   network/ITrackerPort
   (announce [this torrent-metadata]
     (tracker-announce this torrent-metadata))
