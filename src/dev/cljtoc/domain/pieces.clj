@@ -324,3 +324,40 @@
                (and (seq blocks)
                     (every? (fn [b] (<= (:length b) 16384)) blocks)
                     (= expected-len (reduce + (map :length blocks)))))))
+
+;; ============================================================================
+;; Integrity Verification (US4)
+;; ============================================================================
+
+(defn verify-piece
+  "Verifies assembled piece bytes against the expected SHA-1 hash from torrent
+  metadata. Returns {:ok piece-index} on match, {:error :hash-mismatch ...} on
+  mismatch, or {:error :invalid-input ...} for empty bytes or wrong hash length."
+  [piece-index assembled-bytes expected-hash]
+  (cond
+    (or (nil? assembled-bytes) (zero? (alength ^bytes assembled-bytes)))
+    (piece-error :invalid-input "assembled-bytes must not be empty")
+
+    (or (nil? expected-hash) (not= 20 (alength ^bytes expected-hash)))
+    (piece-error :invalid-input
+                 (str "expected-hash must be exactly 20 bytes, got "
+                      (if (nil? expected-hash) "nil" (alength ^bytes expected-hash))))
+
+    :else
+    (let [actual-hash (bencode/sha1-hash assembled-bytes)]
+      (if (java.util.Arrays/equals ^bytes actual-hash ^bytes expected-hash)
+        {:ok piece-index}
+        {:error :hash-mismatch
+         :piece-index piece-index
+         :message (str "Piece " piece-index " hash mismatch")}))))
+
+(s/fdef verify-piece
+  :args (s/cat :piece-index      ::piece-index
+               :assembled-bytes  bytes?
+               :expected-hash    bytes?)
+  :ret  map?
+  :fn   (fn [%]
+          (let [result (:ret %)
+                pi     (-> % :args :piece-index)]
+            (or (keyword? (:error result))
+                (= pi (:ok result))))))

@@ -254,3 +254,46 @@
              expected    (- piece-end piece-start)]
          (and (every? #(<= (:length %) 16384) blocks)
               (= expected (reduce + (map :length blocks)))))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 4: US4 — Verify Piece Integrity
+;; ---------------------------------------------------------------------------
+
+(deftest verify-piece-pass-test
+  (testing "matching bytes return {:ok piece-index}"
+    (let [data          (byte-array [1 2 3 4 5])
+          expected-hash (bencode/sha1-hash data)
+          result        (pieces/verify-piece 5 data expected-hash)]
+      (is (= {:ok 5} result)))))
+
+(deftest verify-piece-corruption-test
+  (testing "single-byte corruption returns :hash-mismatch"
+    (let [data          (byte-array [1 2 3 4 5])
+          expected-hash (bencode/sha1-hash data)
+          corrupted     (byte-array [1 2 3 4 99])
+          result        (pieces/verify-piece 5 corrupted expected-hash)]
+      (is (= :hash-mismatch (:error result)))
+      (is (= 5 (:piece-index result)))
+      (is (string? (:message result))))))
+
+(deftest verify-piece-empty-bytes-test
+  (testing "empty byte array returns :invalid-input"
+    (let [result (pieces/verify-piece 0 (byte-array 0) (byte-array 20))]
+      (is (= :invalid-input (:error result)))
+      (is (string? (:message result))))))
+
+(deftest verify-piece-bad-hash-length-test
+  (testing "expected hash not 20 bytes returns :invalid-input"
+    (let [result (pieces/verify-piece 0 (byte-array [1 2 3]) (byte-array 19))]
+      (is (= :invalid-input (:error result))))
+    (let [result (pieces/verify-piece 0 (byte-array [1 2 3]) (byte-array 21))]
+      (is (= :invalid-input (:error result))))))
+
+(defspec verify-piece-referentially-transparent 100
+  (prop/for-all
+   [data (gen/fmap byte-array (gen/vector (gen/choose 0 255) 1 100))
+    idx  (gen/choose 0 999)]
+   (let [hash   (bencode/sha1-hash data)
+         result1 (pieces/verify-piece idx data hash)
+         result2 (pieces/verify-piece idx data hash)]
+     (= result1 result2))))
