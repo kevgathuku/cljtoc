@@ -28,7 +28,7 @@
    Returns a channel that will deliver the peer connection or error."
   [network address]
   (let [ch (async/chan 1)]
-    (async/go
+    (async/thread
       (try
         (let [parts (str/split address #":")
               host (first parts)
@@ -41,10 +41,10 @@
                          :in (.getInputStream socket)
                          :out (.getOutputStream socket)}]
           (swap! (:peer-connections network) assoc address peer-data)
-          (async/>! ch {:ok peer-data}))
+          (async/>!! ch {:ok peer-data}))
         (catch Exception e
-          (async/>! ch {:error :connect-failed :message (.getMessage e)})))
-      ch)))
+          (async/>!! ch {:error :connect-failed :message (.getMessage e)}))))
+    ch))
 
 (defn send-message
   "Send a peer wire message to the connected peer.
