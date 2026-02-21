@@ -4,10 +4,30 @@
    Manages persistence of download state between CLI invocations.
    Uses human-readable filenames as download IDs."
   (:require [clojure.java.io :as io]
-            [clojure.edn :as edn])
+            [clojure.edn :as edn]
+            [clojure.walk :as walk])
   (:import [java.util UUID]))
 
 (def default-state-dir "./torrent-state")
+
+(defn- bytes->hex
+  "Convert byte array to hex string for serialization."
+  [ba]
+  (if (bytes? ba)
+    (apply str (map #(format "%02x" %) ba))
+    ba))
+
+(defn- record->map
+  "Recursively convert all records to plain maps for EDN serialization.
+   Also converts byte arrays to hex strings."
+  [x]
+  (walk/postwalk
+    (fn [x]
+      (cond
+        (record? x) (into {} x)
+        (bytes? x) (bytes->hex x)
+        :else x))
+    x))
 
 (defrecord DownloadState
   [id
@@ -58,7 +78,7 @@
          path (state-file-path id state-dir)
          file (io/file path)]
      (io/make-parents file)
-     (spit path (pr-str download)))))
+     (spit path (pr-str (record->map download))))))
 
 (defn delete-state
   "Delete download state from disk."
@@ -75,7 +95,7 @@
   [torrent-path]
   (let [file (io/file torrent-path)
         name (.getName file)
-        ext (.getExtension file)]
+        ext (second (re-find #"\.([^.]+)$" name))]
     (if (and ext (not (empty? ext)))
       (subs name 0 (- (count name) (inc (count ext))))
       name)))

@@ -65,7 +65,8 @@
 (defn- parse-torrent [disk-port torrent-path]
   (let [ch (async/chan 1)]
     (async/go
-      (let [result (disk/read-torrent-file disk-port torrent-path)]
+      (let [result-chan (disk/read-torrent-file disk-port torrent-path)
+            result (async/<! result-chan)]
         (if (:error result)
           (async/>! ch (download-error :invalid-torrent (:message result)))
           (async/>! ch {:ok (:ok result)}))))
