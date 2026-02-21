@@ -32,7 +32,8 @@
     ;; Verify assembled bytes against expected SHA-1 hash
     (verify-piece 7 assembled-bytes expected-hash)
     ;; => {:ok 7}  or  {:error :hash-mismatch ...}"
-  (:require [clojure.spec.alpha :as s]
+  (:require [clojure.set :as set]
+            [clojure.spec.alpha :as s]
             [dev.cljtoc.domain.bencode :as bencode]))
 
 ;; ============================================================================
@@ -235,3 +236,91 @@
   :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)
   :ret  map?
   :fn   transition-fn-valid?)
+
+;; ============================================================================
+;; Piece Selection — Rarest-First (US2)
+;; ============================================================================
+
+(defn select-piece
+  "Selects the next piece to download from a peer using rarest-first strategy.
+
+  Candidates = peer-available ∩ needed. Among candidates, the piece held
+  by the fewest peers in all-peers-available is returned. Lowest piece index
+  breaks ties deterministically.
+
+  Parameters:
+    piece-state         — current PieceState
+    peer-available      — #{nat-int} pieces this peer has
+    all-peers-available — collection of #{nat-int} sets, one per connected peer
+
+  Returns {:ok piece-index} or {:ok nil} if no selectable piece exists."
+  [piece-state peer-available all-peers-available]
+  (let [candidates (set/intersection (set peer-available) (:needed piece-state))]
+    (if (empty? candidates)
+      {:ok nil}
+      (let [freq   (fn [idx] (count (filter #(contains? % idx) all-peers-available)))
+            rarest (first (sort-by (fn [idx] [(freq idx) idx]) candidates))]
+        {:ok rarest}))))
+
+(s/fdef select-piece
+  :args (s/cat :piece-state         ::piece-state
+               :peer-available      ::piece-index-set
+               :all-peers-available (s/coll-of ::piece-index-set))
+  :ret  map?
+  :fn   #(let [result  (:ret %)
+               state   (-> % :args :piece-state)
+               peer-av (-> % :args :peer-available)]
+           (or (nil? (:ok result))
+               (and (contains? (:needed state) (:ok result))
+                    (contains? peer-av (:ok result))))))
+
+;; ============================================================================
+;; Block Decomposition (US3)
+;; ============================================================================
+
+(defn piece-blocks
+  "Decomposes a piece into an ordered sequence of Block records for peer wire
+  protocol requests. Each block is at most 16,384 bytes (16 KiB). The last
+  block of the last piece may be shorter.
+
+  Parameters:
+    piece-index             — 0-based piece index
+    standard-piece-length   — bytes per piece from torrent metadata (pos-int)
+    total-length            — total torrent byte count (pos-int)
+
+  Returns {:ok [Block]} or {:error :invalid-input :message string} if
+  piece-index is out of range (>= total piece count)."
+  [piece-index standard-piece-length total-length]
+  (let [total-pieces (long (Math/ceil (/ (double total-length) standard-piece-length)))]
+    (if (>= piece-index total-pieces)
+      (piece-error :invalid-input
+                   (str "Piece index " piece-index
+                        " is out of range [0, " total-pieces ")"))
+      (let [piece-start  (* piece-index standard-piece-length)
+            piece-end    (min (* (long (inc piece-index)) standard-piece-length)
+                              total-length)
+            piece-length (- piece-end piece-start)
+            blocks       (loop [offset 0
+                                acc    (transient [])]
+                           (if (>= offset piece-length)
+                             (persistent! acc)
+                             (let [blk-len (min block-size (- piece-length offset))]
+                               (recur (+ offset blk-len)
+                                      (conj! acc (->Block piece-index offset blk-len))))))]
+        {:ok blocks}))))
+
+(s/fdef piece-blocks
+  :args (s/cat :piece-index           ::piece-index
+               :standard-piece-length pos-int?
+               :total-length          pos-int?)
+  :ret  map?
+  :fn   #(or (keyword? (-> % :ret :error))
+             (let [blocks (-> % :ret :ok)
+                   pi     (-> % :args :piece-index)
+                   spl    (-> % :args :standard-piece-length)
+                   tl     (-> % :args :total-length)
+                   expected-len (- (min (* (long (inc pi)) spl) tl)
+                                   (* pi spl))]
+               (and (seq blocks)
+                    (every? (fn [b] (<= (:length b) 16384)) blocks)
+                    (= expected-len (reduce + (map :length blocks)))))))
