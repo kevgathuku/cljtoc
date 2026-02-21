@@ -90,14 +90,14 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 ### Implementation for User Story 2
 
-- [ ] T023 [US2] Implement `select-piece` in `src/dev/cljtoc/domain/pieces.clj`: candidates = `(intersection peer-available needed)`; count frequency across `all-peers-available`; return lowest-index minimum-frequency candidate as `{:ok piece-index}` or `{:ok nil}`
-- [ ] T024 [US2] [P] Add `s/fdef` for `select-piece` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: non-nil result is always in `(:needed piece-state)` and `peer-available`
-- [ ] T025 [US2] [P] Add test: rarest piece is selected — provide 3 peers where piece 5 is held by 1 peer and piece 2 by all 3; verify piece 5 is selected in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T026 [US2] [P] Add test: peer whose bitfield has no needed pieces returns `{:ok nil}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T027 [US2] [P] Add test: tie-breaking — two equally rare pieces → lowest piece index is selected in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T028 [US2] [P] Add test: in-flight pieces are excluded — piece marked in-flight is not returned by `select-piece` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T029 [US2] [P] Add test: empty peer list (`all-peers-available = []`) returns `{:ok nil}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T030 [US2] [P] Add generative test (`defspec select-piece-safety`): when result is non-nil, selected piece is always in `peer-available` and in `(:needed state)` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T023 [US2] Implement `select-piece` in `src/dev/cljtoc/domain/pieces.clj`: candidates = `(intersection peer-available needed)`; count frequency across `all-peers-available`; return lowest-index minimum-frequency candidate as `{:ok piece-index}` or `{:ok nil}`
+- [x] T024 [US2] [P] Add `s/fdef` for `select-piece` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: non-nil result is always in `(:needed piece-state)` and `peer-available`
+- [x] T025 [US2] [P] Add test: rarest piece is selected — provide 3 peers where piece 5 is held by 1 peer and piece 2 by all 3; verify piece 5 is selected in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T026 [US2] [P] Add test: peer whose bitfield has no needed pieces returns `{:ok nil}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T027 [US2] [P] Add test: tie-breaking — two equally rare pieces → lowest piece index is selected in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T028 [US2] [P] Add test: in-flight pieces are excluded — piece marked in-flight is not returned by `select-piece` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T029 [US2] [P] Add test: empty peer list (`all-peers-available = []`) returns `{:ok nil}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T030 [US2] [P] Add generative test (`defspec select-piece-safety`): when result is non-nil, selected piece is always in `peer-available` and in `(:needed state)` in `test/dev/cljtoc/domain/pieces_test.clj`
 
 **Checkpoint**: US2 fully functional — rarest-first selection independently verified
 
@@ -119,14 +119,14 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 ### Implementation for User Story 3
 
-- [ ] T031 [US3] Implement `piece-blocks` in `src/dev/cljtoc/domain/pieces.clj`: compute actual piece length (last piece may be shorter); generate `Block` records at offsets 0, 16384, 32768… capped at 16384 bytes each; validate piece-index in range
-- [ ] T032 [US3] [P] Add `s/fdef` for `piece-blocks` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariants: all blocks ≤16384 bytes; offsets are contiguous; sum of lengths = actual piece size
-- [ ] T033 [US3] [P] Add test: `(piece-blocks 0 524288 1073741824)` → 32 blocks each `{:length 16384}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T034 [US3] [P] Add test: piece length not a multiple of 16 KiB → all-but-last blocks are 16384, last block = remainder in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T035 [US3] [P] Add test: last piece of torrent — `(piece-blocks 2047 524288 1073750016)` → `[{:piece-index 2047 :offset 0 :length 8192}]` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T036 [US3] [P] Add test: 1-byte piece → exactly one `Block` with `:length 1` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T037 [US3] [P] Add test: out-of-range piece index (≥ total piece count) returns `{:error :invalid-input :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T038 [US3] [P] Add generative test (`defspec piece-blocks-coverage`): for random valid piece-index/piece-length/total-length, `(reduce + (map :length blocks)) = actual-piece-length` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T031 [US3] Implement `piece-blocks` in `src/dev/cljtoc/domain/pieces.clj`: compute actual piece length (last piece may be shorter); generate `Block` records at offsets 0, 16384, 32768… capped at 16384 bytes each; validate piece-index in range
+- [x] T032 [US3] [P] Add `s/fdef` for `piece-blocks` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariants: all blocks ≤16384 bytes; offsets are contiguous; sum of lengths = actual piece size
+- [x] T033 [US3] [P] Add test: `(piece-blocks 0 524288 1073741824)` → 32 blocks each `{:length 16384}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T034 [US3] [P] Add test: piece length not a multiple of 16 KiB → all-but-last blocks are 16384, last block = remainder in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T035 [US3] [P] Add test: last piece of torrent shorter than standard — `(piece-blocks 2 524288 1056768)` → `[{:piece-index 2 :offset 0 :length 8192}]` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T036 [US3] [P] Add test: 1-byte piece → exactly one `Block` with `:length 1` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T037 [US3] [P] Add test: out-of-range piece index (≥ total piece count) returns `{:error :invalid-input :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T038 [US3] [P] Add generative test (`defspec piece-blocks-coverage`): for random valid piece-index/piece-length/total-length, `(reduce + (map :length blocks)) = actual-piece-length` in `test/dev/cljtoc/domain/pieces_test.clj`
 
 **Checkpoint**: US3 fully functional — block decomposition independently verified for standard, remainder, and last-piece cases
 
