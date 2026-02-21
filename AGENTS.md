@@ -3,6 +3,8 @@
 Auto-generated from all feature plans. Last updated: 2026-02-17
 
 ## Active Technologies
+- Clojure 1.11+ (JVM-based) + core.async for coordination,clojure.spec.alpha for validation (006-download-orchestration)
+- File system for downloaded pieces, JSON/EDN for state persistence (006-download-orchestration)
 
 - Clojure 1.11+ (JVM-based) + None (pure functions only, core.async not needed at this layer) (004-peer-wire-protocol)
 
@@ -22,6 +24,7 @@ tests/
 Clojure 1.11+ (JVM-based): Follow standard conventions
 
 ## Recent Changes
+- 006-download-orchestration: Added Clojure 1.11+ (JVM-based) + core.async for coordination,clojure.spec.alpha for validation
 
 - 004-peer-wire-protocol: Added Clojure 1.11+ (JVM-based) + None (pure functions only, core.async not needed at this layer)
 
