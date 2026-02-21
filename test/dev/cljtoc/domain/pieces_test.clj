@@ -297,3 +297,55 @@
          result1 (pieces/verify-piece idx data hash)
          result2 (pieces/verify-piece idx data hash)]
      (= result1 result2))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 5: US5 — Endgame Mode
+;; ---------------------------------------------------------------------------
+
+(deftest endgame?-true-test
+  (testing "returns true when (needed + in-flight) <= threshold"
+    (let [state  (pieces/initial-piece-state 5)
+          ;; mark 3 verified, 1 in-flight, 1 needed → remaining = 2
+          state2 (reduce (fn [s i]
+                           (:ok (pieces/mark-verified
+                                 (:ok (pieces/mark-in-flight s i)) i)))
+                         state [0 1 2])
+          state3 (:ok (pieces/mark-in-flight state2 3))]
+      ;; remaining = 1 needed + 1 in-flight = 2
+      (is (true? (pieces/endgame? state3 20)))
+      (is (true? (pieces/endgame? state3 2))))))
+
+(deftest endgame?-false-test
+  (testing "returns false when remaining pieces exceed threshold"
+    (let [state (pieces/initial-piece-state 50)]
+      (is (false? (pieces/endgame? state 20))))))
+
+(deftest endgame?-completed-test
+  (testing "completed torrent satisfies endgame for any positive threshold"
+    (let [state (reduce (fn [s i]
+                          (:ok (pieces/mark-verified
+                                (:ok (pieces/mark-in-flight s i)) i)))
+                        (pieces/initial-piece-state 3)
+                        [0 1 2])]
+      (is (true? (pieces/endgame? state 1)))
+      (is (true? (pieces/endgame? state 0))))))
+
+(deftest select-pieces-endgame-test
+  (testing "returns needed AND in-flight pieces that peer has"
+    (let [state  (pieces/initial-piece-state 5)
+          state2 (:ok (pieces/mark-in-flight state 0))
+          ;; needed: #{1 2 3 4}, in-flight: #{0}
+          ;; peer has #{0 2 4 99}
+          result (pieces/select-pieces-endgame state2 #{0 2 4 99})]
+      ;; should return 0 (in-flight), 2, 4 (needed) — sorted
+      (is (= {:ok [0 2 4]} result)))))
+
+(deftest select-pieces-endgame-empty-test
+  (testing "returns {:ok []} when peer has nothing in needed or in-flight"
+    (let [state (reduce (fn [s i]
+                          (:ok (pieces/mark-verified
+                                (:ok (pieces/mark-in-flight s i)) i)))
+                        (pieces/initial-piece-state 3)
+                        [0 1 2])
+          result (pieces/select-pieces-endgame state #{0 1 2})]
+      (is (= {:ok []} result)))))

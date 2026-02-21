@@ -361,3 +361,39 @@
                 pi     (-> % :args :piece-index)]
             (or (keyword? (:error result))
                 (= pi (:ok result))))))
+
+;; ============================================================================
+;; Endgame Mode (US5)
+;; ============================================================================
+
+(defn endgame?
+  "Returns true when the number of remaining pieces (needed + in-flight)
+  is at or below the given threshold. A completed torrent always satisfies
+  endgame (0 remaining <= any threshold >= 0)."
+  [piece-state threshold]
+  (<= (+ (count (:needed piece-state))
+         (count (:in-flight piece-state)))
+      threshold))
+
+(defn select-pieces-endgame
+  "Returns all pieces the peer has that are in needed OR in-flight (for
+  duplicate requesting in endgame mode). Returns {:ok [piece-index ...]}
+  which may be empty if the peer has nothing remaining."
+  [piece-state peer-available]
+  (let [remaining (set/union (:needed piece-state) (:in-flight piece-state))
+        selected  (set/intersection (set peer-available) remaining)]
+    {:ok (vec (sort selected))}))
+
+(s/fdef endgame?
+  :args (s/cat :piece-state ::piece-state :threshold nat-int?)
+  :ret  boolean?)
+
+(s/fdef select-pieces-endgame
+  :args (s/cat :piece-state    ::piece-state
+               :peer-available ::piece-index-set)
+  :ret  map?
+  :fn   (fn [%]
+          (let [result   (-> % :ret :ok)
+                state    (-> % :args :piece-state)
+                remaining (set/union (:needed state) (:in-flight state))]
+            (every? (fn [idx] (contains? remaining idx)) result))))
