@@ -165,79 +165,28 @@ This document defines the public API contracts for the peer wire protocol implem
 
 ---
 
-### Convenience Builders
+### Message Construction
 
-#### `build-keep-alive`
+Use `build-message` with any record constructor to encode a message:
 
-**Signature**:
 ```clojure
-(build-keep-alive) -> {:ok byte-array}
+(build-message (->KeepAlive))              ; {:ok byte[4]}  — 4 zero bytes
+(build-message (->Choke))                  ; {:ok byte[5]}  — id=0
+(build-message (->Unchoke))                ; {:ok byte[5]}  — id=1
+(build-message (->Interested))             ; {:ok byte[5]}  — id=2
+(build-message (->NotInterested))          ; {:ok byte[5]}  — id=3
+(build-message (->Have piece-index))       ; {:ok byte[9]}  — id=4
+(build-message (->Bitfield bytes))         ; {:ok byte[N]}  — id=5
+(build-message (->Request idx begin len))  ; {:ok byte[17]} — id=6
+(build-message (->Piece idx begin data))   ; {:ok byte[N]}  — id=7
+(build-message (->Cancel idx begin len))   ; {:ok byte[17]} — id=8
 ```
 
-**Output**: 4 zero bytes (`0x00 0x00 0x00 0x00`)
-
----
-
-#### `build-choke` / `build-unchoke` / `build-interested` / `build-not-interested`
-
-**Signatures**:
-```clojure
-(build-choke) -> {:ok byte-array}           ; 5 bytes, id=0
-(build-unchoke) -> {:ok byte-array}         ; 5 bytes, id=1
-(build-interested) -> {:ok byte-array}      ; 5 bytes, id=2
-(build-not-interested) -> {:ok byte-array}  ; 5 bytes, id=3
-```
-
----
-
-#### `build-have`
-
-**Signature**:
-```clojure
-(build-have piece-index) -> {:ok byte-array} | {:error keyword :message string}
-```
-
-**Validation**: piece-index ≥ 0
-
----
-
-#### `build-bitfield`
-
-**Signature**:
-```clojure
-(build-bitfield bitfield-bytes) -> {:ok byte-array} | {:error keyword :message string}
-```
-
-**Validation**: bitfield-bytes not empty
-
----
-
-#### `build-request` / `build-cancel`
-
-**Signatures**:
-```clojure
-(build-request piece-index begin length) -> {:ok byte-array} | {:error keyword :message string}
-(build-cancel piece-index begin length) -> {:ok byte-array} | {:error keyword :message string}
-```
-
-**Validation**:
-- All parameters ≥ 0
-- length > 0
-- length ≤ 16384
-
----
-
-#### `build-piece`
-
-**Signature**:
-```clojure
-(build-piece piece-index begin data) -> {:ok byte-array} | {:error keyword :message string}
-```
-
-**Validation**:
-- piece-index ≥ 0
-- begin ≥ 0
-- data length ≤ 16384
+**Validation rules enforced by `build-message`**:
+- `Have.piece-index` ≥ 0
+- `Request`/`Cancel`: all fields ≥ 0, length ≤ 16384
+- `Piece.data` length ≤ 16384
+- `Bitfield.bytes` not empty
 
 ---
 
@@ -344,19 +293,6 @@ This document defines the public API contracts for the peer wire protocol implem
 
 ---
 
-#### `should-choke?`
-
-**Signature**:
-```clojure
-(should-choke? peer-state upload-rate) -> boolean
-```
-
-**Contract**:
-- Placeholder for choking algorithm (implemented in feature 007)
-- Currently always returns false (optimistic unchoking)
-
----
-
 ## Error Response Contract
 
 All error responses follow this format:
@@ -398,26 +334,24 @@ All error responses follow this format:
             [dev.cljtoc.protocol.peer-state :as peer-state]))
 
 ;; Parse handshake from connection
-(let [{:keys [ok error]} (peer/parse-handshake handshake-bytes)]
-  (if ok
+(let [result (peer/parse-handshake handshake-bytes)]
+  (if-let [handshake (:ok result)]
     (do
       ;; Verify info-hash matches
-      (when (= (:info-hash ok) expected-info-hash)
-        ;; Build response handshake
-        (let [{:keys [ok response-bytes]} (peer/build-handshake 
-                                            expected-info-hash 
-                                            my-peer-id)]
+      (when (= (:info-hash handshake) expected-info-hash)
+        ;; Build and send response handshake
+        (let [response-bytes (:ok (peer/build-handshake expected-info-hash my-peer-id))]
           ;; Send response-bytes to peer...
           )))
-    (println "Handshake failed:" (:message error))))
+    (println "Handshake failed:" (:message result))))
 
-;; Parse incoming message
-(let [{:keys [ok]} (peer/parse-message message-bytes)]
-  (case (:message-type ok)
-    :choke (swap! peer-atom peer-state/apply-message ok)
-    :piece (write-piece-to-disk (:data ok))  ; data plane
-    ;; ...
-    ))
+;; Parse incoming message and dispatch on record type
+(let [msg (:ok (peer/parse-message message-bytes))]
+  (cond
+    (instance? dev.cljtoc.protocol.peer.Choke msg) (swap! peer-atom peer-state/apply-message msg)
+    (instance? dev.cljtoc.protocol.peer.Piece msg)  (write-piece-to-disk (:data msg))
+    ;; ... apply-message handles all control messages automatically
+    msg (swap! peer-atom peer-state/apply-message msg)))
 
 ;; Check what pieces peer has
 (let [state @peer-atom]

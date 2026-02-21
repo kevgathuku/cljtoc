@@ -131,8 +131,8 @@ Bytes 5+:   payload (depends on message type)
 - **Binary**: `0x00 0x00 0x00 <len> 0x05 <N bytes>`
 - **Record**: `(defrecord Bitfield [bytes])`
 - **Purpose**: Initial piece availability announcement
-- **Validation**: bytes.length = ceil(total-pieces / 8)
-- **Edge Case**: Extra bits beyond piece-count ignored (A-005)
+- **Validation**: bytes.length ≥ ceil(total-pieces / 8); shorter bitfields are ignored (unchanged state)
+- **Edge Case**: Extra bits beyond piece-count are ignored (A-005)
 
 #### Request
 - **ID**: 6
@@ -188,20 +188,20 @@ Bytes 5+:   payload (depends on message type)
 ;;     :total-pieces <provided>}
 ```
 
-**State Transitions** (pure functions):
+**State Transitions** (pure functions, dispatch on record type via `apply-message`):
 
-| Message | State Change |
-|---------|--------------|
-| `:choke` | `peer-choking` → true |
-| `:unchoke` | `peer-choking` → false |
-| `:interested` | `peer-interested` → true |
-| `:not-interested` | `peer-interested` → false |
-| `:have` | Set bit at `piece-index` in bitfield |
-| `:bitfield` | Replace entire bitfield |
-| `:keep-alive` | No change |
-| `:request` | No change (data plane) |
-| `:piece` | No change (data plane) |
-| `:cancel` | No change (data plane) |
+| Message Record | State Change |
+|----------------|--------------|
+| `Choke` | `peer-choking` → true |
+| `Unchoke` | `peer-choking` → false |
+| `Interested` | `peer-interested` → true |
+| `NotInterested` | `peer-interested` → false |
+| `Have` | Set bit at `piece-index` in bitfield |
+| `Bitfield` | Replace entire bitfield |
+| `KeepAlive` | No change |
+| `Request` | No change (data plane) |
+| `Piece` | No change (data plane) |
+| `Cancel` | No change (data plane) |
 
 **Bitfield Operations**:
 ```clojure
@@ -214,30 +214,6 @@ Bytes 5+:   payload (depends on message type)
 ;; Update from Bitfield message
 (update-bitfield peer-state bitfield-bytes) ; => new PeerState
 ```
-
----
-
-## Entity: BlockRequest
-
-**Purpose**: Shared structure for identifying data blocks
-
-**Record Definition**:
-```clojure
-(defrecord BlockRequest
-  [piece-index   ; int - which piece
-   begin         ; int - byte offset within piece
-   length])      ; int - how many bytes (≤ 16384)
-```
-
-**Used By**:
-- `Request` message - request a block
-- `Piece` message - deliver a block  
-- `Cancel` message - cancel a request
-
-**Validation**:
-- All fields ≥ 0
-- `length` ≤ 16384 (16 KiB)
-- `begin + length` ≤ piece-length (enforced at coordination layer)
 
 ---
 
@@ -259,12 +235,6 @@ Bytes 5+:   payload (depends on message type)
 │  ├─ Bitfield → affect: PeerState.bitfield (full set)         │
 │  └─ Request/Cancel/Piece → data plane (no state change)      │
 └──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│ BlockRequest                                                  │
-│  └─ identifies: piece + offset + length → specific block     │
-└──────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -277,10 +247,10 @@ Bytes 5+:   payload (depends on message type)
 | PeerHandshake | info-hash | byte[20] | length = 20 | `:invalid-input` |
 | PeerHandshake | peer-id | byte[20] | length = 20 | `:invalid-input` |
 | Have | piece-index | int | ≥ 0 | `:invalid-input` |
-| Bitfield | bytes | byte[] | length = ceil(total-pieces/8) | `:invalid-input` |
+| Bitfield | bytes | byte[] | length ≥ ceil(total-pieces/8); shorter → no-op | (unchanged state) |
 | Request/Cancel/Piece | piece-index | int | ≥ 0 | `:invalid-input` |
 | Request/Cancel/Piece | begin | int | ≥ 0 | `:invalid-input` |
-| Request/Cancel | length | int | > 0, ≤ 16384 | `:invalid-input` |
+| Request/Cancel | length | int | ≥ 0, ≤ 16384 | `:invalid-input` |
 | Piece | data | byte[] | length ≤ 16384 | `:invalid-input` |
 | All messages | length prefix | uint32 | matches actual payload | `:incomplete-message` |
 

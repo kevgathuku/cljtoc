@@ -59,11 +59,11 @@ Or require the namespaces directly:
 (let [message-bytes (read-from-peer socket)
       result (peer/parse-message message-bytes)]
   (when-let [msg (:ok result)]
-    (case (:message-type msg)
-      :choke (println "Peer choked us")
-      :unchoke (println "Peer unchoked us")
-      :have (println "Peer has piece" (:piece-index msg))
-      :piece (write-block-to-disk (:data msg))
+    (cond
+      (instance? dev.cljtoc.protocol.peer.Choke   msg) (println "Peer choked us")
+      (instance? dev.cljtoc.protocol.peer.Unchoke msg) (println "Peer unchoked us")
+      (instance? dev.cljtoc.protocol.peer.Have    msg) (println "Peer has piece" (:piece-index msg))
+      (instance? dev.cljtoc.protocol.peer.Piece   msg) (write-block-to-disk (:data msg))
       ;; ... handle other types
       )))
 
@@ -81,21 +81,21 @@ Or require the namespaces directly:
 
 ```clojure
 ;; Send interested message
-(let [{:keys [ok]} (peer/build-interested)]
+(let [{:keys [ok]} (peer/build-message (peer/->Interested))]
   (send-to-peer socket ok))
 
 ;; Request a block
 (let [piece-idx 42
       begin 0
       length 16384
-      {:keys [ok]} (peer/build-request piece-idx begin length)]
+      {:keys [ok]} (peer/build-message (peer/->Request piece-idx begin length))]
   (send-to-peer socket ok))
 
 ;; Send piece data
 (let [piece-idx 42
       begin 0
       data (read-block-from-disk piece-idx begin 16384)
-      {:keys [ok]} (peer/build-piece piece-idx begin data)]
+      {:keys [ok]} (peer/build-message (peer/->Piece piece-idx begin data))]
   (send-to-peer socket ok))
 ```
 
@@ -127,8 +127,8 @@ Or require the namespaces directly:
 ```clojure
 ;; Verify your encode/decode is correct
 (let [original (peer/->Request 42 0 16384)
-      {:keys [ok built]} (peer/build-message original)
-      {:keys [ok parsed]} (peer/parse-message built)]
+      built    (:ok (peer/build-message original))
+      parsed   (:ok (peer/parse-message built))]
   (assert (= original parsed) "Round-trip failed!"))
 ```
 
@@ -192,11 +192,11 @@ Common errors:
 ```clojure
 (deftest handshake-roundtrip-test
   (let [info-hash (byte-array 20 (byte 0xAB))
-        peer-id (byte-array 20 (byte 0xCD))
-        {:keys [ok built]} (peer/build-handshake info-hash peer-id)
-        {:keys [ok parsed]} (peer/parse-handshake built)]
+        peer-id   (byte-array 20 (byte 0xCD))
+        built     (:ok (peer/build-handshake info-hash peer-id))
+        parsed    (:ok (peer/parse-handshake built))]
     (is (java.util.Arrays/equals info-hash (:info-hash parsed)))
-    (is (java.util.Arrays/equals peer-id (:peer-id parsed)))))
+    (is (java.util.Arrays/equals peer-id   (:peer-id parsed)))))
 ```
 
 ### State Machine Tests
@@ -218,15 +218,13 @@ Common errors:
 ### Generative Tests
 
 ```clojure
-(use-fixtures :once schema-test/validate-schemas)
-
 (defspec piece-message-roundtrip 100
   (prop/for-all [idx gen/nat
                  offset gen/nat
                  data (gen/such-that #(<= (count %) 16384) gen/bytes)]
-    (let [msg (peer/->Piece idx offset data)
-          {:keys [ok built]} (peer/build-message msg)
-          {:keys [ok parsed]} (peer/parse-message built)]
+    (let [msg    (peer/->Piece idx offset data)
+          built  (:ok (peer/build-message msg))
+          parsed (:ok (peer/parse-message built))]
       (= msg parsed))))
 ```
 
