@@ -129,7 +129,8 @@
       0)))
 
 (defn initial-download [torrent output-dir]
-  (let [total-pieces (count (torrent/parse-pieces (:pieces torrent)))
+  (let [info (:info torrent)
+        total-pieces (count (:pieces info))
         piece-state (pieces/initial-piece-state total-pieces)]
     (->Download (UUID/randomUUID)
                 torrent
