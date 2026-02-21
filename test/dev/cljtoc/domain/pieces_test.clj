@@ -349,3 +349,50 @@
                         [0 1 2])
           result (pieces/select-pieces-endgame state #{0 1 2})]
       (is (= {:ok []} result)))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 6: Edge Cases (Phase 8)
+;; ---------------------------------------------------------------------------
+
+(deftest single-piece-torrent-test
+  (testing "torrent with exactly 1 piece — full lifecycle works"
+    (let [state  (pieces/initial-piece-state 1)
+          _      (is (= 1 (pieces/needed-count state)))
+          _      (is (false? (pieces/complete? state)))
+          state2 (:ok (pieces/mark-in-flight state 0))
+          _      (is (= 0 (pieces/needed-count state2)))
+          _      (is (= 1 (pieces/in-flight-count state2)))
+          state3 (:ok (pieces/mark-verified state2 0))]
+      (is (= 1 (pieces/verified-count state3)))
+      (is (true? (pieces/complete? state3))))))
+
+(deftest identical-peer-bitfields-test
+  (testing "two peers with identical bitfields — deterministic lowest-index result"
+    (let [state   (pieces/initial-piece-state 10)
+          peer-av #{3 7 9}
+          ;; Both peers have identical sets — all equally rare (freq=2)
+          all-peers [#{3 7 9} #{3 7 9}]
+          result  (pieces/select-piece state peer-av all-peers)]
+      ;; Lowest index (3) should be selected as tie-breaker
+      (is (= {:ok 3} result)))))
+
+(deftest all-peers-lack-needed-piece-test
+  (testing "all peers lack a specific needed piece — select-piece returns {:ok nil}"
+    (let [state   (pieces/initial-piece-state 5)
+          ;; Mark pieces 0-3 verified, only piece 4 is needed
+          state2  (reduce (fn [s i]
+                            (:ok (pieces/mark-verified
+                                  (:ok (pieces/mark-in-flight s i)) i)))
+                          state [0 1 2 3])
+          ;; No peer has piece 4
+          peer-av #{0 1 2 3}
+          result  (pieces/select-piece state2 peer-av [#{0 1 2 3}])]
+      (is (= {:ok nil} result)))))
+
+(deftest one-byte-torrent-block-decomposition-test
+  (testing "piece-blocks for piece 0 in a 1-byte total torrent"
+    (let [{:keys [ok]} (pieces/piece-blocks 0 16384 1)]
+      (is (= 1 (count ok)))
+      (is (= 0 (:piece-index (first ok))))
+      (is (= 0 (:offset (first ok))))
+      (is (= 1 (:length (first ok)))))))
