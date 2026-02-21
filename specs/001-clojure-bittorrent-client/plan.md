@@ -58,7 +58,7 @@ Each sub-feature follows the full spec-kit workflow independently:
 | 003 | Tracker Protocol | 002 | P1 | `/speckit.specify Implement HTTP/UDP tracker communication` | ✅ Complete |
 | 004 | Peer Wire Protocol | 002 | P1 | `/speckit.specify Implement BitTorrent peer message protocol` | ✅ Complete |
 | 005 | Piece Selection | 002 | P1 | `/speckit.specify Pure domain logic for piece management` | ✅ Complete |
-| 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | Not Started |
+| 006 | Download Orchestration | 002-005 | P1 | `/speckit.specify End-to-end single torrent download` | ✅ Complete |
 
 #### User Interface Features
 
@@ -113,8 +113,8 @@ specs/001-clojure-bittorrent-client/
 specs/002-bencode-parser/         ✅ Complete
 specs/003-tracker-protocol/       ✅ Complete
 specs/004-peer-wire-protocol/     ✅ Complete
-specs/005-piece-selection/        (not started)
-specs/006-download-orchestration/ (not started)
+specs/005-piece-selection/        ✅ Complete
+specs/006-download-orchestration/ ✅ Complete
 specs/011-cli-interface/          (not started)
 ```
 
@@ -134,24 +134,25 @@ src/
         │   │   └── spec.clj     ✅ implemented
         │   ├── peer.clj         ✅ implemented
         │   └── peer_state.clj   ✅ implemented
-        ├── ports/           # Effect interfaces (006+)
-        │   ├── network.clj      (not started)
-        │   ├── disk.clj         (not started)
-        │   └── time.clj         (not started)
+        ├── ports/           # Effect interfaces (006)
+        │   ├── network.clj      ✅ implemented
+        │   ├── disk.clj         ✅ implemented
+        │   └── time.clj         ✅ implemented
         ├── orchestration/   # Coordination (006)
-        │   ├── download.clj     (not started)
-        │   └── manager.clj      (not started)
+        │   ├── download.clj     ✅ implemented
+        │   └── manager.clj      ✅ implemented
         └── supervision/     # Lifecycle (010)
             └── supervisor.clj   (not started)
 
 test/
 └── dev/
     └── cljtoc/
-        ├── domain/              ✅ bencode_test, torrent_test
+        ├── domain/              ✅ bencode_test, torrent_test, pieces_test
         ├── protocol/            ✅ peer_test, peer_state_test, tracker_test
+        ├── orchestration/       ✅ download_test
         ├── integration/         (not started)
         ├── test_utils.clj       ✅ shared test helpers
-        └── test_doubles/        (not started)
+        └── test_doubles/        ✅ network, disk, time
 ```
 
 ## Architectural Principles (All Sub-Features MUST Follow)
@@ -172,8 +173,8 @@ To continue implementation:
 1. ~~**Complete Feature 002**: Bencode parser~~ ✅ Merged to main
 2. ~~**Proceed to 003**: Tracker protocol (HTTP + UDP, BEP 3/15)~~ ✅ Merged to main
 3. ~~**Complete Feature 004**: Peer wire protocol~~ ✅ Merged to main
-4. **Complete Feature 005**: Piece selection — pure domain logic for piece management
-5. **Integrate at 006**: Brings all pieces together into working download engine
+4. ~~**Complete Feature 005**: Piece selection — pure domain logic for piece management~~ ✅ Complete
+5. ~~**Complete Feature 006**: Download orchestration — end-to-end download engine~~ ✅ Complete
 6. **Add CLI at 011**: Makes the engine usable by end users - **completes MVP**
 7. **Add value with 007-010**: Each adds independent functionality (seeding, multi-torrent, monitoring, hardening)
 
