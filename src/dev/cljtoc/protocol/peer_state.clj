@@ -1,8 +1,49 @@
 (ns dev.cljtoc.protocol.peer-state
   "Peer connection state machine.
-   
+
    Pure state transitions for peer protocol state management.
-   All functions are pure: (state, event) -> new-state"
+   All functions are pure: (state, event) -> new-state
+
+   Usage examples (REPL):
+
+     (require '[dev.cljtoc.protocol.peer :as peer])
+     (require '[dev.cljtoc.protocol.peer-state :as peer-state])
+
+     ;; Start from a fresh connection (choked, not-interested, no bitfield)
+     (def state (initial-peer-state 512))
+     ;; => {:am-choking true :am-interested false
+     ;;     :peer-choking true :peer-interested false
+     ;;     :bitfield nil :total-pieces 512}
+
+     ;; Apply incoming messages as events
+     (def s1 (apply-message state (peer/->Unchoke)))
+     (:peer-choking s1)  ;; => false
+
+     (def s2 (apply-message s1 (peer/->Have 42)))
+     (peer-has-piece? s2 42)   ;; => true
+     (peer-has-piece? s2 0)    ;; => false
+
+     ;; Duplicate have messages are idempotent
+     (def s3 (apply-message s2 (peer/->Have 42)))
+     (peer-piece-count s3)  ;; => 1  (not 2)
+
+     ;; Apply a full bitfield
+     (def s4 (apply-message state (peer/->Bitfield (byte-array [0xFF 0x00]))))
+     (peer-piece-count s4)  ;; => 8  (first 8 bits of 0xFF)
+
+     ;; Check if we can request pieces
+     (def ready (-> state
+                    (apply-message (peer/->Unchoke))
+                    (set-am-interested true)))
+     (can-request? ready)  ;; => true  (unchoked AND interested)
+
+     ;; Keep-alive and data messages (Request/Piece/Cancel) are no-ops
+     (= state (apply-message state (peer/->KeepAlive)))  ;; => true
+
+     ;; State transitions never mutate the original
+     (let [a (apply-message state (peer/->Have 3))
+           b (apply-message a    (peer/->Have 9))]
+       (peer-has-piece? a 9))  ;; => false  (a is independent of b)"
   (:require [clojure.spec.alpha :as s])
   (:import [java.util BitSet]))
 
@@ -94,7 +135,7 @@
           (let [byte-idx (quot i 8)
                 bit-idx (mod i 8)
                 byte-val (aget b byte-idx)
-                 bit-val (bit-and (bit-shift-right (bit-and byte-val 0xFF) (- 7 bit-idx)) 1)]
+                bit-val (bit-and (bit-shift-right (bit-and byte-val 0xFF) (- 7 bit-idx)) 1)]
             (when (= 1 bit-val)
               (.set bitset i))))
         bitset))))
@@ -140,20 +181,25 @@
 
 (defn mark-piece-available
   "Mark a piece as available in peer's bitfield.
-   
+
+   Returns a new PeerState without mutating the original.
+
    Args:
      peer-state - Current PeerState
      piece-index - Index of piece now available
-   
+
    Returns:
      New PeerState with updated bitfield"
   [peer-state piece-index]
   {:pre [(s/valid? ::peer-state peer-state)
          (s/valid? ::piece-index piece-index)]}
   (if (< piece-index (:total-pieces peer-state))
-    (let [bitfield (or (:bitfield peer-state) (BitSet. (:total-pieces peer-state)))]
-      (.set ^BitSet bitfield piece-index)
-      (assoc peer-state :bitfield bitfield))
+    (let [existing (:bitfield peer-state)
+          new-bitfield (if existing
+                         (doto (BitSet.) (.or ^BitSet existing))
+                         (BitSet. (:total-pieces peer-state)))]
+      (.set ^BitSet new-bitfield piece-index)
+      (assoc peer-state :bitfield new-bitfield))
     peer-state))
 
 (defn update-bitfield
@@ -247,22 +293,149 @@
   (assoc peer-state :am-interested interested))
 
 ;; ============================================================================
+;; State Transitions
+;; ============================================================================
+
+(defn apply-message
+  "Apply a peer message to update the peer state.
+   
+   Pure function that returns a new PeerState with transitions applied.
+   The original state is never mutated.
+   
+   Transition table:
+     - Choke: peer-choking -> true
+     - Unchoke: peer-choking -> false
+     - Interested: peer-interested -> true
+     - NotInterested: peer-interested -> false
+     - Have: set bit at piece-index in bitfield
+     - Bitfield: replace entire bitfield
+     - KeepAlive, Request, Piece, Cancel: no change
+   
+   Args:
+     peer-state - Current PeerState
+     message - PeerMessage record from dev.cljtoc.protocol.peer
+   
+   Returns:
+     New PeerState with transitions applied"
+  [peer-state message]
+  {:pre [(s/valid? ::peer-state peer-state)]}
+  (cond
+    ;; Choke/Unchoke - affects peer-choking
+    (instance? dev.cljtoc.protocol.peer.Choke message)
+    (assoc peer-state :peer-choking true)
+
+    (instance? dev.cljtoc.protocol.peer.Unchoke message)
+    (assoc peer-state :peer-choking false)
+
+    ;; Interested/NotInterested - affects peer-interested
+    (instance? dev.cljtoc.protocol.peer.Interested message)
+    (assoc peer-state :peer-interested true)
+
+    (instance? dev.cljtoc.protocol.peer.NotInterested message)
+    (assoc peer-state :peer-interested false)
+
+    ;; Have - mark piece available
+    (instance? dev.cljtoc.protocol.peer.Have message)
+    (mark-piece-available peer-state (:piece-index message))
+
+    ;; Bitfield - update entire bitfield
+    (instance? dev.cljtoc.protocol.peer.Bitfield message)
+    (update-bitfield peer-state (:bytes message))
+
+    ;; KeepAlive, Request, Piece, Cancel - no state change
+    :else peer-state))
+
+;; ============================================================================
 ;; Query Functions
 ;; ============================================================================
 
 (defn can-request?
   "Check if we can request pieces from this peer.
-   
+
    We can request when:
      - Peer is not choking us (peer-choking = false)
      - We are interested (am-interested = true)
-   
+
    Args:
      peer-state - Current PeerState
-   
+
    Returns:
      true if we can request pieces"
   [peer-state]
   {:pre [(s/valid? ::peer-state peer-state)]}
   (and (not (:peer-choking peer-state))
        (:am-interested peer-state)))
+
+;; ============================================================================
+;; Function Specs
+;; ============================================================================
+
+(s/fdef initial-peer-state
+  :args (s/cat :total-pieces ::total-pieces)
+  :ret  ::peer-state
+  :fn   #(let [s (:ret %)]
+           (and (true?  (:am-choking s))
+                (false? (:am-interested s))
+                (true?  (:peer-choking s))
+                (false? (:peer-interested s))
+                (nil?   (:bitfield s))
+                (= (-> % :args :total-pieces) (:total-pieces s)))))
+
+(s/fdef peer-has-piece?
+  :args (s/cat :peer-state ::peer-state :piece-index nat-int?)
+  :ret  boolean?
+  :fn   #(if (nil? (-> % :args :peer-state :bitfield))
+           (false? (:ret %))
+           true))
+
+(s/fdef mark-piece-available
+  :args (s/cat :peer-state ::peer-state :piece-index nat-int?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :peer-state :total-pieces)
+            (-> % :ret :total-pieces)))
+
+(s/fdef update-bitfield
+  :args (s/cat :peer-state ::peer-state :bitfield-bytes bytes?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :peer-state :total-pieces)
+            (-> % :ret :total-pieces)))
+
+(s/fdef peer-piece-count
+  :args (s/cat :peer-state ::peer-state)
+  :ret  nat-int?
+  :fn   #(if (nil? (-> % :args :peer-state :bitfield))
+           (zero? (:ret %))
+           (<= (:ret %) (-> % :args :peer-state :total-pieces))))
+
+(s/fdef set-peer-choking
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :peer-choking)))
+
+(s/fdef set-peer-interested
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :peer-interested)))
+
+(s/fdef set-am-choking
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :am-choking)))
+
+(s/fdef set-am-interested
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :am-interested)))
+
+(s/fdef apply-message
+  :args (s/cat :peer-state ::peer-state :message any?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :peer-state :total-pieces)
+            (-> % :ret :total-pieces)))
+
+(s/fdef can-request?
+  :args (s/cat :peer-state ::peer-state)
+  :ret  boolean?
+  :fn   #(= (:ret %)
+            (boolean (and (not (-> % :args :peer-state :peer-choking))
+                          (-> % :args :peer-state :am-interested)))))

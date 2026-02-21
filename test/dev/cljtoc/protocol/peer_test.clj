@@ -372,8 +372,8 @@
           result (peer/parse-messages buffer)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (= 2 (count (:ok result))))
-(is (instance? dev.cljtoc.protocol.peer.Choke (first (:ok result))))
-        (is (instance? dev.cljtoc.protocol.peer.Unchoke (second (:ok result))))
+      (is (instance? dev.cljtoc.protocol.peer.Choke (first (:ok result))))
+      (is (instance? dev.cljtoc.protocol.peer.Unchoke (second (:ok result))))
       (is (zero? (count (:remaining result)))))))
 
 (deftest parse-messages-with-incomplete-tail-test
@@ -433,16 +433,16 @@
   (prop/for-all [info-hash (tc-gen/vector (tc-gen/choose -128 127) 20)
                  peer-id (tc-gen/vector (tc-gen/choose -128 127) 20)
                  reserved (tc-gen/vector (tc-gen/choose 0 255) 8)]
-                 (let [info-bytes (byte-array (map unchecked-byte info-hash))
-                       peer-bytes (byte-array (map unchecked-byte peer-id))
-                       reserved-bytes (byte-array (map unchecked-byte reserved))
-                       built (peer/build-handshake info-bytes peer-bytes reserved-bytes)
-                       handshake-bytes (:ok built)
-                       parsed (peer/parse-handshake handshake-bytes)]
-                   (and (some? (:ok parsed))
-                        (bytes-equal? info-bytes (:info-hash (:ok parsed)))
-                        (bytes-equal? peer-bytes (:peer-id (:ok parsed)))
-                        (bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
+                (let [info-bytes (byte-array (map unchecked-byte info-hash))
+                      peer-bytes (byte-array (map unchecked-byte peer-id))
+                      reserved-bytes (byte-array (map unchecked-byte reserved))
+                      built (peer/build-handshake info-bytes peer-bytes reserved-bytes)
+                      handshake-bytes (:ok built)
+                      parsed (peer/parse-handshake handshake-bytes)]
+                  (and (some? (:ok parsed))
+                       (bytes-equal? info-bytes (:info-hash (:ok parsed)))
+                       (bytes-equal? peer-bytes (:peer-id (:ok parsed)))
+                       (bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
 
 (defspec peer-message-parsing-generative 100
   (prop/for-all [msg-type (tc-gen/elements [:choke :unchoke :interested :not-interested :have :bitfield :request :piece :cancel])
@@ -450,35 +450,99 @@
                  begin (tc-gen/choose 0 1000)
                  length (tc-gen/choose 1 16384)
                  data (tc-gen/fmap make-random-bytes (tc-gen/choose 1 16384))]
-    (let [msg (case msg-type
-                :choke (peer/->Choke)
-                :unchoke (peer/->Unchoke)
-                :interested (peer/->Interested)
-                :not-interested (peer/->NotInterested)
-                :have (peer/->Have piece-idx)
-                :bitfield (peer/->Bitfield (make-random-bytes 10))
-                :request (peer/->Request piece-idx begin length)
-                :piece (peer/->Piece piece-idx begin data)
-                :cancel (peer/->Cancel piece-idx begin length))
-          built-msg (peer/build-message msg)
-          parsed-result (peer/parse-message (:ok built-msg))]
-      (if (:ok built-msg)
-        (and (some? (:ok parsed-result))
-             (s/valid? ::peer/peer-message (:ok parsed-result)))
-        true))))
+                (let [msg (case msg-type
+                            :choke (peer/->Choke)
+                            :unchoke (peer/->Unchoke)
+                            :interested (peer/->Interested)
+                            :not-interested (peer/->NotInterested)
+                            :have (peer/->Have piece-idx)
+                            :bitfield (peer/->Bitfield (make-random-bytes 10))
+                            :request (peer/->Request piece-idx begin length)
+                            :piece (peer/->Piece piece-idx begin data)
+                            :cancel (peer/->Cancel piece-idx begin length))
+                      built-msg (peer/build-message msg)
+                      parsed-result (peer/parse-message (:ok built-msg))]
+                  (if (:ok built-msg)
+                    (and (some? (:ok parsed-result))
+                         (s/valid? ::peer/peer-message (:ok parsed-result)))
+                    true))))
 
 (defspec parse-messages-multiple-generative 100
   (prop/for-all [messages-vec (tc-gen/bind (tc-gen/choose 1 5)
                                            (fn [n]
                                              (tc-gen/vector
-                                               (tc-gen/one-of [(tc-gen/fmap (fn [p] (peer/->Have p)) (tc-gen/choose 0 100))
-                                                               (tc-gen/fmap (fn [l] (peer/->Request 0 0 l)) (tc-gen/choose 1 16384))])
-                                               n)))]
-    (let [built-bytes (peer/build-messages messages-vec)
-          parse-result (peer/parse-messages (:ok built-bytes))]
-      (and (some? (:ok parse-result))
-           (= (count messages-vec) (count (:ok parse-result)))
-           (every? (fn [[original parsed]] (s/valid? ::peer/peer-message parsed)) (map vector messages-vec (:ok parse-result)))))))
+                                              (tc-gen/one-of [(tc-gen/fmap (fn [p] (peer/->Have p)) (tc-gen/choose 0 100))
+                                                              (tc-gen/fmap (fn [l] (peer/->Request 0 0 l)) (tc-gen/choose 1 16384))])
+                                              n)))]
+                (let [built-bytes (peer/build-messages messages-vec)
+                      parse-result (peer/parse-messages (:ok built-bytes))]
+                  (and (some? (:ok parse-result))
+                       (= (count messages-vec) (count (:ok parse-result)))
+                       (every? (fn [[original parsed]] (s/valid? ::peer/peer-message parsed)) (map vector messages-vec (:ok parse-result)))))))
+
+;; ============================================================================
+;; Edge Case Tests (T084, T087)
+;; ============================================================================
+
+(deftest parse-piece-zero-byte-payload-test
+  (testing "Piece message with 0-byte data is valid (T084)"
+    (let [piece-index 5
+          begin 0
+          ;; Payload: 4-byte index + 4-byte begin, 0-byte data
+          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
+                                     (peer/int32-to-bytes begin))
+          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
+                                           (byte-array [(unchecked-byte 7)])
+                                           payload)
+          result (peer/parse-message message-bytes)]
+      (is (some? (:ok result)) "Should parse successfully")
+      (is (instance? dev.cljtoc.protocol.peer.Piece (:ok result)))
+      (is (= piece-index (:piece-index (:ok result))))
+      (is (= begin (:begin (:ok result))))
+      (is (= 0 (count (:data (:ok result)))) "Data should be 0 bytes"))))
+
+(deftest parse-message-partial-prefix-test
+  (testing "Message with partial length prefix returns :incomplete-message (T087)"
+    (doseq [n [0 1 2 3]]
+      (let [partial-bytes (make-random-bytes n)
+            result (peer/parse-message partial-bytes)]
+        (is (some? (:error result))
+            (str "Should return error for " n " bytes"))
+        (is (= :incomplete-message (:error result))
+            (str "Error should be :incomplete-message for " n " bytes"))))))
+
+;; ============================================================================
+;; Invariant Property Tests (T090)
+;; ============================================================================
+
+(defspec build-handshake-always-68-bytes 100
+  (prop/for-all [info-hash (tc-gen/vector (tc-gen/choose -128 127) 20)
+                 peer-id (tc-gen/vector (tc-gen/choose -128 127) 20)]
+                (let [info-bytes (byte-array (map unchecked-byte info-hash))
+                      peer-bytes (byte-array (map unchecked-byte peer-id))
+                      result (peer/build-handshake info-bytes peer-bytes)]
+                  (= 68 (count (:ok result))))))
+
+(defspec built-request-block-length-invariant 100
+  (prop/for-all [piece-idx (tc-gen/choose 0 1000)
+                 begin (tc-gen/choose 0 100000)
+                 length (tc-gen/choose 1 peer/max-block-size)]
+                (let [msg (peer/->Request piece-idx begin length)
+                      built (peer/build-message msg)
+                      parsed (peer/parse-message (:ok built))]
+                  (and (some? (:ok parsed))
+                       (<= (:length (:ok parsed)) peer/max-block-size)))))
+
+(defspec built-piece-block-length-invariant 100
+  (prop/for-all [piece-idx (tc-gen/choose 0 1000)
+                 begin (tc-gen/choose 0 100000)
+                 data-len (tc-gen/choose 0 peer/max-block-size)]
+                (let [data (make-random-bytes data-len)
+                      msg (peer/->Piece piece-idx begin data)
+                      built (peer/build-message msg)
+                      parsed (peer/parse-message (:ok built))]
+                  (and (some? (:ok parsed))
+                       (<= (count (:data (:ok parsed))) peer/max-block-size)))))
 
 ;; ============================================================================
 ;; Spec Compliance Tests

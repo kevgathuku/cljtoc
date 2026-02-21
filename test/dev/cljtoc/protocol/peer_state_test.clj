@@ -7,6 +7,7 @@
             [clojure.test.check.generators :as tc-gen]
             [clojure.test.check.properties :as prop]
             [clojure.test.check.clojure-test :refer [defspec]]
+            [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state])
   (:import [java.util BitSet]))
 
@@ -327,3 +328,44 @@
       ;; Check that we can reconstruct the same bytes
       (is (= (seq original-bytes) (seq reconstructed-bytes))
           "Bitfield roundtrip should preserve all data"))))
+
+;; ============================================================================
+;; apply-message Edge Case Tests (T085, T086)
+;; ============================================================================
+
+(deftest apply-message-duplicate-have-test
+  (testing "Duplicate have messages for same piece are idempotent (T085)"
+    (let [initial (peer-state/initial-peer-state 100)
+          state1 (peer-state/apply-message initial (peer/->Have 5))
+          state2 (peer-state/apply-message state1 (peer/->Have 5))]
+      (is (true? (peer-state/peer-has-piece? state1 5)))
+      (is (true? (peer-state/peer-has-piece? state2 5)))
+      (is (= 1 (peer-state/peer-piece-count state2))
+          "Piece count should be 1 after applying same have twice"))))
+
+(deftest apply-message-keep-alive-no-change-test
+  (testing "Keep-alive message during choked state doesn't change state (T086)"
+    (let [initial (peer-state/initial-peer-state 100)
+          result (peer-state/apply-message initial (peer/->KeepAlive))]
+      (is (= true (:peer-choking result)) "Should still be choked")
+      (is (= false (:am-interested result)) "Interest should be unchanged")
+      (is (= false (:peer-interested result)) "Peer interest should be unchanged")
+      (is (nil? (:bitfield result)) "Bitfield should be unchanged"))))
+
+(deftest apply-message-state-independence-test
+  (testing "State transitions produce independent states without mutation"
+    (let [initial (peer-state/initial-peer-state 100)
+          state1 (peer-state/apply-message initial (peer/->Have 5))
+          state2 (peer-state/apply-message state1 (peer/->Have 10))]
+      ;; state1 should only have piece 5, not piece 10
+      (is (true? (peer-state/peer-has-piece? state1 5)))
+      (is (false? (peer-state/peer-has-piece? state1 10))
+          "state1 should not be affected by transitions applied to state2"))))
+
+(deftest apply-message-choke-unchoke-sequence-test
+  (testing "Choke/unchoke sequence via apply-message"
+    (let [initial (peer-state/initial-peer-state 100)
+          unchoked (peer-state/apply-message initial (peer/->Unchoke))
+          re-choked (peer-state/apply-message unchoked (peer/->Choke))]
+      (is (= false (:peer-choking unchoked)) "Should be unchoked after unchoke")
+      (is (= true (:peer-choking re-choked)) "Should be choked again after choke"))))
