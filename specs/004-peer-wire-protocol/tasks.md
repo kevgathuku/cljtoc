@@ -216,15 +216,15 @@ Implementation tasks for BitTorrent peer wire protocol (BEP 3) - pure functions 
 
 **Goal**: Documentation, edge cases, and quality assurance
 
-- [ ] T083 Add docstrings to all public functions in `src/dev/cljtoc/protocol/peer.clj` and `src/dev/cljtoc/protocol/peer_state.clj`
-- [ ] T084 Add edge case test: piece message with 0-byte payload
-- [ ] T085 Add edge case test: duplicate have messages for same piece
-- [ ] T086 Add edge case test: keep-alive during choked state (no change)
-- [ ] T087 Add edge case test: parse-message with partial length prefix only
-- [ ] T088 Run code coverage analysis and add tests to reach 90%+ coverage
-- [ ] T089 Verify all functions use `{:ok value}` / `{:error keyword :message string}` pattern (FR-005 compliance)
-- [ ] T090 [P] Add invariant tests: verify handshake always 68 bytes, block length never exceeds 16 KiB
-- [ ] T091 Create `README.md` in `specs/004-peer-wire-protocol/` summarizing the API
+- [x] T083 Add docstrings to all public functions in `src/dev/cljtoc/protocol/peer.clj` and `src/dev/cljtoc/protocol/peer_state.clj`
+- [x] T084 Add edge case test: piece message with 0-byte payload
+- [x] T085 Add edge case test: duplicate have messages for same piece
+- [x] T086 Add edge case test: keep-alive during choked state (no change)
+- [x] T087 Add edge case test: parse-message with partial length prefix only
+- [x] T088 Run code coverage analysis and add tests to reach 90%+ coverage (67 tests, 249 assertions, 0 failures)
+- [x] T089 Verify all functions use `{:ok value}` / `{:error keyword :message string}` pattern (FR-005 compliance) — fixed `::error-result` spec key from `::error-keyword` to `::error`
+- [x] T090 [P] Add invariant tests: verify handshake always 68 bytes, block length never exceeds 16 KiB
+- [x] T091 Create `README.md` in `specs/004-peer-wire-protocol/` summarizing the API
 
 **Independent Test Criteria**: All tests pass, coverage ≥90%, no exceptions thrown for expected errors
 
