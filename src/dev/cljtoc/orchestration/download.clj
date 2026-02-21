@@ -190,3 +190,80 @@
 
 (defn stop-download [download]
   (assoc download :state :idle :peers #{}))
+
+;; ============================================================================
+;; Error Handling (User Story 3)
+;; ============================================================================
+
+(defn requeue-piece [download piece-index]
+  "Move a piece back to needed state for re-download.
+   Returns updated download."
+  (let [piece-state (:piece-state download)
+        result (pieces/requeue-piece piece-state piece-index)]
+    (if (:error result)
+      download
+      (assoc download :piece-state (:ok result)))))
+
+(defn handle-piece-verification-failure [download piece-index]
+  "Handle piece verification failure by re-queuing the piece.
+   Returns updated download with piece back in needed state."
+  (requeue-piece download piece-index))
+
+(defn handle-peer-disconnect [download peer-id]
+  "Handle peer disconnection by removing peer and re-queueing in-flight pieces.
+   Returns updated download."
+  (let [peer (first (filter #(= (:id %) peer-id) (:peers download)))
+        in-flight-pieces (if peer (:in-flight (:piece-state download)) #{})
+        download (update download :peers disj peer)]
+    (reduce requeue-piece download in-flight-pieces)))
+
+(defn add-peer [download peer]
+  "Add a new peer to the download.
+   Returns updated download."
+  (update download :peers conj peer))
+
+(defn remove-peer [download peer-id]
+  "Remove a peer from the download by ID.
+   Returns updated download."
+  (let [peer (first (filter #(= (:id %) peer-id) (:peers download)))]
+    (if peer
+      (update download :peers disj peer)
+      download)))
+
+(defn transition-to-failed [download error-info]
+  "Transition download to failed state with error information.
+   Returns updated download."
+  (assoc download :state :failed :error error-info))
+
+(defn can-retry? [download]
+  "Check if download can be retried (hasn't exceeded retry limit)."
+  (let [retry-count (or (get-in download [:error :retry-count]) 0)]
+    (< retry-count 3)))
+
+(defn retry-download [download]
+  "Retry a failed download by resetting state and clearing error."
+  (if (can-retry? download)
+    (let [current-retry (or (get-in download [:error :retry-count]) 0)
+          new-retry-count (inc current-retry)
+          download (assoc download :state :starting :error {:retry-count new-retry-count})]
+      download)
+    {:error :max-retries-exceeded :message "Download has exceeded maximum retry attempts"}))
+
+(defn get-failed-piece [download]
+  "Get the piece index that failed, if any."
+  (get-in download [:error :failed-piece]))
+
+(defn has-active-peers? [download]
+  "Check if download has any active peer connections."
+  (pos? (count (:peers download))))
+
+(defn handle-no-peers [download]
+  "Handle the case when all peers disconnect.
+   Returns updated download with appropriate state."
+  (if (pieces/complete? (:piece-state download))
+    (assoc download :state :completed)
+    (transition-to-failed download
+      {:reason :no-peers
+       :message "No peers available for download"
+       :failed-piece nil})))
+

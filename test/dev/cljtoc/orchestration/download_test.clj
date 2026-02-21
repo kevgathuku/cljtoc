@@ -167,3 +167,98 @@
         stopped (download/stop-download download)]
     (is (= :idle (:state stopped)))
     (is (empty? (:peers stopped)))))
+
+;; ============================================================================
+;; Error Handling Tests (User Story 3)
+;; ============================================================================
+
+(deftest requeue-piece-test
+  (let [torrent {:info-hash (byte-array 20)
+                :name "test.torrent"
+                :piece-length 262144
+                :pieces (byte-array (* 20 10))
+                :length 2621440
+                :files []}
+        piece-state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 10) 5))
+        download {:id (UUID/randomUUID)
+                  :torrent torrent
+                  :piece-state piece-state
+                  :peers #{}
+                  :state :downloading
+                  :output-dir "/output"
+                  :stats (download/initial-stats)
+                  :error nil}
+        requeued (download/requeue-piece download 5)]
+    (is (contains? (get-in requeued [:piece-state :needed]) 5))
+    (is (not (contains? (get-in requeued [:piece-state :in-flight]) 5)))))
+
+(deftest handle-peer-disconnect-test
+  (let [torrent {:info-hash (byte-array 20)
+                :name "test.torrent"
+                :piece-length 262144
+                :pieces (byte-array (* 20 10))
+                :length 2621440
+                :files []}
+        piece-state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 10) 3))
+        peer {:id "peer1" :address "127.0.0.1" :port 6881}
+        download {:id (UUID/randomUUID)
+                  :torrent torrent
+                  :piece-state piece-state
+                  :peers #{peer}
+                  :state :downloading
+                  :output-dir "/output"
+                  :stats (download/initial-stats)
+                  :error nil}
+        updated (download/handle-peer-disconnect download "peer1")]
+    (is (empty? (:peers updated)))
+    (is (contains? (get-in updated [:piece-state :needed]) 3))))
+
+(deftest transition-to-failed-test
+  (let [download {:state :downloading}
+        error-info {:reason :no-peers :message "No peers available" :failed-piece nil}
+        failed (download/transition-to-failed download error-info)]
+    (is (= :failed (:state failed)))
+    (is (= error-info (:error failed)))))
+
+(deftest can-retry-test
+  (let [download-no-error {:error nil}
+        download-under-limit {:error {:retry-count 2}}
+        download-at-limit {:error {:retry-count 3}}]
+    (is (true? (download/can-retry? download-no-error)))
+    (is (true? (download/can-retry? download-under-limit)))
+    (is (false? (download/can-retry? download-at-limit)))))
+
+(deftest retry-download-test
+  (let [failed-download {:state :failed
+                         :error {:reason :no-peers :retry-count 2}}
+        retried (download/retry-download failed-download)]
+    (is (= :starting (:state retried)))
+    (is (= 3 (get-in retried [:error :retry-count])))))
+
+(deftest retry-download-max-retries-test
+  (let [failed-download {:state :failed
+                         :error {:reason :no-peers :retry-count 3}}
+        result (download/retry-download failed-download)]
+    (is (= :max-retries-exceeded (:error result)))))
+
+(deftest handle-no-peers-test
+  (let [piece-state (pieces/initial-piece-state 10)
+        incomplete-download {:state :downloading
+                            :piece-state piece-state
+                            :peers #{}
+                            :error nil}
+        result (download/handle-no-peers incomplete-download)]
+    (is (= :failed (:state result)))
+    (is (= :no-peers (get-in result [:error :reason])))))
+
+(deftest handle-no-peers-when-complete-test
+  (let [ps (pieces/initial-piece-state 10)
+        ps (reduce (fn [ps i] (:ok (pieces/mark-in-flight ps i))) ps (range 10))
+        ps (reduce (fn [ps i] (:ok (pieces/mark-verified ps i))) ps (range 10))
+        complete-download {:state :downloading
+                          :piece-state ps
+                          :peers #{}
+                          :error nil}
+        result (download/handle-no-peers complete-download)]
+    (is (= :completed (:state result)))))
+

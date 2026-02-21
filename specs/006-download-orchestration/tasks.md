@@ -101,15 +101,15 @@ Error handling: corrupt piece re-download, peer disconnect recovery, error repor
 
 ### Implementation
 
-- [ ] T039 [US3] Implement piece re-queue on verification failure in src/dev/cljtoc/orchestration/download.clj
-- [ ] T040 [US3] Implement handle-peer-disconnect in src/dev/cljtoc/orchestration/download.clj
-- [ ] T041 [US3] Implement peer reconnect logic in src/dev/cljtoc/orchestration/download.clj
-- [ ] T042 [US3] Implement error state transitions in src/dev/cljtoc/orchestration/download.clj
-- [ ] T043 [US3] Implement failure retry limit in src/dev/cljtoc/orchestration/download.clj
+- [x] T039 [US3] Implement piece re-queue on verification failure in src/dev/cljtoc/orchestration/download.clj
+- [x] T040 [US3] Implement handle-peer-disconnect in src/dev/cljtoc/orchestration/download.clj
+- [x] T041 [US3] Implement peer reconnect logic in src/dev/cljtoc/orchestration/download.clj
+- [x] T042 [US3] Implement error state transitions in src/dev/cljtoc/orchestration/download.clj
+- [x] T043 [US3] Implement failure retry limit in src/dev/cljtoc/orchestration/download.clj
 
 ### Tests
 
-- [ ] T044 [US3] Create unit tests for failure handling in test/dev/cljtoc/orchestration/download_test.clj
+- [x] T044 [US3] Create unit tests for failure handling in test/dev/cljtoc/orchestration/download_test.clj
 
 ---
 
