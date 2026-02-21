@@ -173,14 +173,14 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 ### Implementation for User Story 5
 
-- [ ] T046 [US5] Implement `endgame?` predicate in `src/dev/cljtoc/domain/pieces.clj`: returns `(+ (count needed) (count in-flight)) <= threshold`
-- [ ] T047 [US5] Implement `select-pieces-endgame` in `src/dev/cljtoc/domain/pieces.clj`: returns `{:ok [piece-index]}` for all pieces peer has that are in `needed` OR `in-flight`
-- [ ] T048 [US5] [P] Add `s/fdef` for `endgame?` and `select-pieces-endgame` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariants: endgame result is boolean; endgame selection result pieces are all in `(union needed in-flight)`
-- [ ] T049 [US5] [P] Add test: `endgame?` returns `true` when `(+ needed in-flight)` ≤ threshold (e.g., 3 remaining, threshold=20) in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T050 [US5] [P] Add test: `endgame?` returns `false` when remaining pieces exceed threshold (e.g., 50 remaining, threshold=20) in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T051 [US5] [P] Add test: completed torrent `(verified-count = total-pieces)` → `endgame?` returns `true` for any positive threshold in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T052 [US5] [P] Add test: `select-pieces-endgame` returns both needed AND in-flight pieces that peer has in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T053 [US5] [P] Add test: `select-pieces-endgame` returns `{:ok []}` when peer has nothing in `needed` or `in-flight` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T046 [US5] Implement `endgame?` predicate in `src/dev/cljtoc/domain/pieces.clj`: returns `(+ (count needed) (count in-flight)) <= threshold`
+- [x] T047 [US5] Implement `select-pieces-endgame` in `src/dev/cljtoc/domain/pieces.clj`: returns `{:ok [piece-index]}` for all pieces peer has that are in `needed` OR `in-flight`
+- [x] T048 [US5] [P] Add `s/fdef` for `endgame?` and `select-pieces-endgame` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariants: endgame result is boolean; endgame selection result pieces are all in `(union needed in-flight)`
+- [x] T049 [US5] [P] Add test: `endgame?` returns `true` when `(+ needed in-flight)` ≤ threshold (e.g., 3 remaining, threshold=20) in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T050 [US5] [P] Add test: `endgame?` returns `false` when remaining pieces exceed threshold (e.g., 50 remaining, threshold=20) in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T051 [US5] [P] Add test: completed torrent `(verified-count = total-pieces)` → `endgame?` returns `true` for any positive threshold in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T052 [US5] [P] Add test: `select-pieces-endgame` returns both needed AND in-flight pieces that peer has in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T053 [US5] [P] Add test: `select-pieces-endgame` returns `{:ok []}` when peer has nothing in `needed` or `in-flight` in `test/dev/cljtoc/domain/pieces_test.clj`
 
 **Checkpoint**: US5 fully functional — endgame mode independently verified
 
