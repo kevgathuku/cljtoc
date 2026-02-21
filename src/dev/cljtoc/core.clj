@@ -121,7 +121,14 @@
                                                  :output-dir output-dir))
                     (println (str "Download started: " download-id))
                     (println)
-                    (print-progress (download/progress result))))))))))))
+                    (print-progress (download/progress result))
+                    (println)
+                    (let [final-download (download/run-download m result)]
+                      (cli-state/save-state (assoc final-download :id download-id
+                                                   :torrent-path torrent-path
+                                                   :output-dir output-dir))
+                      (println)
+                      (print-progress (download/progress final-download)))))))))))))
 
 (defn- cmd-torrent-pause
   [args]
