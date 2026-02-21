@@ -108,6 +108,26 @@
   (let [now (System/currentTimeMillis)]
     (->DownloadStats now nil 0 0 now)))
 
+(defn update-stats-bytes [stats bytes-received]
+  (let [now (System/currentTimeMillis)
+        prev-bytes (:bytes-downloaded stats)
+        prev-time (:last-update stats)
+        elapsed-seconds (max 1 (/ (- now prev-time) 1000.0))
+        new-total (+ prev-bytes bytes-received)
+        rate (long (/ bytes-received elapsed-seconds))]
+    (-> stats
+        (assoc :bytes-downloaded new-total)
+        (assoc :last-update now)
+        (assoc :rate rate))))
+
+(defn calculate-rate [stats]
+  (let [now (System/currentTimeMillis)
+        elapsed-seconds (/ (- now (:last-update stats)) 1000.0)
+        bytes-downloaded (:bytes-downloaded stats)]
+    (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
+      (long (/ bytes-downloaded elapsed-seconds))
+      0)))
+
 (defn initial-download [torrent output-dir]
   (let [total-pieces (count (torrent/parse-pieces (:pieces torrent)))
         piece-state (pieces/initial-piece-state total-pieces)]
@@ -145,12 +165,13 @@
                   0.0
                   (* 100.0 (/ total total-pieces)))
         stats (:stats download)
-        bytes-downloaded (:bytes-downloaded stats)]
+        bytes-downloaded (:bytes-downloaded stats)
+        rate (calculate-rate stats)]
     {:percent percent
      :pieces-complete total
      :pieces-total total-pieces
      :bytes-downloaded bytes-downloaded
-     :rate-bytes-per-sec 0
+     :rate-bytes-per-sec rate
      :peers-connected (count (:peers download))
      :state (:state download)}))
 

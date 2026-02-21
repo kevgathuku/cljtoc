@@ -82,14 +82,14 @@ Progress reporting: percentage, pieces, bytes, rate, peer count.
 
 ### Implementation
 
-- [ ] T034 [US2] Implement progress function in src/dev/cljtoc/orchestration/download.clj
-- [ ] T035 [US2] Implement rate calculation in src/dev/cljtoc/orchestration/download.clj
-- [ ] T036 [US2] Implement peer count tracking in src/dev/cljtoc/orchestration/download.clj
-- [ ] T037 [US2] Add progress updates on piece completion in src/dev/cljtoc/orchestration/download.clj
+- [x] T034 [US2] Implement progress function in src/dev/cljtoc/orchestration/download.clj
+- [x] T035 [US2] Implement rate calculation in src/dev/cljtoc/orchestration/download.clj
+- [x] T036 [US2] Implement peer count tracking in src/dev/cljtoc/orchestration/download.clj
+- [x] T037 [US2] Add progress updates on piece completion in src/dev/cljtoc/orchestration/download.clj
 
 ### Tests
 
-- [ ] T038 [US2] Create unit tests for progress function in test/dev/cljtoc/orchestration/download_test.clj
+- [x] T038 [US2] Create unit tests for progress function in test/dev/cljtoc/orchestration/download_test.clj
 
 ---
 
