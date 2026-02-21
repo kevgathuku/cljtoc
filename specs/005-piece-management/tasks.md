@@ -147,13 +147,13 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 ### Implementation for User Story 4
 
-- [ ] T039 [US4] Implement `verify-piece` in `src/dev/cljtoc/domain/pieces.clj`: validate inputs (non-empty bytes, 20-byte hash); call `(bencode/sha1-hash assembled-bytes)`; compare with `expected-hash`; return `{:ok piece-index}` or `{:error :hash-mismatch :piece-index piece-index :message string}`
-- [ ] T040 [US4] [P] Add `s/fdef` for `verify-piece` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: when `:ok`, returned piece-index equals input piece-index
-- [ ] T041 [US4] [P] Add test: `(verify-piece 5 data (bencode/sha1-hash data))` → `{:ok 5}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T042 [US4] [P] Add test: one byte changed in assembled bytes → `{:error :hash-mismatch :piece-index 5}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T043 [US4] [P] Add test: empty byte array returns `{:error :invalid-input :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T044 [US4] [P] Add test: expected hash of length ≠ 20 bytes returns `{:error :invalid-input :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T045 [US4] [P] Add generative test (`defspec verify-piece-referentially-transparent`): for random byte arrays, `verify-piece` called twice with the same inputs returns the same result in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T039 [US4] Implement `verify-piece` in `src/dev/cljtoc/domain/pieces.clj`: validate inputs (non-empty bytes, 20-byte hash); call `(bencode/sha1-hash assembled-bytes)`; compare with `expected-hash`; return `{:ok piece-index}` or `{:error :hash-mismatch :piece-index piece-index :message string}`
+- [x] T040 [US4] [P] Add `s/fdef` for `verify-piece` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: when `:ok`, returned piece-index equals input piece-index
+- [x] T041 [US4] [P] Add test: `(verify-piece 5 data (bencode/sha1-hash data))` → `{:ok 5}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T042 [US4] [P] Add test: one byte changed in assembled bytes → `{:error :hash-mismatch :piece-index 5}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T043 [US4] [P] Add test: empty byte array returns `{:error :invalid-input :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T044 [US4] [P] Add test: expected hash of length ≠ 20 bytes returns `{:error :invalid-input :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T045 [US4] [P] Add generative test (`defspec verify-piece-referentially-transparent`): for random byte arrays, `verify-piece` called twice with the same inputs returns the same result in `test/dev/cljtoc/domain/pieces_test.clj`
 
 **Checkpoint**: US4 fully functional — SHA-1 verification independently verified; correct data passes, corrupted data fails deterministically
 
