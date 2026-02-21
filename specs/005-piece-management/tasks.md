@@ -16,8 +16,8 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 **Goal**: Initialize source and test files with namespace declarations
 
-- [ ] T001 Create `src/dev/cljtoc/domain/pieces.clj` with namespace declaration requiring `[clojure.spec.alpha :as s]` and `[dev.cljtoc.domain.bencode :as bencode]`
-- [ ] T002 Create `test/dev/cljtoc/domain/pieces_test.clj` with namespace declaration requiring `[clojure.test :refer :all]`, `[clojure.spec.alpha :as s]`, `[clojure.test.check.generators :as gen]`, `[clojure.test.check.properties :as prop]`, `[clojure.test.check.clojure-test :refer [defspec]]`, and `[dev.cljtoc.domain.pieces :as pieces]`
+- [x] T001 Create `src/dev/cljtoc/domain/pieces.clj` with namespace declaration requiring `[clojure.spec.alpha :as s]` and `[dev.cljtoc.domain.bencode :as bencode]`
+- [x] T002 Create `test/dev/cljtoc/domain/pieces_test.clj` with namespace declaration requiring `[clojure.test :refer :all]`, `[clojure.spec.alpha :as s]`, `[clojure.test.check.generators :as gen]`, `[clojure.test.check.properties :as prop]`, `[clojure.test.check.clojure-test :refer [defspec]]`, and `[dev.cljtoc.domain.pieces :as pieces]`
 
 **Independent Test Criteria**: Both files load without errors in the REPL
 
@@ -29,10 +29,10 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 **⚠️ CRITICAL**: No user story work can begin until this phase is complete
 
-- [ ] T003 Define `PieceState` record in `src/dev/cljtoc/domain/pieces.clj` with fields: `total-pieces`, `needed`, `in-flight`, `verified`
-- [ ] T004 [P] Define `Block` record in `src/dev/cljtoc/domain/pieces.clj` with fields: `piece-index`, `offset`, `length`
-- [ ] T005 [P] Add `s/def` specs for primitive domain types in `src/dev/cljtoc/domain/pieces.clj`: `::piece-index` (nat-int?), `::piece-index-set` (set of nat-int), `::total-pieces` (pos-int?), `::block-length` (1 to 16384)
-- [ ] T006 [P] Add `s/def` composite specs in `src/dev/cljtoc/domain/pieces.clj`: `::piece-state` (keys: total-pieces, needed, in-flight, verified) and `::block` (keys: piece-index, offset, length)
+- [x] T003 Define `PieceState` record in `src/dev/cljtoc/domain/pieces.clj` with fields: `total-pieces`, `needed`, `in-flight`, `verified`
+- [x] T004 [P] Define `Block` record in `src/dev/cljtoc/domain/pieces.clj` with fields: `piece-index`, `offset`, `length`
+- [x] T005 [P] Add `s/def` specs for primitive domain types in `src/dev/cljtoc/domain/pieces.clj`: `::piece-index` (nat-int?), `::piece-index-set` (set of nat-int), `::total-pieces` (pos-int?), `::length` (1 to 16384)
+- [x] T006 [P] Add `s/def` composite specs in `src/dev/cljtoc/domain/pieces.clj`: `::piece-state` (keys: total-pieces, needed, in-flight, verified) and `::block` (keys: piece-index, offset, length)
 
 **Checkpoint**: Records and specs defined — user story implementation can now begin
 
