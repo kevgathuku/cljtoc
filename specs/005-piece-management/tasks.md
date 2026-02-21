@@ -54,22 +54,22 @@ Implementation tasks for BitTorrent piece management — pure domain functions f
 
 ### Implementation for User Story 1
 
-- [ ] T007 [US1] Implement `initial-piece-state` in `src/dev/cljtoc/domain/pieces.clj`: returns `PieceState` with `needed = #{0..N-1}`, `in-flight = #{}`, `verified = #{}`
-- [ ] T008 [US1] [P] Implement query functions `needed-count`, `in-flight-count`, `verified-count` in `src/dev/cljtoc/domain/pieces.clj`: each returns count of the respective set
-- [ ] T009 [US1] [P] Implement `complete?` predicate in `src/dev/cljtoc/domain/pieces.clj`: `true` iff `(count verified) = total-pieces`
-- [ ] T010 [US1] Implement `mark-in-flight` in `src/dev/cljtoc/domain/pieces.clj`: moves piece-index from `needed` → `in-flight`; returns `{:error :invalid-transition}` if not in `needed`
-- [ ] T011 [US1] Implement `mark-verified` in `src/dev/cljtoc/domain/pieces.clj`: moves piece-index from `in-flight` → `verified`; returns `{:error :invalid-transition}` if not in `in-flight`
-- [ ] T012 [US1] Implement `requeue-piece` in `src/dev/cljtoc/domain/pieces.clj`: moves piece-index from `in-flight` → `needed`; returns `{:error :invalid-transition}` if not in `in-flight`
-- [ ] T013 [US1] [P] Add `s/fdef` for `initial-piece-state` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: `(= total-pieces (count (:needed ret)))`
-- [ ] T014 [US1] [P] Add `s/fdef` for `mark-in-flight`, `mark-verified`, `requeue-piece` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: `:total-pieces` unchanged; `(+ needed in-flight verified)` = `total-pieces` in success result
-- [ ] T015 [US1] [P] Add test: `initial-piece-state` with N=3 returns state with `needed=#{0 1 2}`, empty `in-flight` and `verified` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T016 [US1] [P] Add test: `mark-in-flight` on piece in `needed` → new state has piece in `in-flight`, `needed-count` decremented by 1 in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T017 [US1] [P] Add test: `mark-verified` on piece in `in-flight` → new state has piece in `verified`, `in-flight-count` decremented by 1 in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T018 [US1] [P] Add test: `requeue-piece` on failed piece → piece returns to `needed`, `in-flight-count` decremented by 1 in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T019 [US1] [P] Add test: invalid transitions (e.g., `mark-in-flight` on already in-flight piece) return `{:error :invalid-transition :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T020 [US1] [P] Add test: original `PieceState` record is unmodified after any transition — verify prior state is equal to pre-transition value in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T021 [US1] [P] Add test: `complete?` returns `false` during download; returns `true` after all pieces verified in `test/dev/cljtoc/domain/pieces_test.clj`
-- [ ] T022 [US1] [P] Add generative test (`defspec state-partition-invariant`): for random total and random piece-index, after any transition sequence `(+ needed-count in-flight-count verified-count) = total-pieces` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T007 [US1] Implement `initial-piece-state` in `src/dev/cljtoc/domain/pieces.clj`: returns `PieceState` with `needed = #{0..N-1}`, `in-flight = #{}`, `verified = #{}`
+- [x] T008 [US1] [P] Implement query functions `needed-count`, `in-flight-count`, `verified-count` in `src/dev/cljtoc/domain/pieces.clj`: each returns count of the respective set
+- [x] T009 [US1] [P] Implement `complete?` predicate in `src/dev/cljtoc/domain/pieces.clj`: `true` iff `(count verified) = total-pieces`
+- [x] T010 [US1] Implement `mark-in-flight` in `src/dev/cljtoc/domain/pieces.clj`: moves piece-index from `needed` → `in-flight`; returns `{:error :invalid-transition}` if not in `needed`
+- [x] T011 [US1] Implement `mark-verified` in `src/dev/cljtoc/domain/pieces.clj`: moves piece-index from `in-flight` → `verified`; returns `{:error :invalid-transition}` if not in `in-flight`
+- [x] T012 [US1] Implement `requeue-piece` in `src/dev/cljtoc/domain/pieces.clj`: moves piece-index from `in-flight` → `needed`; returns `{:error :invalid-transition}` if not in `in-flight`
+- [x] T013 [US1] [P] Add `s/fdef` for `initial-piece-state` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: `(= total-pieces (count (:needed ret)))`
+- [x] T014 [US1] [P] Add `s/fdef` for `mark-in-flight`, `mark-verified`, `requeue-piece` in `src/dev/cljtoc/domain/pieces.clj` with `:fn` invariant: `:total-pieces` unchanged; `(+ needed in-flight verified)` = `total-pieces` in success result
+- [x] T015 [US1] [P] Add test: `initial-piece-state` with N=3 returns state with `needed=#{0 1 2}`, empty `in-flight` and `verified` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T016 [US1] [P] Add test: `mark-in-flight` on piece in `needed` → new state has piece in `in-flight`, `needed-count` decremented by 1 in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T017 [US1] [P] Add test: `mark-verified` on piece in `in-flight` → new state has piece in `verified`, `in-flight-count` decremented by 1 in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T018 [US1] [P] Add test: `requeue-piece` on failed piece → piece returns to `needed`, `in-flight-count` decremented by 1 in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T019 [US1] [P] Add test: invalid transitions (e.g., `mark-in-flight` on already in-flight piece) return `{:error :invalid-transition :message string}` in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T020 [US1] [P] Add test: original `PieceState` record is unmodified after any transition — verify prior state is equal to pre-transition value in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T021 [US1] [P] Add test: `complete?` returns `false` during download; returns `true` after all pieces verified in `test/dev/cljtoc/domain/pieces_test.clj`
+- [x] T022 [US1] [P] Add generative test (`defspec state-partition-invariant`): for random total and random piece-index, after any transition sequence `(+ needed-count in-flight-count verified-count) = total-pieces` in `test/dev/cljtoc/domain/pieces_test.clj`
 
 **Checkpoint**: US1 fully functional — PieceState machine verified independently with 100% of acceptance criteria passing
 
