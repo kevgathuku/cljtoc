@@ -10,7 +10,7 @@
            [java.util.concurrent Executors]))
 
 (defrecord NetworkPort
-  [config peer-connections])
+           [config peer-connections])
 
 (defn connect-peer [network address]
   "Open TCP connection to a peer at the given address.
@@ -22,7 +22,7 @@
               host (first parts)
               port (Integer/parseInt (second parts))
               socket (doto (Socket.)
-                        (.connect (InetSocketAddress. host port) 10000))
+                       (.connect (InetSocketAddress. host port) 10000))
               peer-data {:id address
                          :address address
                          :socket socket
@@ -32,7 +32,7 @@
           (async/>! ch {:ok peer-data}))
         (catch Exception e
           (async/>! ch {:error :connect-failed :message (.getMessage e)})))
-      ch))
+      ch)))
 
 (defn send-message [network peer message]
   "Send a peer wire message to the connected peer.
@@ -89,8 +89,8 @@
                   (async/>! ch result)))
               (async/>! ch {:error :no-trackers :message "All trackers failed"}))))
         (catch Exception e
-          (async/>! ch {:error :tracker-error :message (.getMessage e)}))))
-      ch))
+          (async/>! ch {:error :tracker-error :message (.getMessage e)})))
+      ch)))
 
 (defn scrape [network torrent-metadata]
   "Scrape tracker for torrent statistics.
@@ -108,8 +108,8 @@
       (loop [[url & rest] tier]
         (if url
           (let [result (try
-                        (tracker/http-announce url torrent-metadata "test-client-id")
-                        (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
+                         (tracker/http-announce url torrent-metadata "test-client-id")
+                         (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
             (if (and (:ok result) (seq (get-in result [:ok :peers])))
               (async/>! ch result)
               (recur rest)))
@@ -124,8 +124,8 @@
       (loop [[url & rest] tier]
         (if url
           (let [result (try
-                        (tracker/http-announce url torrent-metadata "test-client-id")
-                        (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
+                         (tracker/http-announce url torrent-metadata "test-client-id")
+                         (catch Exception e {:error :announce-failed :message (.getMessage e)}))]
             (if (and (:ok result) (seq (get-in result [:ok :peers])))
               (async/>! ch result)
               (recur rest)))
