@@ -8,8 +8,7 @@
             [clojure.java.io :as io]
             [clojure.core.async :as async])
   (:import [java.io File FileInputStream FileOutputStream]
-           [java.nio.file Files Paths]
-           [java.nio.file.attribute FileStore]))
+           [java.nio.file Files Paths]))
 
 (defrecord DiskPortImpl
   [state-dir
@@ -128,9 +127,8 @@
   "Get available disk space in bytes for the given path."
   [path]
   (try
-    (let [file (io/file path)
-          store (Files/getFileStore (.toPath file))]
-      (.getUsableSpace store))
+    (let [file (io/file path)]
+      (.getUsableSpace file))
     (catch Exception _
       nil)))
 
