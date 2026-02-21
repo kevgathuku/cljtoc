@@ -363,6 +363,41 @@
                 (= pi (:ok result))))))
 
 ;; ============================================================================
+;; Block Assembly (US4)
+;; ============================================================================
+
+(defn assemble-piece
+  "Assemble received blocks into a single byte array for a piece.
+   Blocks is a collection of {:offset n :data bytes} maps.
+   Returns {:ok byte-array} or {:error ...} if blocks have gaps or are empty."
+  [blocks expected-length]
+  (if (empty? blocks)
+    (piece-error :invalid-input "No blocks to assemble")
+    (let [sorted (sort-by :offset blocks)
+          result (byte-array expected-length)]
+      (loop [expected-offset 0
+             remaining sorted]
+        (if (empty? remaining)
+          (if (= expected-offset expected-length)
+            {:ok result}
+            (piece-error :incomplete-piece
+                         (str "Blocks cover " expected-offset " of " expected-length " bytes")))
+          (let [{:keys [offset data]} (first remaining)
+                data-len (alength ^bytes data)]
+            (if (not= offset expected-offset)
+              (piece-error :gap-in-blocks
+                           (str "Expected offset " expected-offset " but got " offset))
+              (do
+                (System/arraycopy data 0 result offset data-len)
+                (recur (+ expected-offset data-len) (rest remaining))))))))))
+
+(s/fdef assemble-piece
+  :args (s/cat :blocks (s/coll-of map?) :expected-length pos-int?)
+  :ret  map?
+  :fn   #(or (keyword? (-> % :ret :error))
+             (= (-> % :args :expected-length) (count (-> % :ret :ok)))))
+
+;; ============================================================================
 ;; Endgame Mode (US5)
 ;; ============================================================================
 
