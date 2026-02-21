@@ -14,16 +14,16 @@
 
 Project initialization and directory structure.
 
-- [ ] T001 Create port protocols namespace in src/dev/cljtoc/ports/network.clj
-- [ ] T002 Create port protocols namespace in src/dev/cljtoc/ports/disk.clj
-- [ ] T003 Create port protocols namespace in src/dev/cljtoc/ports/time.clj
-- [ ] T004 Create orchestration namespace in src/dev/cljtoc/orchestration/download.clj
-- [ ] T005 Create orchestration namespace in src/dev/cljtoc/orchestration/manager.clj
-- [ ] T006 Create test doubles directory test/dev/cljtoc/test_doubles/
-- [ ] T007 [P] Create test double for network port in test/dev/cljtoc/test_doubles/network.clj
-- [ ] T008 [P] Create test double for disk port in test/dev/cljtoc/test_doubles/disk.clj
-- [ ] T009 [P] Create test double for time port in test/dev/cljtoc/test_doubles/time.clj
-- [ ] T010 Create test directory test/dev/cljtoc/orchestration/
+- [x] T001 Create port protocols namespace in src/dev/cljtoc/ports/network.clj
+- [x] T002 Create port protocols namespace in src/dev/cljtoc/ports/disk.clj
+- [x] T003 Create port protocols namespace in src/dev/cljtoc/ports/time.clj
+- [x] T004 Create orchestration namespace in src/dev/cljtoc/orchestration/download.clj
+- [x] T005 Create orchestration namespace in src/dev/cljtoc/orchestration/manager.clj
+- [x] T006 Create test doubles directory test/dev/cljtoc/test_doubles/
+- [x] T007 [P] Create test double for network port in test/dev/cljtoc/test_doubles/network.clj
+- [x] T008 [P] Create test double for disk port in test/dev/cljtoc/test_doubles/disk.clj
+- [x] T009 [P] Create test double for time port in test/dev/cljtoc/test_doubles/time.clj
+- [x] T010 Create test directory test/dev/cljtoc/orchestration/
 
 ---
 
@@ -31,12 +31,12 @@ Project initialization and directory structure.
 
 Port protocols and test doubles must be complete before any user story implementation.
 
-- [ ] T011 Define INetworkPort protocol in src/dev/cljtoc/ports/network.clj
-- [ ] T012 Define IDiskPort protocol in src/dev/cljtoc/ports/disk.clj
-- [ ] T013 Define ITimePort protocol in src/dev/cljtoc/ports/time.clj
-- [ ] T014 [P] Implement mock network test double in test/dev/cljtoc/test_doubles/network.clj
-- [ ] T015 [P] Implement mock disk test double in test/dev/cljtoc/test_doubles/disk.clj
-- [ ] T016 [P] Implement mock time test double in test/dev/cljtoc/test_doubles/time.clj
+- [x] T011 Define INetworkPort protocol in src/dev/cljtoc/ports/network.clj
+- [x] T012 Define IDiskPort protocol in src/dev/cljtoc/ports/disk.clj
+- [x] T013 Define ITimePort protocol in src/dev/cljtoc/ports/time.clj
+- [x] T014 [P] Implement mock network test double in test/dev/cljtoc/test_doubles/network.clj
+- [x] T015 [P] Implement mock disk test double in test/dev/cljtoc/test_doubles/disk.clj
+- [x] T016 [P] Implement mock time test double in test/dev/cljtoc/test_doubles/time.clj
 
 ---
 
@@ -48,28 +48,28 @@ Core functionality: parse torrent, connect to tracker, download pieces, verify i
 
 ### Setup
 
-- [ ] T017 [US1] Create Download record in src/dev/cljtoc/orchestration/download.clj
-- [ ] T018 [US1] Create Peer record in src/dev/cljtoc/orchestration/download.clj
-- [ ] T019 [US1] Create DownloadStats record in src/dev/cljtoc/orchestration/download.clj
-- [ ] T020 [US1] Create ErrorInfo record in src/dev/cljtoc/orchestration/download.clj
+- [x] T017 [US1] Create Download record in src/dev/cljtoc/orchestration/download.clj
+- [x] T018 [US1] Create Peer record in src/dev/cljtoc/orchestration/download.clj
+- [x] T019 [US1] Create DownloadStats record in src/dev/cljtoc/orchestration/download.clj
+- [x] T020 [US1] Create ErrorInfo record in src/dev/cljtoc/orchestration/download.clj
 
 ### Implementation
 
-- [ ] T021 [US1] Implement manager constructor in src/dev/cljtoc/orchestration/manager.clj
-- [ ] T022 [US1] Implement start-download in src/dev/cljtoc/orchestration/download.clj
-- [ ] T023 [US1] Implement torrent file parsing via IDiskPort in src/dev/cljtoc/orchestration/download.clj
-- [ ] T024 [US1] Implement tracker announcement via INetworkPort in src/dev/cljtoc/orchestration/download.clj
-- [ ] T025 [US1] Implement peer connection management in src/dev/cljtoc/orchestration/download.clj
-- [ ] T026 [US1] Implement piece selection using rarest-first from pieces.clj in src/dev/cljtoc/orchestration/download.clj
-- [ ] T027 [US1] Implement piece download request/response handling in src/dev/cljtoc/orchestration/download.clj
-- [ ] T028 [US1] Implement SHA-1 verification using pieces/verify-piece in src/dev/cljtoc/orchestration/download.clj
-- [ ] T029 [US1] Implement piece assembly and disk write via IDiskPort in src/dev/cljtoc/orchestration/download.clj
-- [ ] T030 [US1] Implement download state machine transitions in src/dev/cljtoc/orchestration/download.clj
-- [ ] T031 [US1] Implement stop-download in src/dev/cljtoc/orchestration/download.clj
+- [x] T021 [US1] Implement manager constructor in src/dev/cljtoc/orchestration/manager.clj
+- [x] T022 [US1] Implement start-download in src/dev/cljtoc/orchestration/download.clj
+- [x] T023 [US1] Implement torrent file parsing via IDiskPort in src/dev/cljtoc/orchestration/download.clj
+- [x] T024 [US1] Implement tracker announcement via INetworkPort in src/dev/cljtoc/orchestration/download.clj
+- [x] T025 [US1] Implement peer connection management in src/dev/cljtoc/orchestration/download.clj
+- [x] T026 [US1] Implement piece selection using rarest-first from pieces.clj in src/dev/cljtoc/orchestration/download.clj
+- [x] T027 [US1] Implement piece download request/response handling in src/dev/cljtoc/orchestration/download.clj
+- [x] T028 [US1] Implement SHA-1 verification using pieces/verify-piece in src/dev/cljtoc/orchestration/download.clj
+- [x] T029 [US1] Implement piece assembly and disk write via IDiskPort in src/dev/cljtoc/orchestration/download.clj
+- [x] T030 [US1] Implement download state machine transitions in src/dev/cljtoc/orchestration/download.clj
+- [x] T031 [US1] Implement stop-download in src/dev/cljtoc/orchestration/download.clj
 
 ### Tests
 
-- [ ] T032 [US1] Create unit tests for Download record in test/dev/cljtoc/orchestration/download_test.clj
+- [x] T032 [US1] Create unit tests for Download record in test/dev/cljtoc/orchestration/download_test.clj
 - [ ] T033 [US1] Create integration test for complete download flow in test/dev/cljtoc/integration/download_integration_test.clj
 
 ---
