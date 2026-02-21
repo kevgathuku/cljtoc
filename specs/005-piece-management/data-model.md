@@ -107,9 +107,9 @@ Piece 0, standard-piece-length=524288, total-length=1073741824:
 
 **Last-Piece Example** (remainder piece):
 ```
-Total: 1073750016 bytes, standard-piece-length=524288
-Last piece index = 2047, actual length = 8192 bytes (= 1073750016 mod 524288)
-  Block {:piece-index 2047 :offset 0 :length 8192}
+Total: 1056768 bytes (2*524288 + 8192), standard-piece-length=524288
+Last piece index = 2, actual length = 8192 bytes
+  Block {:piece-index 2 :offset 0 :length 8192}
   ;; 1 block of 8192 bytes
 ```
 

@@ -214,8 +214,8 @@ All functions are pure and operate on in-memory data — no network, disk, or ti
 ;;           #Block{:piece-index 0 :offset 507904 :length 16384}]}
 
 ;; Last piece: 8192 bytes → 1 block
-(piece-blocks 2047 524288 1073750016)
-;; => {:ok [#Block{:piece-index 2047 :offset 0 :length 8192}]}
+(piece-blocks 2 524288 1056768)
+;; => {:ok [#Block{:piece-index 2 :offset 0 :length 8192}]}
 ```
 
 ---

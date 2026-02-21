@@ -83,8 +83,8 @@ Part of the core `cljtoc` library. Require the namespace directly:
   (last ok))            ;; => #Block{:piece-index 7 :offset 507904 :length 16384}
 
 ;; Last piece is shorter
-(let [{:keys [ok]} (pieces/piece-blocks 2047 524288 1073750016)]
-  ok)  ;; => [#Block{:piece-index 2047 :offset 0 :length 8192}]
+(let [{:keys [ok]} (pieces/piece-blocks 2 524288 1056768)]
+  ok)  ;; => [#Block{:piece-index 2 :offset 0 :length 8192}]
 ```
 
 ### 5. Verify Piece Integrity
