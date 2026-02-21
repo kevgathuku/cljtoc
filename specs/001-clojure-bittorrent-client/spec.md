@@ -32,7 +32,7 @@ This architecture is implemented through the following independently deliverable
 | [002-bencode-parser](../002-bencode-parser/) | Parse .torrent files (bencode format) to domain model | **Complete** | None | P1 - Foundation |
 | [003-tracker-protocol](../003-tracker-protocol/) | HTTP/UDP tracker communication for peer discovery | **Complete** | 002 | P1 - Required |
 | [004-peer-wire-protocol](../004-peer-wire-protocol/) | BitTorrent peer message protocol implementation | **Complete** | 002 | P1 - Required |
-| 005-piece-selection | Pure domain logic for piece management & verification | Not Started | 002 | P1 - Required |
+| [005-piece-management](../005-piece-management/) | Pure domain logic for piece management & verification | **Complete** | 002 | P1 - Required |
 | 006-download-orchestration | End-to-end single torrent download coordination | Not Started | 002-005 | P1 - Engine Core |
 
 ### User Interface Features

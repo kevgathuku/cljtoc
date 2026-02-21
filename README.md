@@ -26,12 +26,20 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
   - 16 KiB block size enforcement on request/piece/cancel
   - Generative round-trip tests for all message types (100 runs each)
   - 67 tests, 249 assertions — 100% pure (no network I/O in tests)
+- ✅ **Piece Management** - Pure domain logic for piece tracking, selection, and verification
+  - Immutable PieceState state machine: needed → in-flight → verified (with requeue)
+  - Rarest-first piece selection with deterministic tie-breaking
+  - 16 KiB block decomposition for peer wire protocol requests
+  - SHA-1 integrity verification of assembled piece bytes
+  - Endgame mode detection and duplicate requesting
+  - Full clojure.spec coverage with `s/fdef` invariants
+  - 33 tests, 91 assertions — 100% pure (no I/O in tests)
 
 ### Roadmap
 
-- 🚧 Piece selection strategies
+- 🚧 Download orchestration (end-to-end coordination)
 - 🚧 DHT (Distributed Hash Table)
-- 🚧 File I/O and verification
+- 🚧 CLI interface
 
 ## Quick Start
 
@@ -112,7 +120,8 @@ torrent-client-clj/
 │   ├── core.clj                    # CLI entry point
 │   ├── domain/
 │   │   ├── bencode.clj             # Bencode encoder/decoder
-│   │   └── torrent.clj             # Torrent metadata parser
+│   │   ├── torrent.clj             # Torrent metadata parser
+│   │   └── pieces.clj              # Piece management (state machine, selection, blocks, verification)
 │   └── protocol/
 │       ├── tracker.clj             # Tracker protocol (HTTP + UDP)
 │       ├── tracker/
@@ -123,7 +132,8 @@ torrent-client-clj/
 │   ├── core_test.clj
 │   ├── domain/
 │   │   ├── bencode_test.clj        # Bencode tests (property-based)
-│   │   └── torrent_test.clj        # Torrent parser tests
+│   │   ├── torrent_test.clj        # Torrent parser tests
+│   │   └── pieces_test.clj         # Piece management tests (33 tests)
 │   ├── protocol/
 │   │   ├── tracker_test.clj        # Tracker tests (49 tests)
 │   │   ├── peer_test.clj           # Peer protocol tests (40 tests)
@@ -138,10 +148,17 @@ torrent-client-clj/
 │   │   ├── quickstart.md           # API usage examples
 │   │   ├── data-model.md           # Data structures
 │   │   └── contracts/              # HTTP + UDP API contracts
-│   └── 004-peer-wire-protocol/
+│   ├── 004-peer-wire-protocol/
+│   │   ├── spec.md                 # Feature requirements
+│   │   ├── tasks.md                # Task breakdown
+│   │   └── README.md               # API reference
+│   └── 005-piece-management/
 │       ├── spec.md                 # Feature requirements
+│       ├── plan.md                 # Implementation plan
 │       ├── tasks.md                # Task breakdown
-│       └── README.md               # API reference
+│       ├── data-model.md           # Data structures
+│       ├── quickstart.md           # Usage examples
+│       └── contracts/              # API contracts
 └── doc/
     └── bencode-parser.md           # Bencode API documentation
 ```
@@ -159,7 +176,7 @@ lein test
 ```
 
 The test suite includes:
-- 153 tests, 674 assertions across all features
+- 186 tests, 765 assertions across all features
 - Property-based generative tests using test.check
 - Round-trip verification tests (build → parse → verify)
 - 100% pure — no network I/O required
@@ -213,6 +230,7 @@ The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hash
 - **[Bencode Parser API](doc/bencode-parser.md)** - Detailed API documentation with examples
 - **[Tracker Protocol Quickstart](specs/003-tracker-protocol/quickstart.md)** - Usage examples for all tracker functions
 - **[Peer Wire Protocol API](specs/004-peer-wire-protocol/README.md)** - Full API reference for peer message parsing and state machine
+- **[Piece Management Quickstart](specs/005-piece-management/quickstart.md)** - Usage examples for piece state machine, selection, blocks, and verification
 - **[Feature Specs](specs/)** - Detailed feature specifications and implementation plans
 
 ## CLI Commands

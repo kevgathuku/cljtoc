@@ -108,7 +108,7 @@ Implementation is split into independently deliverable features in `specs/`:
 - `002-bencode-parser` - Foundation: .torrent file parsing
 - `003-tracker-protocol` - Peer discovery
 - `004-peer-wire-protocol` - BitTorrent peer messages
-- `005-piece-selection` - Pure domain logic for pieces
+- `005-piece-management` - Pure domain logic for pieces
 - `006-download-orchestration` - End-to-end download coordination
 
 Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/`
