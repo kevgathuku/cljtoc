@@ -189,7 +189,7 @@
                         (async/>! ch {:error :parse-failed :message (:message parse-result)})
                         (let [response (:ok parse-result)
                               peers (:peers response)]
-                          (async/>! ch {:ok (set (map :address peers))}))))))))))
+                          (async/>! ch {:ok (set (map #(str (:ip %) ":" (:port %)) peers))}))))))))))
         (catch Exception e
           (async/>! ch {:error :tracker-error :message (.getMessage e)})))
       (async/close! ch))
