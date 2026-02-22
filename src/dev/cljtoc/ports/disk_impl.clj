@@ -11,10 +11,10 @@
            [java.nio.file Files Paths]))
 
 (defrecord DiskPortImpl
-  [state-dir
-   piece-cache-dir
-   config]
-  
+           [state-dir
+            piece-cache-dir
+            config]
+
   disk/IDiskPort
   (read-torrent-file [this path]
     (let [ch (async/chan 1)]
@@ -31,7 +31,7 @@
           (catch Exception e
             (async/>! ch {:error :read-error :message (.getMessage e)}))))
       ch))
-  
+
   (read-piece [this piece-index]
     (let [ch (async/chan 1)]
       (async/go
@@ -43,21 +43,21 @@
           (catch Exception e
             (async/>! ch {:error :read-error :message (.getMessage e)}))))
       ch))
-  
+
   (write-piece [this piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
         (try
-            (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
-                  parent (.getParentFile piece-file)]
-              (when-not (.exists parent)
-                (.mkdirs parent))
-              (clojure.java.io/copy bytes piece-file)
-              (async/>! ch {:ok :written}))
+          (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
+                parent (.getParentFile piece-file)]
+            (when-not (.exists parent)
+              (.mkdirs parent))
+            (clojure.java.io/copy bytes piece-file)
+            (async/>! ch {:ok :written}))
           (catch Exception e
             (async/>! ch {:error :write-error :message (.getMessage e)}))))
       ch))
-  
+
   (ensure-directory [this path]
     (let [ch (async/chan 1)]
       (async/go
@@ -69,7 +69,7 @@
           (catch Exception e
             (async/>! ch {:error :mkdir-error :message (.getMessage e)}))))
       ch))
-  
+
   (save-state [this download]
     (let [ch (async/chan 1)]
       (async/go
@@ -82,7 +82,7 @@
           (catch Exception e
             (async/>! ch {:error :save-error :message (.getMessage e)}))))
       ch))
-  
+
   (load-state [this id]
     (let [ch (async/chan 1)]
       (async/go
@@ -95,7 +95,7 @@
           (catch Exception e
             (async/>! ch {:error :load-error :message (.getMessage e)}))))
       ch))
-  
+
   (delete-state [this id]
     (let [ch (async/chan 1)]
       (async/go
@@ -132,12 +132,21 @@
     (catch Exception _
       nil)))
 
+(defn ensure-directory
+  "Ensure a directory exists, creating it if necessary."
+  [path]
+  (let [file (io/file path)]
+    (when-not (.exists file)
+      (.mkdirs file))
+    file))
+
 (defn check-disk-space
   "Check if there's enough disk space for the torrent.
    Returns {:ok true} if space is sufficient, {:error :insufficient-space} if not."
   [path required-bytes]
-  (let [available (available-space path)]
-    (if (and available (< available required-bytes))
+  (let [_ (ensure-directory path)
+        available (available-space path)]
+    (if (and available (pos? available) (< available required-bytes))
       {:error :insufficient-space
        :message (format "Insufficient disk space: need %s bytes, have %s bytes"
                         required-bytes available)}
