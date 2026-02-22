@@ -408,9 +408,11 @@
                   (.nextBytes (SecureRandom.) b)
                   b)
         peer-addresses (take max-peers (map :address (:peers download)))
-        events-ch (async/chan 256)]
+        events-ch (async/chan 256)
+        total-attempted (count peer-addresses)
+        conn-stats (atom {:connected 0 :failed 0})]
 
-    (println (str "  Connecting to " (count peer-addresses) " peers..."))
+    (println (str "  Connecting to " total-attempted " peers..."))
 
     ;; Spawn peer workers
     (doseq [addr peer-addresses]
@@ -449,6 +451,7 @@
                                           {:peer-data peer-data
                                            :peer-state peer-state
                                            :assigned-piece nil})]
+                  (swap! conn-stats update :connected inc)
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (recur download active-peers blocks-received expected-blocks
@@ -630,15 +633,19 @@
                       active-peers (dissoc active-peers address)
                       blocks-received (dissoc blocks-received address)
                       expected-blocks (dissoc expected-blocks address)]
+                  (swap! conn-stats update :failed inc)
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (if (and (empty? active-peers)
                            (not (pieces/complete? (:piece-state download))))
-                    (do
+                    (let [{:keys [connected failed]} @conn-stats]
                       (println)
-                      (println (str "  All peers disconnected. Last: " reason))
+                      (println (str "  No peers available. "
+                                    connected "/" total-attempted " connected, "
+                                    failed " failed. Last: " reason))
                       (assoc download :state :failed
-                             :error {:reason :no-peers :message "All peers disconnected"}))
+                             :error {:reason :no-peers
+                                     :message (str "No peers available (" connected "/" total-attempted " connected)")}))
                     (recur download active-peers blocks-received expected-blocks
                            (if show-progress? now last-progress-time))))
 
