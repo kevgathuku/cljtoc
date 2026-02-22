@@ -147,52 +147,71 @@
           {:ok (.toByteArray baos)})
         {:error (str "HTTP " response-code)}))))
 
+(defn- collect-tracker-urls
+  "Build a flat, deduplicated list of tracker URLs from announce + announce-list."
+  [torrent-metadata]
+  (let [primary (:announce torrent-metadata)
+        from-list (mapcat identity (:announce-list torrent-metadata))
+        all (if primary (cons primary from-list) from-list)]
+    (distinct (filter #(and (some? %) (str/starts-with? % "http")) all))))
+
+(defn- try-single-tracker
+  "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
+  [tracker-url request]
+  (let [url-result (tracker/build-http-announce-url tracker-url request)]
+    (if (:error url-result)
+      {:error :build-url-failed :message (:message url-result)}
+      (let [http-result (try
+                          (make-http-request (:ok url-result) 10000)
+                          (catch Exception e
+                            {:error (.getMessage e)}))]
+        (if (:error http-result)
+          {:error :http-failed :message (str tracker-url ": " (:error http-result))}
+          (let [parse-result (tracker/parse-http-tracker-response (:ok http-result))]
+            (if (:error parse-result)
+              {:error :parse-failed :message (:message parse-result)}
+              (let [peers (:peers (:ok parse-result))]
+                {:ok (set (map #(str (:ip %) ":" (:port %)) peers))}))))))))
+
 (defn tracker-announce
   "Announce to the tracker and get a list of peers.
+   Tries all tracker URLs from announce + announce-list until one succeeds.
    Returns a channel that will deliver #{peer-addresses} or error."
   [network torrent-metadata]
   (let [ch (async/chan 1)]
-    (async/go
+    (async/thread
       (try
-        (let [tracker-url (or (:announce torrent-metadata)
-                              (first (first (:announce-list torrent-metadata))))]
-          (if (nil? tracker-url)
-            (async/>! ch {:error :no-tracker :message "No tracker URL available"})
-            (let [info-hash (:info-hash torrent-metadata)
-                  info (:info torrent-metadata)
+        (let [tracker-urls (collect-tracker-urls torrent-metadata)]
+          (if (empty? tracker-urls)
+            (async/>!! ch {:error :no-tracker :message "No tracker URL available"})
+            (let [info (:info torrent-metadata)
                   total-size (or (:length info)
                                  (reduce + (map :length (:files info))))
-                  peer-id (generate-peer-id)
-
-                  request {:info-hash info-hash
-                           :peer-id peer-id
+                  request {:info-hash (:info-hash torrent-metadata)
+                           :peer-id (generate-peer-id)
                            :port 6881
                            :uploaded 0
                            :downloaded 0
                            :left total-size
                            :event :started
                            :compact true
-                           :num-want 50}
-
-                  url-result (tracker/build-http-announce-url tracker-url request)]
-              (if (:error url-result)
-                (async/>! ch {:error :build-url-failed :message (:message url-result)})
-                (let [announce-url (:ok url-result)
-                      http-result (try
-                                    (make-http-request announce-url 10000)
-                                    (catch Exception e
-                                      {:error (.getMessage e)}))]
-                  (if (:error http-result)
-                    (async/>! ch {:error :http-failed :message (:error http-result)})
-                    (let [parse-result (tracker/parse-http-tracker-response (:ok http-result))]
-                      (if (:error parse-result)
-                        (async/>! ch {:error :parse-failed :message (:message parse-result)})
-                        (let [response (:ok parse-result)
-                              peers (:peers response)]
-                          (async/>! ch {:ok (set (map #(str (:ip %) ":" (:port %)) peers))}))))))))))
+                           :num-want 50}]
+              (loop [urls tracker-urls
+                     last-error nil]
+                (if (empty? urls)
+                  (async/>!! ch (or last-error
+                                    {:error :all-trackers-failed
+                                     :message "All trackers failed"}))
+                  (let [url (first urls)
+                        _ (println (str "  Trying tracker: " url))
+                        result (try-single-tracker url request)]
+                    (if (:ok result)
+                      (async/>!! ch result)
+                      (do
+                        (println (str "    Failed: " (:message result)))
+                        (recur (rest urls) result)))))))))
         (catch Exception e
-          (async/>! ch {:error :tracker-error :message (.getMessage e)})))
-      (async/close! ch))
+          (async/>!! ch {:error :tracker-error :message (.getMessage e)}))))
     ch))
 
 (defn tracker-scrape
