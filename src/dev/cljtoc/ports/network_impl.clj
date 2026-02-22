@@ -148,12 +148,23 @@
           {:ok (.toByteArray baos)})
         {:error (str "HTTP " response-code)}))))
 
+(def ^:private fallback-trackers
+  "Well-known public trackers used as fallbacks when torrent trackers fail."
+  ["udp://tracker.opentrackr.org:1337"
+   "udp://open.demonii.com:1337"
+   "udp://open.stealth.si:80"
+   "udp://tracker.torrent.eu.org:451"
+   "udp://explodie.org:6969"
+   "udp://exodus.desync.com:6969"])
+
 (defn- collect-tracker-urls
-  "Build a flat, deduplicated list of tracker URLs from announce + announce-list."
+  "Build a flat, deduplicated list of tracker URLs from announce + announce-list,
+   with well-known public trackers appended as fallbacks."
   [torrent-metadata]
   (let [primary (:announce torrent-metadata)
         from-list (mapcat identity (:announce-list torrent-metadata))
-        all (if primary (cons primary from-list) from-list)]
+        all (concat (if primary (cons primary from-list) from-list)
+                    fallback-trackers)]
     (distinct (filter #(and (some? %)
                             (or (str/starts-with? % "http")
                                 (str/starts-with? % "udp")))
