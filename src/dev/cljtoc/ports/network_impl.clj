@@ -7,7 +7,8 @@
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker])
-  (:import [java.net InetSocketAddress Socket HttpURLConnection URL]
+  (:import [java.net DatagramPacket DatagramSocket InetSocketAddress Socket
+            HttpURLConnection URI URL]
            [java.io ByteArrayOutputStream InputStream]
            [java.security SecureRandom]))
 
@@ -153,10 +154,66 @@
   (let [primary (:announce torrent-metadata)
         from-list (mapcat identity (:announce-list torrent-metadata))
         all (if primary (cons primary from-list) from-list)]
-    (distinct (filter #(and (some? %) (str/starts-with? % "http")) all))))
+    (distinct (filter #(and (some? %)
+                            (or (str/starts-with? % "http")
+                                (str/starts-with? % "udp")))
+                      all))))
 
-(defn- try-single-tracker
-  "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
+(defn- udp-exchange
+  "Send a UDP datagram and wait for a response. Returns byte array or throws."
+  [^DatagramSocket socket ^bytes send-data ^InetSocketAddress addr timeout-ms]
+  (let [send-pkt (DatagramPacket. send-data (alength send-data) addr)]
+    (.send socket send-pkt)
+    (let [recv-buf (byte-array 65536)
+          recv-pkt (DatagramPacket. recv-buf (alength recv-buf))]
+      (.setSoTimeout socket timeout-ms)
+      (.receive socket recv-pkt)
+      (java.util.Arrays/copyOf recv-buf (.getLength recv-pkt)))))
+
+(defn- try-udp-tracker
+  "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
+  [tracker-url request]
+  (try
+    (let [uri (URI. tracker-url)
+          host (.getHost uri)
+          port (let [p (.getPort uri)] (if (= p -1) 6969 p))
+          addr (InetSocketAddress. host port)
+          socket (doto (DatagramSocket.) (.setSoTimeout 5000))
+          txn-id (.nextInt (java.util.Random.))]
+      (try
+        ;; Step 1: Connect
+        (let [connect-req (:ok (tracker/build-udp-connect-request
+                                {:transaction-id txn-id}))
+              connect-resp (udp-exchange socket connect-req addr 5000)
+              connect-parsed (tracker/parse-udp-connect-response connect-resp)]
+          (if (:error connect-parsed)
+            {:error :udp-connect-failed :message (str tracker-url ": " (:message connect-parsed))}
+            (let [conn-id (:connection-id (:ok connect-parsed))
+                  txn-id2 (.nextInt (java.util.Random.))
+                  ;; Step 2: Announce
+                  announce-req (:ok (tracker/build-udp-announce-request
+                                     {:connection-id conn-id
+                                      :transaction-id txn-id2
+                                      :info-hash (:info-hash request)
+                                      :peer-id (:peer-id request)
+                                      :downloaded (:downloaded request)
+                                      :left (:left request)
+                                      :uploaded (:uploaded request)
+                                      :event (:event request)
+                                      :num-want (or (:num-want request) 50)
+                                      :port (:port request)}))
+                  announce-resp (udp-exchange socket announce-req addr 5000)
+                  announce-parsed (tracker/parse-udp-announce-response announce-resp)]
+              (if (:error announce-parsed)
+                {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
+                (let [peers (:peers (:ok announce-parsed))]
+                  {:ok (set (map #(str (:ip %) ":" (:port %)) peers))})))))
+        (finally (.close socket))))
+    (catch Exception e
+      {:error :udp-failed :message (str tracker-url ": " (.getMessage e))})))
+
+(defn- try-http-tracker
+  "Try announcing to an HTTP tracker. Returns {:ok peers} or {:error ...}."
   [tracker-url request]
   (let [url-result (tracker/build-http-announce-url tracker-url request)]
     (if (:error url-result)
@@ -172,6 +229,13 @@
               {:error :parse-failed :message (:message parse-result)}
               (let [peers (:peers (:ok parse-result))]
                 {:ok (set (map #(str (:ip %) ":" (:port %)) peers))}))))))))
+
+(defn- try-single-tracker
+  "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
+  [tracker-url request]
+  (if (str/starts-with? tracker-url "udp")
+    (try-udp-tracker tracker-url request)
+    (try-http-tracker tracker-url request)))
 
 (defn tracker-announce
   "Announce to the tracker and get a list of peers.
