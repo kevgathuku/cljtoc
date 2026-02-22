@@ -113,7 +113,8 @@
                 (if (:error result)
                   (do
                     (println "Failed to start download:")
-                    (println "  " (:message result))
+                    (println "  " (or (:message result)
+                                      (str (:error result))))
                     (System/exit 1))
                   (let [download-id (cli-state/id-from-path torrent-path)]
                     (cli-state/save-state (assoc result :id download-id

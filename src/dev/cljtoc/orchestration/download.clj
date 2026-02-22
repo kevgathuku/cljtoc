@@ -154,7 +154,9 @@
             download (initial-download torrent output-dir)
             announce-result (async/<!! (announce-to-tracker network-port torrent))]
         (if (:error announce-result)
-          (assoc download :state :failed :error (:error announce-result))
+          (assoc download :state :failed
+                 :error (:error announce-result)
+                 :message (:message announce-result))
           (let [peers (:ok announce-result)]
             (assoc download
                    :state :downloading
