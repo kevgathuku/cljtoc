@@ -35,7 +35,8 @@
               host (first parts)
               port (Integer/parseInt (second parts))
               socket (doto (Socket.)
-                       (.connect (InetSocketAddress. host port) 10000))
+                       (.connect (InetSocketAddress. host port) 5000)
+                       (.setSoTimeout 10000))
               peer-data {:id address
                          :address address
                          :socket socket
@@ -85,6 +86,8 @@
               handshake-bytes (read-fully in 68)
               result (peer/parse-handshake handshake-bytes)]
           (async/>!! ch result))
+        (catch java.net.SocketTimeoutException _
+          (async/>!! ch {:error :timeout :message "Handshake read timed out"}))
         (catch java.io.EOFException _
           (async/>!! ch {:error :disconnected :message "Peer disconnected during handshake"}))
         (catch Exception e
@@ -249,8 +252,8 @@
     (try-http-tracker tracker-url request)))
 
 (defn tracker-announce
-  "Announce to the tracker and get a list of peers.
-   Tries all tracker URLs from announce + announce-list until one succeeds.
+  "Announce to trackers and get a list of peers.
+   Queries ALL tracker URLs and combines peers for maximum coverage.
    Returns a channel that will deliver #{peer-addresses} or error."
   [network torrent-metadata]
   (let [ch (async/chan 1)]
@@ -270,21 +273,29 @@
                            :left total-size
                            :event :started
                            :compact true
-                           :num-want 50}]
+                           :num-want 200}]
+              ;; Query all trackers and combine peers
               (loop [urls tracker-urls
+                     all-peers #{}
                      last-error nil]
                 (if (empty? urls)
-                  (async/>!! ch (or last-error
-                                    {:error :all-trackers-failed
-                                     :message "All trackers failed"}))
+                  (if (empty? all-peers)
+                    (async/>!! ch (or last-error
+                                      {:error :all-trackers-failed
+                                       :message "All trackers failed"}))
+                    (do
+                      (println (str "  Collected " (count all-peers) " unique peers from trackers"))
+                      (async/>!! ch {:ok all-peers})))
                   (let [url (first urls)
                         _ (println (str "  Trying tracker: " url))
                         result (try-single-tracker url request)]
                     (if (:ok result)
-                      (async/>!! ch result)
+                      (do
+                        (println (str "    Got " (count (:ok result)) " peers"))
+                        (recur (rest urls) (into all-peers (:ok result)) last-error))
                       (do
                         (println (str "    Failed: " (:message result)))
-                        (recur (rest urls) result)))))))))
+                        (recur (rest urls) all-peers result)))))))))
         (catch Exception e
           (async/>!! ch {:error :tracker-error :message (.getMessage e)}))))
     ch))
