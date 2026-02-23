@@ -158,12 +158,18 @@
           (assoc download :state :failed
                  :error (:error announce-result)
                  :message (:message announce-result))
-          (let [peers (:ok announce-result)]
+          (let [peers (:ok announce-result)
+                _ (println (str "[start-download] Raw peer addresses sample: " (vec (take 5 peers))))]
             (assoc download
                    :state :downloading
                    :peers (set (map (fn [addr]
                                       (let [[host port-str] (str/split addr #":")
-                                            port (Integer/parseInt port-str)]
+                                            port (if (or (nil? port-str) (empty? port-str))
+                                                   (do
+                                                     (println (str "[start-download] WARNING: Peer " addr " has no port, using default 6881"))
+                                                     6881)
+                                                   (Integer/parseInt port-str))
+                                            _ (println (str "[start-download] Created peer: " addr " -> host=" host " port=" port))]
                                         (->Peer addr host port #{} true false true false 0 0)))
                                     peers)))))))))
 
@@ -410,15 +416,18 @@
         peer-id (let [b (byte-array 20)]
                   (.nextBytes (SecureRandom.) b)
                   b)
-        peer-addresses (take max-peers (map :address (:peers download)))
+        peer-addresses (map :address (:peers download))
+        peer-ports (map :port (:peers download))
+        full-peer-addresses (map (fn [a p] (str a ":" p)) peer-addresses peer-ports)
         events-ch (async/chan 256)
-        total-attempted (count peer-addresses)
+        total-attempted (count full-peer-addresses)
         conn-stats (atom {:connected 0 :failed 0})]
 
     (println (str "  Connecting to " total-attempted " peers..."))
+    (println (str "  First 5 peer addresses: " (vec (take 5 full-peer-addresses))))
 
     ;; Spawn peer workers
-    (doseq [addr peer-addresses]
+    (doseq [addr full-peer-addresses]
       (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
 
     ;; Coordinator loop
