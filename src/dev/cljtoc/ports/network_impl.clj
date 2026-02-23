@@ -31,9 +31,17 @@
   (let [ch (async/chan 1)]
     (async/thread
       (try
+        (println (str "[connect] Attempting to connect to: " address))
         (let [parts (str/split address #":")
+              _ (println (str "[connect-peer] Split result: " parts))
               host (first parts)
-              port (Integer/parseInt (second parts))
+              port-str (second parts)
+              _ (println (str "[connect-peer] host=" host " port-str=" port-str))
+              port (if (or (nil? port-str) (empty? port-str))
+                     (do
+                       (println (str "[connect-peer] WARNING: No port in address, using default 6881"))
+                       6881)
+                     (Integer/parseInt port-str))
               socket (doto (Socket.)
                        (.connect (InetSocketAddress. host port) 5000)
                        (.setSoTimeout 10000))
@@ -241,8 +249,11 @@
           (let [parse-result (tracker/parse-http-tracker-response (:ok http-result))]
             (if (:error parse-result)
               {:error :parse-failed :message (:message parse-result)}
-              (let [peers (:peers (:ok parse-result))]
-                {:ok (set (map #(str (:ip %) ":" (:port %)) peers))}))))))))
+              (let [peers (:peers (:ok parse-result))
+                    _ (println (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
+                    addresses (set (map #(str (:ip %) ":" (:port %)) peers))
+                    _ (println (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
+                {:ok addresses}))))))))
 
 (defn- try-single-tracker
   "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
