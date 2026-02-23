@@ -17,11 +17,11 @@
 
 (deftest initial-download-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 3))
-                :length 786432
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 3))
+                 :length 786432
+                 :files []}
         d (download/initial-download torrent "/output")]
     (is (some? (:id d)))
     (is (= torrent (:torrent d)))
@@ -32,11 +32,11 @@
 
 (deftest progress-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 10) 0))
         piece-state (:ok (pieces/mark-in-flight piece-state 1))
         piece-state (:ok (pieces/mark-verified piece-state 0))
@@ -62,11 +62,11 @@
 
 (deftest progress-rate-calculation-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (pieces/initial-piece-state 10)
         now (System/currentTimeMillis)
         one-second-ago (- now 1000)
@@ -93,11 +93,11 @@
 
 (deftest stop-download-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (pieces/initial-piece-state 10)
         stats (download/->DownloadStats (System/currentTimeMillis) nil 524288 0 (System/currentTimeMillis))
         d {:id (UUID/randomUUID)
@@ -116,11 +116,11 @@
 
 (deftest requeue-piece-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 10) 5))
         d {:id (UUID/randomUUID)
            :torrent torrent
@@ -136,11 +136,11 @@
 
 (deftest handle-peer-disconnect-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 10) 3))
         peer {:id "peer1" :address "127.0.0.1" :port 6881}
         d {:id (UUID/randomUUID)
@@ -172,14 +172,14 @@
 
 (deftest retry-download-test
   (let [failed-d {:state :failed
-                 :error {:reason :no-peers :retry-count 2}}
+                  :error {:reason :no-peers :retry-count 2}}
         retried (download/retry-download failed-d)]
     (is (= :starting (:state retried)))
     (is (= 3 (get-in retried [:error :retry-count])))))
 
 (deftest retry-download-max-retries-test
   (let [failed-d {:state :failed
-                 :error {:reason :no-peers :retry-count 3}}
+                  :error {:reason :no-peers :retry-count 3}}
         result (download/retry-download failed-d)]
     (is (= :max-retries-exceeded (:error result)))))
 
@@ -208,11 +208,11 @@
 
 (deftest pause-download-basic-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (pieces/initial-piece-state 10)
         peer {:id "peer1" :address "127.0.0.1" :port 6881}
         d {:id (UUID/randomUUID)
@@ -233,11 +233,11 @@
 
 (deftest resume-download-basic-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (pieces/initial-piece-state 10)
         d {:id (UUID/randomUUID)
            :torrent torrent
@@ -256,11 +256,11 @@
 
 (deftest pause-download-with-disk-test
   (let [torrent {:info-hash (byte-array 20)
-                :name "test.torrent"
-                :piece-length 262144
-                :pieces (byte-array (* 20 10))
-                :length 2621440
-                :files []}
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 10))
+                 :length 2621440
+                 :files []}
         piece-state (pieces/initial-piece-state 10)
         peer {:id "peer1" :address "127.0.0.1" :port 6881}
         d {:id (UUID/randomUUID)
@@ -275,3 +275,29 @@
         result (download/pause-download disk d)]
     (is (= :paused (get-in result [:ok :state])))
     (is (empty? (get-in result [:ok :peers])))))
+
+;; Peer port parsing tests
+
+(deftest peer-record-parses-port-from-address
+  (testing "String splitting correctly parses ip:port address"
+    (let [addr "192.168.1.100:5142"
+          [host port-str] (clojure.string/split addr #":")
+          port (Integer/parseInt port-str)]
+      (is (= "192.168.1.100" host))
+      (is (= 5142 port)))))
+
+(deftest peer-record-parses-standard-bittorrent-port
+  (testing "Standard BitTorrent port 6881 is parsed correctly"
+    (let [addr "10.0.0.1:6881"
+          [host port-str] (clojure.string/split addr #":")
+          port (Integer/parseInt port-str)]
+      (is (= "10.0.0.1" host))
+      (is (= 6881 port)))))
+
+(deftest peer-record-parses-high-port
+  (testing "High port numbers are parsed correctly"
+    (let [addr "example.com:65535"
+          [host port-str] (clojure.string/split addr #":")
+          port (Integer/parseInt port-str)]
+      (is (= "example.com" host))
+      (is (= 65535 port)))))

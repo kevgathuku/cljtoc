@@ -13,6 +13,7 @@
    code testable with mock implementations."
   (:require [clojure.core.async :as async]
             [clojure.spec.alpha :as s]
+            [clojure.string :as str]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.protocol.peer :as peer]
@@ -161,7 +162,9 @@
             (assoc download
                    :state :downloading
                    :peers (set (map (fn [addr]
-                                      (->Peer addr addr 6881 #{} true false true false 0 0))
+                                      (let [[host port-str] (str/split addr #":")
+                                            port (Integer/parseInt port-str)]
+                                        (->Peer addr host port #{} true false true false 0 0)))
                                     peers)))))))))
 
 (defn progress [download]
@@ -395,7 +398,7 @@
   [manager download]
   (let [{:keys [network-port disk-port]} manager
         config (:config manager)
-        max-peers (or (:max-peers config) 30)
+        max-peers (or (:max-peers config) 100)
         torrent (:torrent download)
         info (:info torrent)
         info-hash (:info-hash torrent)
