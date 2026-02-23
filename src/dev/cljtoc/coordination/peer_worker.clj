@@ -25,6 +25,7 @@
 
    Returns a channel that closes when the peer worker exits."
   [network-port info-hash our-peer-id address total-pieces events-ch]
+  (println (str "[run-peer] Starting peer worker for address: " address))
   (async/thread
     (try
       ;; 1. Connect

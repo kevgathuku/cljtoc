@@ -301,3 +301,27 @@
           port (Integer/parseInt port-str)]
       (is (= "example.com" host))
       (is (= 65535 port)))))
+
+;; Test that exposes bug: peer address should include port when passed to run-peer
+(deftest peer-addresses-include-port-for-connection
+  (testing "Peer addresses for connection should include ip:port format"
+    (let [torrent {:info-hash (byte-array 20)
+                   :name "test.torrent"
+                   :piece-length 262144
+                   :pieces (byte-array (* 20 3))
+                   :length 786432
+                   :files []}
+          peers #{(download/->Peer "192.168.1.1:51413" "192.168.1.1" 51413 #{} true false true false 0 0)
+                  (download/->Peer "10.0.0.1:6881" "10.0.0.1" 6881 #{} true false true false 0 0)}
+          download {:id (UUID/randomUUID)
+                    :torrent torrent
+                    :piece-state (pieces/initial-piece-state 3)
+                    :peers peers
+                    :state :downloading
+                    :output-dir "/output"
+                    :stats (download/initial-stats)
+                    :error nil}]
+      (let [peer-addresses (map :address (:peers download))
+            peer-ports (map :port (:peers download))
+            full-addresses (map (fn [a p] (str a ":" p)) peer-addresses peer-ports)]
+        (is (= #{"192.168.1.1:51413" "10.0.0.1:6881"} (set full-addresses)))))))
