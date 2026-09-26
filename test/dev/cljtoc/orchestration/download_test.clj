@@ -619,24 +619,26 @@
 
 (deftest on-message-piece-verified-writes-and-requests-next-test
   (testing "a complete verified piece plans a write plus the next request"
-    (let [state (-> (message-state)
-                    (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
-                    (assoc :expected-blocks {"peer-a" 1})
-                    (assoc-in [:download :piece-state]
-                              (:ok (pieces/mark-in-flight
-                                    (pieces/initial-piece-state 2) 0))))
-          [updated effects] (download/on-message
-                             state
-                             {:address "peer-a"
-                              :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
-                             (message-ctx (two-piece-hashes)))
-          by-kind (group-by (comp first keys) effects)]
-      (is (contains? (get-in updated [:download :piece-state :verified]) 0))
-      (is (= 0 (get-in (first (by-kind :write-verified)) [:write-verified :piece-idx])))
-      (is (= (seq (test-utils/to-bytes "abcd"))
-             (seq (get-in (first (by-kind :write-verified)) [:write-verified :data]))))
-      (is (= 1 (count (by-kind :send))))
-      (is (= 1 (get-in updated [:active-peers "peer-a" :assigned-piece]))))))
+    (testing "marking waits for the write: the piece stays in-flight in planned state"
+      (let [state (-> (message-state)
+                      (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
+                      (assoc :expected-blocks {"peer-a" 1})
+                      (assoc-in [:download :piece-state]
+                                (:ok (pieces/mark-in-flight
+                                      (pieces/initial-piece-state 2) 0))))
+            [updated effects] (download/on-message
+                               state
+                               {:address "peer-a"
+                                :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                               (message-ctx (two-piece-hashes)))
+            by-kind (group-by (comp first keys) effects)]
+        (is (contains? (get-in updated [:download :piece-state :in-flight]) 0))
+        (is (empty? (get-in updated [:download :piece-state :verified])))
+        (is (= 0 (get-in (first (by-kind :write-verified)) [:write-verified :piece-idx])))
+        (is (= (seq (test-utils/to-bytes "abcd"))
+               (seq (get-in (first (by-kind :write-verified)) [:write-verified :data]))))
+        (is (= 1 (count (by-kind :send))))
+        (is (= 1 (get-in updated [:active-peers "peer-a" :assigned-piece])))))))
 
 (deftest on-message-piece-assembly-failure-requeues-test
   (testing "blocks with a gap requeue the piece with no effects"
@@ -708,7 +710,7 @@
                {:handshake-response {:ok {:info-hash info-hash
                                           :peer-id (byte-array 20)}}
                 :receive-responses (atom [{:ok (peer/->Bitfield
-                                               (byte-array [(unchecked-byte 0xC0)]))}
+                                                (byte-array [(unchecked-byte 0xC0)]))}
                                           {:ok (peer/->Unchoke)}
                                           {:ok (peer/->Piece 0 0 piece-0-bytes)}
                                           {:ok (peer/->Piece 1 0 piece-1-bytes)}])})
@@ -832,14 +834,18 @@
 
 (deftest run-coordinator-write-error-fails-download-test
   (testing "a failed piece write fails the download instead of verifying air"
-    (let [disk (mock-disk/create {:write-error {:error :write-error
-                                                :message "disk full"}})
-          events [{:type :peer-connected :address "peer-a"
-                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
-                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
-                  {:type :peer-message :address "peer-a"
-                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}]
-          result (scripted-run events (loop-download) disk)]
-      (is (not= :timed-out result))
-      (is (= :failed (:state result)))
-      (is (= :disk-error (get-in result [:error :reason]))))))
+    (testing "the unwritten piece returns to needed, never to verified"
+      (let [disk (mock-disk/create {:write-error {:error :write-error
+                                                  :message "disk full"}})
+            events [{:type :peer-connected :address "peer-a"
+                     :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                    {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                    {:type :peer-message :address "peer-a"
+                     :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}]
+            result (scripted-run events (loop-download) disk)]
+        (is (not= :timed-out result))
+        (is (= :failed (:state result)))
+        (is (= :disk-error (get-in result [:error :reason])))
+        (is (contains? (get-in result [:piece-state :needed]) 0))
+        (is (not (contains? (get-in result [:piece-state :in-flight]) 0)))
+        (is (empty? (get-in result [:piece-state :verified])))))))

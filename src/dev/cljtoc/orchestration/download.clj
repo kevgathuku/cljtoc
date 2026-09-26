@@ -603,7 +603,9 @@
     [state []]))
 
 (defn- assemble-and-verify
-  "Assemble buffered blocks, verify the hash, plan the disk write.
+  "Assemble buffered blocks and verify the hash, planning the disk write.
+   Marking waits for the write: the piece stays in-flight in the planned
+   state and the edge marks it verified only after the bytes land.
    Returns [new-state effects verified?]: verified? is false on
    assembly/verification failure (the piece is requeued with no effects).
    The caller decides on the follow-up request via the single tail."
@@ -614,14 +616,11 @@
                     piece-length)]
     (if-let [assembled (:ok (pieces/assemble-piece addr-blocks piece-len))]
       (if (:ok (pieces/verify-piece piece-idx assembled (nth piece-hashes piece-idx)))
-        (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)]
-          [(cond-> (-> state
-                       (assoc-in [:active-peers address :assigned-piece] nil)
-                       (update :blocks-received dissoc address))
-             (:ok mark-result)
-             (assoc-in [:download :piece-state] (:ok mark-result)))
-           [{:write-verified {:piece-idx piece-idx :data assembled}}]
-           true])
+        [(-> state
+             (assoc-in [:active-peers address :assigned-piece] nil)
+             (update :blocks-received dissoc address))
+         [{:write-verified {:piece-idx piece-idx :data assembled}}]
+         true]
         [(requeue-assignment state address piece-idx) [] false])
       [(requeue-assignment state address piece-idx) [] false])))
 
@@ -715,15 +714,24 @@
         (let [{:keys [piece-idx data]} (:write-verified effect)
               result (async/<!! (disk/write-piece disk-port piece-idx data))]
           (if (:error result)
-            [state {:fatal {:reason :disk-error
-                            :message (str "Failed to write piece " piece-idx
-                                          ": " (:message result))
-                            :failed-piece piece-idx}}]
-            (recur (update state :download
-                           (fn [download]
-                             (update download :stats
-                                     #(update-stats-bytes time-port % (alength ^bytes data)))))
-                   rest-effects)))
+            ;; Bytes never landed: return the piece to needed so the
+            ;; failed record stays honest and retryable.
+            (let [piece-state (get-in state [:download :piece-state])
+                  requeued (pieces/requeue-piece piece-state piece-idx)]
+              [(assoc-in state [:download :piece-state] (or (:ok requeued) piece-state))
+               {:fatal {:reason :disk-error
+                        :message (str "Failed to write piece " piece-idx
+                                      ": " (:message result))
+                        :failed-piece piece-idx}}])
+            (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
+                  state (if (:ok mark-result)
+                          (assoc-in state [:download :piece-state] (:ok mark-result))
+                          state)]
+              (recur (update state :download
+                             (fn [download]
+                               (update download :stats
+                                       #(update-stats-bytes time-port % (alength ^bytes data)))))
+                     rest-effects))))
 
         :else
         (recur state rest-effects)))))
