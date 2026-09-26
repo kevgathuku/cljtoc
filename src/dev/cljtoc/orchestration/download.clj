@@ -58,6 +58,68 @@
             message
             failed-piece])
 
+;; ============================================================================
+;; Specs
+;; ============================================================================
+
+(s/def ::download-id string?)
+
+(s/def ::state keyword?)
+
+(s/def ::output-dir string?)
+
+(s/def ::bytes-downloaded nat-int?)
+
+(s/def ::pieces-complete nat-int?)
+
+(s/def ::pieces-total nat-int?)
+
+(s/def ::peers-connected nat-int?)
+
+(s/def ::rate-bytes-per-sec nat-int?)
+
+(s/def ::percent number?)
+
+(s/def ::download-state #{:idle :starting :downloading :paused :completed :failed})
+
+(s/def ::progress-response
+  (s/keys :req-un [::percent
+                   ::pieces-complete
+                   ::pieces-total
+                   ::bytes-downloaded
+                   ::rate-bytes-per-sec
+                   ::peers-connected
+                   ::state]))
+
+(s/def ::max-peers pos-int?)
+
+(s/def ::min-peers nat-int?)
+
+(s/def ::request-queue-size nat-int?)
+
+(s/def ::piece-timeout-ms nat-int?)
+
+(s/def ::tracker-announce-interval-ms nat-int?)
+
+(s/def ::config
+  (s/keys :opt-un [::max-peers
+                   ::min-peers
+                   ::request-queue-size
+                   ::piece-timeout-ms
+                   ::tracker-announce-interval-ms
+                   ::output-dir]))
+
+(s/def ::network-port any?)
+
+(s/def ::disk-port any?)
+
+(s/def ::time-port any?)
+
+(s/def ::downloads map?)
+
+(s/def ::download-manager
+  (s/keys :req-un [::network-port ::disk-port ::time-port ::downloads ::config]))
+
 (def valid-states #{:idle :starting :downloading :paused :completed :failed})
 
 (def default-config
@@ -104,14 +166,33 @@
                         {}
                         merged))))
 
+(s/fdef manager
+  :args (s/cat :network-port any?
+               :disk-port any?
+               :time-port any?
+               :config (s/? ::config))
+  :ret ::download-manager)
+
 (defn add-download [manager download]
   (update manager :downloads assoc (:id download) download))
+
+(s/fdef add-download
+  :args (s/cat :manager ::download-manager :download map?)
+  :ret ::download-manager)
 
 (defn get-download [manager id]
   (get (:downloads manager) id))
 
+(s/fdef get-download
+  :args (s/cat :manager ::download-manager :id any?)
+  :ret (s/or :download map? :nil nil?))
+
 (defn remove-download [manager id]
   (update manager :downloads dissoc id))
+
+(s/fdef remove-download
+  :args (s/cat :manager ::download-manager :id any?)
+  :ret ::download-manager)
 
 (defn- download-error
   [reason message & [failed-piece]]
@@ -139,6 +220,10 @@
 (defn initial-stats [time-port]
   (let [now (time/now time-port)]
     (->DownloadStats now nil 0 0 now)))
+
+(s/fdef initial-stats
+  :args (s/cat :time-port any?)
+  :ret (s/keys :req-un [::started-at]))
 
 (defn update-stats-bytes [time-port stats bytes-received]
   (let [now (time/now time-port)
@@ -172,6 +257,10 @@
                 output-dir
                 (initial-stats time-port)
                 nil)))
+
+(s/fdef initial-download
+  :args (s/cat :time-port any? :torrent map? :output-dir string? :download-id string?)
+  :ret (s/keys :req-un [::download-id ::state]))
 
 (defn capped-peer-addresses
   "Limit dial candidates to :max-peers, falling back to the
@@ -231,6 +320,10 @@
      :peers-connected (count (:peers download))
      :state (:state download)}))
 
+(s/fdef progress
+  :args (s/cat :time-port any? :download map?)
+  :ret ::progress-response)
+
 (defn pause-download
   "Pause an active download.
    - Closes all peer connections
@@ -248,6 +341,11 @@
              {:ok paused-download}))
          {:ok paused-download}))
      {:error :not-running :message "Download is not running"})))
+
+(s/fdef pause-download
+  :args (s/cat :disk-port (s/? any?) :download map?)
+  :ret (s/or :ok (s/keys :req-un [::state])
+             :error map?))
 
 (defn resume-download
   "Resume a paused download.
@@ -272,6 +370,11 @@
          {:ok (assoc restored :state :downloading)}))
      {:error :not-paused :message "Download is not paused"})))
 
+(s/fdef resume-download
+  :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)
+  :ret (s/or :ok (s/keys :req-un [::state])
+             :error map?))
+
 (defn load-persisted-state
   "Load persisted download state from disk."
   [disk-port download-id]
@@ -288,6 +391,10 @@
 
 (defn stop-download [download]
   (assoc download :state :idle :peers #{}))
+
+(s/fdef stop-download
+  :args (s/cat :download map?)
+  :ret (s/keys :req-un [::state ::peers]))
 
 ;; ============================================================================
 ;; Error Handling (User Story 3)
@@ -780,96 +887,3 @@
                                 :time-port time-port}
                         :conn-stats conn-stats
                         :total-attempted total-attempted}))))
-
-;; ============================================================================
-;; Spec Validation
-;; ============================================================================
-
-(s/def ::download-id string?)
-(s/def ::state keyword?)
-(s/def ::output-dir string?)
-(s/def ::bytes-downloaded nat-int?)
-(s/def ::pieces-complete nat-int?)
-(s/def ::pieces-total nat-int?)
-(s/def ::peers-connected nat-int?)
-(s/def ::rate-bytes-per-sec nat-int?)
-(s/def ::percent number?)
-
-(s/def ::download-state #{:idle :starting :downloading :paused :completed :failed})
-
-(s/def ::progress-response
-  (s/keys :req-un [::percent
-                   ::pieces-complete
-                   ::pieces-total
-                   ::bytes-downloaded
-                   ::rate-bytes-per-sec
-                   ::peers-connected
-                   ::state]))
-
-(s/fdef initial-stats
-  :args (s/cat :time-port any?)
-  :ret (s/keys :req-un [::started-at]))
-
-(s/fdef initial-download
-  :args (s/cat :time-port any? :torrent map? :output-dir string? :download-id string?)
-  :ret (s/keys :req-un [::download-id ::state]))
-
-(s/fdef progress
-  :args (s/cat :time-port any? :download map?)
-  :ret ::progress-response)
-
-(s/fdef pause-download
-  :args (s/cat :disk-port (s/? any?) :download map?)
-  :ret (s/or :ok (s/keys :req-un [::state])
-             :error map?))
-
-(s/fdef resume-download
-  :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)
-  :ret (s/or :ok (s/keys :req-un [::state])
-             :error map?))
-
-(s/fdef stop-download
-  :args (s/cat :download map?)
-  :ret (s/keys :req-un [::state ::peers]))
-
-(s/def ::max-peers pos-int?)
-(s/def ::min-peers nat-int?)
-(s/def ::request-queue-size nat-int?)
-(s/def ::piece-timeout-ms nat-int?)
-(s/def ::tracker-announce-interval-ms nat-int?)
-
-(s/def ::config
-  (s/keys :opt-un [::max-peers
-                   ::min-peers
-                   ::request-queue-size
-                   ::piece-timeout-ms
-                   ::tracker-announce-interval-ms
-                   ::output-dir]))
-
-(s/def ::network-port any?)
-(s/def ::disk-port any?)
-(s/def ::time-port any?)
-(s/def ::downloads map?)
-
-(s/def ::download-manager
-  (s/keys :req-un [::network-port ::disk-port ::time-port ::downloads ::config]))
-
-(s/fdef manager
-  :args (s/cat :network-port any?
-               :disk-port any?
-               :time-port any?
-               :config (s/? ::config))
-  :ret ::download-manager)
-
-(s/fdef add-download
-  :args (s/cat :manager ::download-manager :download map?)
-  :ret ::download-manager)
-
-(s/fdef get-download
-  :args (s/cat :manager ::download-manager :id any?)
-  :ret (s/or :download map? :nil nil?))
-
-(s/fdef remove-download
-  :args (s/cat :manager ::download-manager :id any?)
-  :ret ::download-manager)
-
