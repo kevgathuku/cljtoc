@@ -16,29 +16,29 @@
 
 (defspec bytes-round-trip-generative 100
   (prop/for-all [original bytes-gen]
-    (let [restored (get (disk/decode-state
-                         (edn/read-string
-                          (pr-str (disk/encode-state {:hash original}))))
-                        :hash)]
-      (and (bytes? restored)
-           (java.util.Arrays/equals ^bytes original ^bytes restored)))))
+                (let [restored (get (disk/decode-state
+                                     (edn/read-string
+                                      (pr-str (disk/encode-state {:hash original}))))
+                                    :hash)]
+                  (and (bytes? restored)
+                       (java.util.Arrays/equals ^bytes original ^bytes restored)))))
 
 (defspec nested-bytes-round-trip-generative 100
   (prop/for-all [first-bytes bytes-gen
                  second-bytes bytes-gen]
-    (let [download {:id "x"
-                    :torrent {:info-hash first-bytes
-                              :info {:pieces [second-bytes]}}}
-          restored (disk/decode-state
-                    (edn/read-string (pr-str (disk/encode-state download))))]
-      (and (java.util.Arrays/equals ^bytes first-bytes
-                                    ^bytes (get-in restored [:torrent :info-hash]))
-           (java.util.Arrays/equals ^bytes second-bytes
-                                    ^bytes (first (get-in restored [:torrent :info :pieces])))))))
+                (let [download {:id "x"
+                                :torrent {:info-hash first-bytes
+                                          :info {:pieces [second-bytes]}}}
+                      restored (disk/decode-state
+                                (edn/read-string (pr-str (disk/encode-state download))))]
+                  (and (java.util.Arrays/equals ^bytes first-bytes
+                                                ^bytes (get-in restored [:torrent :info-hash]))
+                       (java.util.Arrays/equals ^bytes second-bytes
+                                                ^bytes (first (get-in restored [:torrent :info :pieces])))))))
 
 (defspec id-from-path-round-trip-generative 100
   (prop/for-all [file-name (gen/such-that (comp not empty?) gen/string-alphanumeric)]
-    (= file-name (disk/id-from-path (str "/dl/" file-name ".torrent")))))
+                (= file-name (disk/id-from-path (str "/dl/" file-name ".torrent")))))
 
 (deftest id-from-path-fdef-check-test
   (testing "id-from-path conforms to fdef spec"

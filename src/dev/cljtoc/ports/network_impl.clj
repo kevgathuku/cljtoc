@@ -3,9 +3,9 @@
 
    Provides functions for TCP peer connections and tracker communication."
   (:require [clojure.core.async :as async]
-             [clojure.string :as str]
-             [dev.cljtoc.domain.peer-address :as peer-address]
-             [dev.cljtoc.domain.torrent :as torrent]
+            [clojure.string :as str]
+            [dev.cljtoc.domain.peer-address :as peer-address]
+            [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker])

@@ -9,15 +9,15 @@
 
 (defprotocol INetworkPort
   "Abstraction for network operations needed by download orchestration."
-  
+
   (connect-peer [this address]
     "Open TCP connection to a peer at the given address.
      Returns a channel that will deliver the peer connection or error.")
-  
+
   (send-message [this peer message]
     "Send a peer wire message to the connected peer.
      Returns a channel that will deliver the response or error.")
-  
+
   (receive-message [this peer]
     "Receive the next message from a peer.
      Returns a channel that will deliver the message or error.")
@@ -32,7 +32,7 @@
 
 (defprotocol ITrackerPort
   "Abstraction for tracker communication operations."
-  
+
   (announce [this torrent-metadata]
     "Announce to the tracker and get a list of peers.
      Returns a channel that will deliver #{Peer} or error."))

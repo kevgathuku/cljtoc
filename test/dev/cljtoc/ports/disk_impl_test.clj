@@ -89,8 +89,8 @@
   (testing "pause persists and resume restores the same download id"
     (let [port (make-port (temp-dir "disk-state-"))
           started (assoc (download/initial-download (time/->RealTimePort)
-                                                     {:info {:pieces ["h1" "h2"]}}
-                                                     "/out" "cycle")
+                                                    {:info {:pieces ["h1" "h2"]}}
+                                                    "/out" "cycle")
                          :state :downloading)
           paused (:ok (download/pause-download port started))
           resumed (:ok (download/resume-download port nil paused))]

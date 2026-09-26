@@ -4,10 +4,10 @@
    Implements the IDiskPort protocol for actual file system operations.
    Includes disk space checking and state persistence."
   (:require [dev.cljtoc.ports.disk :as disk]
-             [dev.cljtoc.domain.torrent :as torrent]
-             [clojure.java.io :as io]
-             [clojure.edn :as edn]
-             [clojure.core.async :as async])
+            [dev.cljtoc.domain.torrent :as torrent]
+            [clojure.java.io :as io]
+            [clojure.edn :as edn]
+            [clojure.core.async :as async])
   (:import [java.io File FileInputStream FileOutputStream]
            [java.nio.file Files Paths]))
 

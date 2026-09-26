@@ -122,8 +122,8 @@
                     (println)
                     (let [final-download (download/run-download m result)]
                       (cli-state/save-state (assoc final-download
-                                                    :torrent-path torrent-path
-                                                    :output-dir output-dir))
+                                                   :torrent-path torrent-path
+                                                   :output-dir output-dir))
                       (println)
                       (print-progress (download/progress time-port final-download)))))))))))))
 

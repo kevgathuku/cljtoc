@@ -6,12 +6,12 @@
             [clojure.core.async :as async]))
 
 (defrecord MockDiskPort
-  [config
-   torrent-data
-   piece-cache
-   state-files
-   directories-created]
-  
+           [config
+            torrent-data
+            piece-cache
+            state-files
+            directories-created]
+
   disk/IDiskPort
   (read-torrent-file [_ path]
     (let [ch (async/chan 1)]
@@ -20,13 +20,13 @@
           (async/>! ch {:ok data})
           (async/>! ch {:error :file-not-found :message (str "File not found: " path)})))
       ch))
-  
+
   (read-piece [_ piece-index]
     (let [ch (async/chan 1)]
       (async/go
         (async/>! ch (get @piece-cache piece-index)))
       ch))
-  
+
   (write-piece [_ piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
@@ -36,27 +36,27 @@
             (swap! piece-cache assoc piece-index bytes)
             (async/>! ch {:ok :written}))))
       ch))
-  
+
   (ensure-directory [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (swap! directories-created conj path)
         (async/>! ch {:ok :created}))
       ch))
-  
+
   (save-state [_ download]
     (let [ch (async/chan 1)]
       (async/go
         (swap! state-files assoc (:id download) download)
         (async/>! ch {:ok :saved}))
       ch))
-  
+
   (load-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (async/>! ch {:ok (get @state-files id)}))
       ch))
-  
+
   (delete-state [_ id]
     (let [ch (async/chan 1)]
       (async/go

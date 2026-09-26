@@ -11,7 +11,7 @@
 
 (deftest integration-start-download-test
   (let [network (mock-net/create {:default-bitfield #{0 1 2 3 4}
-                                   :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"]})
+                                  :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"]})
         disk (mock-disk/create {:torrent-data {"/test.torrent"
                                                {:info-hash (byte-array 20)
                                                 :name "test.torrent"
@@ -21,7 +21,7 @@
                                                 :files []}}})
         time (mock-time/create)
         m (download/manager network disk time {})]
-    
+
     (testing "can start a download with valid torrent"
       (let [result (download/start-download m "/test.torrent" "/output")]
         (is (not (:error result)))

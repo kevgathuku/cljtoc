@@ -4,8 +4,8 @@
    Manages persistence of download state between CLI invocations.
    Uses human-readable filenames as download IDs."
   (:require [clojure.java.io :as io]
-             [clojure.edn :as edn]
-             [dev.cljtoc.ports.disk :as disk]))
+            [clojure.edn :as edn]
+            [dev.cljtoc.ports.disk :as disk]))
 
 (def default-state-dir "./torrent-state")
 
@@ -13,12 +13,12 @@
 ;; persistence seam); this namespace is a sync adapter over the same layout.
 
 (defrecord DownloadState
-  [id
-   torrent-path
-   output-dir
-   state
-   started-at
-   error])
+           [id
+            torrent-path
+            output-dir
+            state
+            started-at
+            error])
 
 (defn state-file-path [id state-dir]
   (str state-dir "/" id ".edn"))
@@ -32,12 +32,12 @@
   ([id state-dir]
    (let [path (state-file-path id state-dir)
          file (io/file path)]
-      (if (.exists file)
-        (try
-          (disk/decode-state (edn/read-string (slurp path)))
-          (catch Exception _
-            nil))
-        nil))))
+     (if (.exists file)
+       (try
+         (disk/decode-state (edn/read-string (slurp path)))
+         (catch Exception _
+           nil))
+       nil))))
 
 (defn load-most-recent
   "Load the most recently started download."
@@ -47,10 +47,10 @@
    (let [dir (io/file state-dir)]
      (when (.exists dir)
        (let [files (sort-by #(.lastModified %) > (.listFiles dir))]
-          (when (seq files)
-            (try
-              (disk/decode-state (edn/read-string (slurp (first files))))
-              (catch Exception _ nil))))))))
+         (when (seq files)
+           (try
+             (disk/decode-state (edn/read-string (slurp (first files))))
+             (catch Exception _ nil))))))))
 
 (defn save-state
   "Save download state to disk."
@@ -61,7 +61,7 @@
          path (state-file-path id state-dir)
          file (io/file path)]
      (io/make-parents file)
-      (spit path (pr-str (disk/encode-state download))))))
+     (spit path (pr-str (disk/encode-state download))))))
 
 (defn delete-state
   "Delete download state from disk."

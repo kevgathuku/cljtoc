@@ -6,18 +6,18 @@
             [clojure.core.async :as async]))
 
 (defrecord MockTimePort
-  [config
-   current-time
-   monotonic-time
-   time-advances]
-  
+           [config
+            current-time
+            monotonic-time
+            time-advances]
+
   time/ITimePort
   (now [_]
     @current-time)
-  
+
   (monotonic [_]
     @monotonic-time)
-  
+
   (set-timeout [_ ms value]
     (let [ch (async/chan 1)]
       (async/go
@@ -25,7 +25,7 @@
         (async/>! ch value)
         (async/close! ch))
       ch))
-  
+
   (set-interval [_ ms value]
     (let [ch (async/chan 1)]
       (async/go-loop []

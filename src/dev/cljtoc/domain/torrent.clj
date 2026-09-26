@@ -101,7 +101,7 @@
                   :pieces pieces}
            length (assoc :length length)
            files (assoc :files (mapv parse-file-entry files))
-            (some? private) (assoc :private (= 1 private)))}))
+           (some? private) (assoc :private (= 1 private)))}))
 
 (defn total-size
   "Total content bytes described by an info dict: :length for single-file
