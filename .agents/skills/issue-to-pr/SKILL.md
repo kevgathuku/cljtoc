@@ -22,6 +22,8 @@ Search the palace (wing `torrent_client_clj`, room `decisions`) for verdicts tou
 
 Follow the `tdd` skill: confirm the seams under test before writing anything, then red → green in vertical slices (one seam, one test, one minimal implementation per cycle). Run single test namespaces during the loop and the full suite (`lein test`) once at the end; it must be green before proceeding.
 
+Commit after each todo is done and validated: one commit per vertical slice, only once its tests are green. Never commit a red test or mix slices in one commit.
+
 ## 5. Test and lint gate
 
 Both gates must pass before proceeding; fix what they report, don't work around it:
