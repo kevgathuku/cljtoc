@@ -400,6 +400,35 @@
         (assoc-in [:active-peers address :assigned-piece] nil)
         (update :blocks-received dissoc address))))
 
+(defn on-connected
+  "Record a newly connected peer with no assignment yet.
+   Pure. Returns the updated coordinator state map."
+  [state event]
+  (let [{:keys [address peer-data peer-state]} event]
+    (assoc-in state [:active-peers address]
+              {:peer-data peer-data
+               :peer-state peer-state
+               :assigned-piece nil})))
+
+(defn on-disconnected
+  "Drop a peer, requeueing its assigned piece if any. Pure.
+   Returns [new-state swarm-exhausted?]: exhausted when no peers
+   remain and pieces are still incomplete, in which case the caller
+   fails the download (unchanged behavior, see issue #11)."
+  [state event]
+  (let [{:keys [address]} event
+        assigned (get-in state [:active-peers address :assigned-piece])
+        state (if assigned
+                (requeue-assignment state address assigned)
+                state)
+        state (-> state
+                  (update :active-peers dissoc address)
+                  (update :blocks-received dissoc address)
+                  (update :expected-blocks dissoc address))
+        exhausted? (and (empty? (:active-peers state))
+                        (not (pieces/complete? (get-in state [:download :piece-state]))))]
+    [state exhausted?]))
+
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
   [active-peers]
