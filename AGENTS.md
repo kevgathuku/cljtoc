@@ -150,13 +150,18 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 ## Project Conventions
 
 - Torrent/bencode data is binary — do not apply UTF-8 encoding/decoding; treat all byte arrays as raw binary
+- Validate a trust boundary once, in the function its callers share: when two entry points enforce the same rule, fix the shared function rather than each caller, or the one you did not patch is still open. A security primitive must not depend on a separate policy check being present and correct at every call site
+- Property-test oracles must be derived independently of the code under test (compute expected offsets from declared lengths, not by calling the domain function): a generated assertion that reuses the implementation proves nothing. Give them room to fail — a spec that passes on the first run has usually not been tried hard enough, and the shrinker is what localizes a real gap
+- Never assert a performance claim without measuring it, and never call an O(n·m) recomputation negligible because the constant is small: 0.087 ms/call at 100 files became 5 ms/call and ~14 min of CPU at 5000 files. Prefer `clj-nrepl-eval` over `lein run -m clojure.main` for microbenchmarks (no JVM or compile cost per call)
 - Persisted state must decode back to runtime values: byte arrays are stored as tagged `{:cljtoc/bytes hex}` maps (see `dev.cljtoc.ports.disk/encode-state` / `decode-state`) so a resumed download carries real bytes into handshake and verification. Test the decoded value, not the on-disk shape — asserting the encoded form passes while resume is broken
 - Pause/resume must be covered by a cycle test through the real port (temp dirs), not just the mock: mocks drift from the real envelope contract (e.g. `load-state` returning the download instead of `{:ok download}`)
 - Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
 - Co-locate function specs: `(s/fdef NAME ...)` directly after its `defn`, never in a trailing section. Data `s/def` specs must be defined before any fdef referencing them (the spec registry resolves at load time)
 - Edge effects must handle port result envelopes: after planning moved state forward, a failed send/write strands it — unwind (requeue + drop bookkeeping) or fail explicitly, never discard `{:error ...}`
 - Test doubles must mirror the real ports' error envelopes (e.g., `MockDiskPort` `:write-error`) so edge failure paths stay drivable; success-only mocks leave failure handling untestable
-- Filesystem writes must containment-check the canonical path: lexical component validation does not stop a pre-existing symlink inside the target dir from redirecting the write outside it — resolve, create parents, then require the canonical file to stay under the canonical dir before opening (see `DiskPortImpl/resolve-contained`)
+- Filesystem writes must containment-check the canonical path: lexical component validation does not stop a pre-existing symlink inside the target dir from redirecting the write outside it — resolve, create parents, then require the canonical file to stay under the canonical dir before opening (see `DiskPortImpl/resolve-contained`). Append the separator only when missing: a canonical dir that is itself the filesystem root already ends in one, and doubling it yields `//`, which no child can start with
+- Policy refusals are not containment checks: keep them separate and say which is which. Refusing the filesystem root (`DiskPortImpl/declined-output-dir`) is ergonomics — containment already holds there — and it turns a `:write-error` that depends on whether the process may write to `/` into a deterministic, actionable error
+- Never test a filesystem guard by writing to a real system location: assert refusal happens before any creation, or exercise the pure helper directly (`#'` on a private fn) so the test never touches `/`
 - Every declared output path must be initialized on write, not just paths with data: zero-length files produce no spans and would otherwise be missing from a completed download (see `DiskPortImpl/write-layout!`)
 
 ## Common Errors to Avoid
@@ -164,6 +169,9 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 - When capping a double before casting to long, apply `min` first: `(long (min double-val cap))` not `(min (long double-val) cap)` — the latter overflows if `double-val` exceeds `Long/MAX_VALUE` (e.g., exponential backoff with large attempt numbers)
 - When consolidating duplicated logic into one function, search every namespace including `*_impl` before claiming it is single-sourced (the fourth copy of the size math lived in `network-impl`)
 - When unwrapping a channel result, bind the envelope first: `(:ok (async/<!! ...))`, never `assoc` onto the `{:ok ...}` map itself
+- `(byte n)` throws "Value out of range for byte" for any `n` above 127; use `(unchecked-byte ...)` when reducing a computed value into a byte array
+- test.check: `gen/boolean` is a def'd generator **value**, not a function — `(gen/boolean)` throws "Generator cannot be cast to IFn". Same for `gen/return`, `gen/nat`. Generators built by a fn (`gen/choose`, `gen/vector`, `gen/elements`) do take parens
+- Clojure's `for` supports only `:let`, `:when` and `:while` — `:keys` destructuring there fails with "for requires an even number of forms in binding vector". Bind the map, then key it
 
 ## Code Review Gates
 
@@ -178,6 +186,8 @@ All PRs must verify:
 ## Memory
 
 After implementing an issue and opening its PR, file the key decision addressed in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
+
+After addressing PR review findings, file a **per-thread outcome record** in the same room: PR number, one line per thread with its verdict (confirmed / false positive / partially true) and either the fixing commit or the proof that refuted it, plus any deviation from the review as written. A thread left unfixed must be recorded as such, pointing at the issue that now carries it — a consolidated record, not one drawer per round, so the whole review history sits in one place.
 
 <!-- MANUAL ADDITIONS END -->
 
