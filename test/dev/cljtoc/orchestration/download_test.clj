@@ -756,7 +756,7 @@
              :ports {:network-port (or (:net opts) (mock-net/create))
                      :disk-port disk
                      :time-port (mock-time/create)}
-             :conn-stats (atom {:connected 0 :failed 0})
+             :conn-stats (or (:conn-stats opts) (atom {:connected 0 :failed 0}))
              :total-attempted 1}
         state {:download download
                :active-peers {}
@@ -816,6 +816,27 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
+
+(deftest run-coordinator-send-failure-counts-peer-once-test
+  (testing "a dropped peer's late disconnect is not double-counted"
+    (let [disk (mock-disk/create)
+          net (mock-net/create)
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          conn-stats (atom {:connected 0 :failed 0})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-connected :address "peer-b"
+                   :peer-data {:id "data-b"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-disconnected :address "peer-a" :reason "socket closed"}
+                  {:type :peer-disconnected :address "peer-b" :reason "boom"}]
+          result (scripted-run events (loop-download) disk {:net net
+                                                            :conn-stats conn-stats})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= 2 (:connected @conn-stats)))
+      (is (= 2 (:failed @conn-stats))))))
 
 (deftest run-coordinator-send-failure-drops-peer-and-fails-test
   (testing "a dead last peer ends the download instead of waiting forever"

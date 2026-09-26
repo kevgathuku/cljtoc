@@ -709,7 +709,10 @@
                 (if (:error result)
                   (do
                     (network/close-peer network-port peer-data)
-                    (swap! conn-stats update :failed inc)
+                    (swap! conn-stats (fn [stats]
+                                        (-> stats
+                                            (update :failed inc)
+                                            (update :failed-addresses (fnil conj #{}) address))))
                     (recur (-> state
                                (requeue-assignment address assigned)
                                (update :active-peers dissoc address)
@@ -842,12 +845,18 @@
                       (assoc download :state :failed :error (:fatal outcome)))))
 
                 :peer-disconnected
-                (let [{:keys [reason]} event
+                (let [{:keys [address reason]} event
                       [planned effects] (on-disconnected state event)
                       [performed _] (perform-effects! planned effects env)
                       download (:download performed)
                       active-peers (:active-peers performed)]
-                  (swap! conn-stats update :failed inc)
+                  ;; Count each address once: a send-failure drop already
+                  ;; counted its address, so its late duplicate event skips.
+                  (when-not (contains? (:failed-addresses @conn-stats) address)
+                    (swap! conn-stats (fn [stats]
+                                        (-> stats
+                                            (update :failed inc)
+                                            (update :failed-addresses (fnil conj #{}) address)))))
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (if (swarm-exhausted? performed)

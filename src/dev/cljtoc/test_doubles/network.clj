@@ -14,7 +14,7 @@
             responses]
 
   network/INetworkPort
-  (connect-peer [this address]
+  (connect-peer [_ address]
     (let [ch (async/chan 1)
           peer-id (str address "/" (UUID/randomUUID))]
       (async/go
@@ -23,14 +23,14 @@
                            :bitfield (:default-bitfield config)}}))
       ch))
 
-  (send-message [this peer message]
+  (send-message [_ peer message]
     (let [ch (async/chan 1)]
       (async/go
         (let [response (get-in @responses [(:id peer) (:type message)] {:ok :mock-response})]
           (async/>! ch response)))
       ch))
 
-  (receive-message [this peer]
+  (receive-message [_ _]
     (let [ch (async/chan 1)]
       (async/go
         (let [queued (when-let [receive-queue (:receive-responses config)]
@@ -39,7 +39,7 @@
           (async/>! ch (or queued {:ok {:type :keep-alive}}))))
       ch))
 
-  (receive-handshake [this peer]
+  (receive-handshake [_ peer]
     (let [ch (async/chan 1)]
       (async/go
         (let [response (:handshake-response config)]
@@ -50,12 +50,12 @@
                                      :peer-id (byte-array 20)}}))))
       ch))
 
-  (close-peer [this peer]
+  (close-peer [_ peer]
     (swap! closed-peers conj peer)
     nil)
 
   network/ITrackerPort
-  (announce [this torrent-metadata]
+  (announce [_ _]
     (let [ch (async/chan 1)]
       (async/go
         (if-let [announce-error (:announce-error config)]
