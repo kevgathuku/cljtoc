@@ -472,36 +472,38 @@
       (is (not (contains? (:blocks-received updated) "peer-a"))))))
 
 (deftest on-connected-test
-  (testing "records the peer with no assignment"
+  (testing "records the peer with no assignment and no effects"
     (let [peer-state-value (peer-state/initial-peer-state 2)
           state {:download {} :active-peers {} :blocks-received {} :expected-blocks {}}
-          updated (download/on-connected state {:address "peer-a"
-                                                :peer-data {:id "data-a"}
-                                                :peer-state peer-state-value})]
+          [updated effects] (download/on-connected state {:address "peer-a"
+                                                          :peer-data {:id "data-a"}
+                                                          :peer-state peer-state-value})]
+      (is (= [] effects))
       (is (= {:peer-data {:id "data-a"}
               :peer-state peer-state-value
               :assigned-piece nil}
              (get-in updated [:active-peers "peer-a"]))))))
 
 (deftest on-disconnected-test
-  (testing "requeues the assigned piece and drops the peer, swarm lives on"
+  (testing "requeues the assigned piece and drops the peer with no effects"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {"peer-a" {:assigned-piece 1}
                                       "peer-b" {:assigned-piece nil}})
-          [updated exhausted?] (download/on-disconnected state {:address "peer-a"
-                                                                :reason "boom"})]
-      (is (false? exhausted?))
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "boom"})]
+      (is (= [] effects))
       (is (contains? (get-in updated [:download :piece-state :needed]) 1))
       (is (not (contains? (:active-peers updated) "peer-a")))
       (is (not (contains? (:blocks-received updated) "peer-a")))
       (is (not (contains? (:expected-blocks updated) "peer-a")))))
-  (testing "last peer out with pieces incomplete exhausts the swarm"
-    (let [[updated exhausted?] (download/on-disconnected (coordinator-state 1)
-                                                         {:address "peer-a"
-                                                          :reason "boom"})]
-      (is (true? exhausted?))
-      (is (empty? (:active-peers updated)))))
-  (testing "last peer out with pieces complete does not exhaust the swarm"
+  (testing "dropping the last peer leaves an exhausted swarm"
+    (let [[updated effects] (download/on-disconnected (coordinator-state 1)
+                                                      {:address "peer-a"
+                                                       :reason "boom"})]
+      (is (= [] effects))
+      (is (empty? (:active-peers updated)))
+      (is (true? (download/swarm-exhausted? updated)))))
+  (testing "a complete download is never exhausted"
     (let [complete-state (pieces/initial-piece-state 2)
           complete-state (:ok (pieces/mark-in-flight complete-state 0))
           complete-state (:ok (pieces/mark-in-flight complete-state 1))
@@ -511,16 +513,18 @@
                  :active-peers {"peer-a" {:assigned-piece nil}}
                  :blocks-received {}
                  :expected-blocks {}}
-          [updated exhausted?] (download/on-disconnected state {:address "peer-a"
-                                                                :reason "bye"})]
-      (is (false? exhausted?))
-      (is (empty? (:active-peers updated)))))
-  (testing "unknown address drops nothing and keeps waiting while peers remain"
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "bye"})]
+      (is (= [] effects))
+      (is (empty? (:active-peers updated)))
+      (is (false? (download/swarm-exhausted? updated)))))
+  (testing "unknown address drops nothing and the swarm lives on"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {"peer-a" {:assigned-piece 1}})
-          [updated exhausted?] (download/on-disconnected state {:address "ghost"
-                                                                :reason "boom"})]
-      (is (false? exhausted?))
+          [updated effects] (download/on-disconnected state {:address "ghost"
+                                                             :reason "boom"})]
+      (is (= [] effects))
+      (is (false? (download/swarm-exhausted? updated)))
       (is (contains? (:active-peers updated) "peer-a"))
       (is (contains? (get-in updated [:download :piece-state :in-flight]) 1)))))
 

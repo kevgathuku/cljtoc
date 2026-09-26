@@ -402,32 +402,37 @@
 
 (defn on-connected
   "Record a newly connected peer with no assignment yet.
-   Pure. Returns the updated coordinator state map."
+   Pure. Returns [updated-state effects] (a connection plans no I/O)."
   [state event]
   (let [{:keys [address peer-data peer-state]} event]
-    (assoc-in state [:active-peers address]
-              {:peer-data peer-data
-               :peer-state peer-state
-               :assigned-piece nil})))
+    [(assoc-in state [:active-peers address]
+               {:peer-data peer-data
+                :peer-state peer-state
+                :assigned-piece nil})
+     []]))
+
+(defn swarm-exhausted?
+  "True when no peers remain and pieces are still incomplete:
+   the caller fails the download (unchanged behavior, see issue #11)."
+  [state]
+  (and (empty? (:active-peers state))
+       (not (pieces/complete? (get-in state [:download :piece-state])))))
 
 (defn on-disconnected
   "Drop a peer, requeueing its assigned piece if any. Pure.
-   Returns [new-state swarm-exhausted?]: exhausted when no peers
-   remain and pieces are still incomplete, in which case the caller
-   fails the download (unchanged behavior, see issue #11)."
+   Returns [updated-state effects] (a disconnect plans no I/O);
+   the caller checks swarm-exhausted? to decide on failure."
   [state event]
   (let [{:keys [address]} event
         assigned (get-in state [:active-peers address :assigned-piece])
         state (if assigned
                 (requeue-assignment state address assigned)
-                state)
-        state (-> state
-                  (update :active-peers dissoc address)
-                  (update :blocks-received dissoc address)
-                  (update :expected-blocks dissoc address))
-        exhausted? (and (empty? (:active-peers state))
-                        (not (pieces/complete? (get-in state [:download :piece-state]))))]
-    [state exhausted?]))
+                state)]
+    [(-> state
+         (update :active-peers dissoc address)
+         (update :blocks-received dissoc address)
+         (update :expected-blocks dissoc address))
+     []]))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
@@ -680,13 +685,17 @@
                 (case (:type event)
 
                   :peer-connected
-                  (let [state (on-connected state event)
-                        download (:download state)
-                        active-peers (:active-peers state)]
+                  (let [[planned effects] (on-connected state event)
+                        planned (perform-effects! planned effects
+                                                  {:network-port network-port
+                                                   :disk-port disk-port
+                                                   :time-port time-port})
+                        download (:download planned)
+                        active-peers (:active-peers planned)]
                     (swap! conn-stats update :connected inc)
                     (when show-progress?
                       (print-download-progress download active-peers))
-                    (recur state (if show-progress? now last-progress-time)))
+                    (recur planned (if show-progress? now last-progress-time)))
 
                 :peer-message
                 (let [[planned effects] (on-message state event message-ctx)
@@ -701,13 +710,17 @@
 
                 :peer-disconnected
                 (let [{:keys [reason]} event
-                      [planned exhausted?] (on-disconnected state event)
+                      [planned effects] (on-disconnected state event)
+                      planned (perform-effects! planned effects
+                                                {:network-port network-port
+                                                 :disk-port disk-port
+                                                 :time-port time-port})
                       download (:download planned)
                       active-peers (:active-peers planned)]
                   (swap! conn-stats update :failed inc)
                   (when show-progress?
                     (print-download-progress download active-peers))
-                  (if exhausted?
+                  (if (swarm-exhausted? planned)
                     (let [{:keys [connected failed]} @conn-stats]
                       (println)
                       (println (str "  No peers available. "
