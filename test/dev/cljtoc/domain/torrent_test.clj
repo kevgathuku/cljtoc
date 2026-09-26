@@ -371,7 +371,7 @@
          file-sizes (if (= 1 file-count)
                       {["f"] total}
                       (into {} (map (fn [file-index file-length]
-                                      [[(str "t") (str "f" file-index)] file-length])
+                                      [["t" (str "f" file-index)] file-length])
                                     (range file-count) file-lengths)))]
      (every? true?
              (for [piece-index (range piece-count)]
