@@ -566,6 +566,7 @@
       (is (contains? (get-in updated [:download :piece-state :in-flight]) 0))
       (is (= {"peer-a" 1} (:expected-blocks updated)))
       (is (= 1 (count effects)))
+      (is (= "peer-a" (get-in (first effects) [:send :address])))
       (is (= {:id "data-a"} (get-in (first effects) [:send :peer-data])))
       (is (bytes? (get-in (first effects) [:send :bytes]))))))
 
@@ -742,7 +743,7 @@
       (peer-state/mark-piece-available 0)
       (peer-state/mark-piece-available 1)))
 
-(defn- scripted-run [events download disk]
+(defn- scripted-run [events download disk & [opts]]
   (let [torrent (:torrent download)
         info (:info torrent)
         events-ch (async/chan 16)
@@ -750,7 +751,7 @@
                            :piece-length (:piece-length info)
                            :total-length (:length info)
                            :total-pieces (count (:pieces info))}
-             :ports {:network-port (mock-net/create)
+             :ports {:network-port (or (:net opts) (mock-net/create))
                      :disk-port disk
                      :time-port (mock-time/create)}
              :conn-stats (atom {:connected 0 :failed 0})
@@ -812,3 +813,33 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
+
+(deftest run-coordinator-send-error-requeues-through-loop-test
+  (testing "a failed block send returns the piece to needed, nothing strands"
+    (let [disk (mock-disk/create)
+          net (mock-net/create)
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}]
+          result (scripted-run events (loop-download) disk {:net net})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (contains? (get-in result [:piece-state :needed]) 0))
+      (is (empty? (get-in result [:piece-state :in-flight])))
+      (is (nil? (mock-disk/get-piece disk 0))))))
+
+(deftest run-coordinator-write-error-fails-download-test
+  (testing "a failed piece write fails the download instead of verifying air"
+    (let [disk (mock-disk/create {:write-error {:error :write-error
+                                                :message "disk full"}})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason]))))))

@@ -13,7 +13,7 @@
    directories-created]
   
   disk/IDiskPort
-  (read-torrent-file [this path]
+  (read-torrent-file [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (if-let [data (get @torrent-data path)]
@@ -21,40 +21,43 @@
           (async/>! ch {:error :file-not-found :message (str "File not found: " path)})))
       ch))
   
-  (read-piece [this piece-index]
+  (read-piece [_ piece-index]
     (let [ch (async/chan 1)]
       (async/go
         (async/>! ch (get @piece-cache piece-index)))
       ch))
   
-  (write-piece [this piece-index bytes]
+  (write-piece [_ piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
-        (swap! piece-cache assoc piece-index bytes)
-        (async/>! ch {:ok :written}))
+        (if-let [err (:write-error config)]
+          (async/>! ch err)
+          (do
+            (swap! piece-cache assoc piece-index bytes)
+            (async/>! ch {:ok :written}))))
       ch))
   
-  (ensure-directory [this path]
+  (ensure-directory [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (swap! directories-created conj path)
         (async/>! ch {:ok :created}))
       ch))
   
-  (save-state [this download]
+  (save-state [_ download]
     (let [ch (async/chan 1)]
       (async/go
         (swap! state-files assoc (:id download) download)
         (async/>! ch {:ok :saved}))
       ch))
   
-  (load-state [this id]
+  (load-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (async/>! ch {:ok (get @state-files id)}))
       ch))
   
-  (delete-state [this id]
+  (delete-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (swap! state-files dissoc id)
@@ -65,7 +68,8 @@
   "Create a mock disk port for testing.
    
    Options:
-   - :torrent-data - map of path -> torrent metadata to return"
+   - :torrent-data - map of path -> torrent metadata to return
+   - :write-error - error map returned from write-piece instead of storing"
   ([]
    (create {}))
   ([config]

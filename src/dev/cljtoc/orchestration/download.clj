@@ -475,7 +475,9 @@
                                                                      (:offset block)
                                                                      (:length block))]
                                          (when-let [req-bytes (:ok (peer/build-message req-msg))]
-                                           {:peer-data peer-data :bytes req-bytes})))
+                                           {:address address
+                                            :peer-data peer-data
+                                            :bytes req-bytes})))
                                      blocks))]
                 [(assoc state
                         :download (assoc download :piece-state (:ok mark-result))
@@ -576,26 +578,48 @@
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
    over the network port, verified pieces go to the disk port with the
-   download stats updated. Returns the updated coordinator state map."
+   download stats updated. Returns [state outcome]: :ok, or
+   {:fatal error-info} when a verified write failed and the download
+   cannot honestly continue.
+
+   A failed send unwinds that peer's assignment (requeue the piece, drop
+   its expected blocks) so nothing strands in-flight; later sends in the
+   same batch find no assignment and are skipped."
   [state effects {:keys [network-port disk-port time-port]}]
-  (reduce (fn [state effect]
-            (cond
-              (:send effect)
-              (let [{:keys [peer-data bytes]} (:send effect)]
-                (async/<!! (network/send-message network-port peer-data bytes))
-                state)
+  (loop [state state
+         [effect & rest-effects] effects]
+    (if (nil? effect)
+      [state :ok]
+      (cond
+        (:send effect)
+        (let [{:keys [address peer-data bytes]} (:send effect)
+              assigned (get-in state [:active-peers address :assigned-piece])]
+          (if (nil? assigned)
+            (recur state rest-effects)
+            (let [result (async/<!! (network/send-message network-port peer-data bytes))]
+              (recur (if (:error result)
+                       (-> state
+                           (requeue-assignment address assigned)
+                           (update :expected-blocks dissoc address))
+                       state)
+                     rest-effects))))
 
-              (:write-verified effect)
-              (let [{:keys [piece-idx data]} (:write-verified effect)]
-                (async/<!! (disk/write-piece disk-port piece-idx data))
-                (update state :download
-                        (fn [download]
-                          (update download :stats
-                                  #(update-stats-bytes time-port % (alength ^bytes data))))))
+        (:write-verified effect)
+        (let [{:keys [piece-idx data]} (:write-verified effect)
+              result (async/<!! (disk/write-piece disk-port piece-idx data))]
+          (if (:error result)
+            [state {:fatal {:reason :disk-error
+                            :message (str "Failed to write piece " piece-idx
+                                          ": " (:message result))
+                            :failed-piece piece-idx}}]
+            (recur (update state :download
+                           (fn [download]
+                             (update download :stats
+                                     #(update-stats-bytes time-port % (alength ^bytes data)))))
+                   rest-effects)))
 
-              :else state))
-          state
-          effects))
+        :else
+        (recur state rest-effects)))))
 
 (defn- format-bytes-rate [bytes]
   (cond
@@ -655,32 +679,37 @@
 
                 :peer-connected
                 (let [[planned effects] (on-connected state event)
-                      planned (perform-effects! planned effects ports)
-                      download (:download planned)
-                      active-peers (:active-peers planned)]
+                      [performed _] (perform-effects! planned effects ports)
+                      download (:download performed)
+                      active-peers (:active-peers performed)]
                   (swap! conn-stats update :connected inc)
                   (when show-progress?
                     (print-download-progress download active-peers))
-                  (recur planned (if show-progress? now last-progress-time)))
+                  (recur performed (if show-progress? now last-progress-time)))
 
                 :peer-message
                 (let [[planned effects] (on-message state event message-ctx)
-                      planned (perform-effects! planned effects ports)
-                      wrote? (boolean (some :write-verified effects))]
-                  (when (and show-progress? wrote?)
-                    (print-download-progress (:download planned) (:active-peers planned)))
-                  (recur planned (if (and show-progress? wrote?) now last-progress-time)))
+                      [performed outcome] (perform-effects! planned effects ports)]
+                  (if (= :ok outcome)
+                    (let [wrote? (boolean (some :write-verified effects))]
+                      (when (and show-progress? wrote?)
+                        (print-download-progress (:download performed) (:active-peers performed)))
+                      (recur performed (if (and show-progress? wrote?) now last-progress-time)))
+                    (let [download (:download performed)]
+                      (println)
+                      (println (str "  Fatal effect error: " (get-in outcome [:fatal :message])))
+                      (assoc download :state :failed :error (:fatal outcome)))))
 
                 :peer-disconnected
                 (let [{:keys [reason]} event
                       [planned effects] (on-disconnected state event)
-                      planned (perform-effects! planned effects ports)
-                      download (:download planned)
-                      active-peers (:active-peers planned)]
+                      [performed _] (perform-effects! planned effects ports)
+                      download (:download performed)
+                      active-peers (:active-peers performed)]
                   (swap! conn-stats update :failed inc)
                   (when show-progress?
                     (print-download-progress download active-peers))
-                  (if (swarm-exhausted? planned)
+                  (if (swarm-exhausted? performed)
                     (let [{:keys [connected failed]} @conn-stats]
                       (println)
                       (println (str "  No peers available. "
@@ -689,7 +718,7 @@
                       (assoc download :state :failed
                              :error {:reason :no-peers
                                      :message (str "No peers available (" connected "/" total-attempted " connected)")}))
-                    (recur planned
+                    (recur performed
                            (if show-progress? now last-progress-time))))
 
                 ;; Unknown event type
