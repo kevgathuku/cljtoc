@@ -2,7 +2,7 @@
   "Tests for CLI download state persistence.
    Seam: save-state / load-state / id-from-path / get-or-create-download-id
    through real temp dirs (no mocks — file system is the seam)."
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.cli.state :as state]
             [clojure.java.io :as io]))
 

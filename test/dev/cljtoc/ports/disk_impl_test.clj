@@ -2,7 +2,7 @@
   "Tests for DiskPortImpl state persistence.
    Seam: IDiskPort save-state / load-state through real temp dirs.
    Byte arrays must round-trip EDN-safe (hex), loadable by either seam."
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
             [clojure.core.async :refer [<!!]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
