@@ -150,11 +150,15 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 ## Project Conventions
 
 - Torrent/bencode data is binary — do not apply UTF-8 encoding/decoding; treat all byte arrays as raw binary
+- Persisted state must decode back to runtime values: byte arrays are stored as tagged `{:cljtoc/bytes hex}` maps (see `dev.cljtoc.ports.disk/encode-state` / `decode-state`) so a resumed download carries real bytes into handshake and verification. Test the decoded value, not the on-disk shape — asserting the encoded form passes while resume is broken
+- Pause/resume must be covered by a cycle test through the real port (temp dirs), not just the mock: mocks drift from the real envelope contract (e.g. `load-state` returning the download instead of `{:ok download}`)
 - Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
 
 ## Common Errors to Avoid
 
 - When capping a double before casting to long, apply `min` first: `(long (min double-val cap))` not `(min (long double-val) cap)` — the latter overflows if `double-val` exceeds `Long/MAX_VALUE` (e.g., exponential backoff with large attempt numbers)
+- When consolidating duplicated logic into one function, search every namespace including `*_impl` before claiming it is single-sourced (the fourth copy of the size math lived in `network-impl`)
+- When unwrapping a channel result, bind the envelope first: `(:ok (async/<!! ...))`, never `assoc` onto the `{:ok ...}` map itself
 
 ## Code Review Gates
 
