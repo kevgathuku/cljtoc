@@ -1,0 +1,49 @@
+---
+name: issue-to-pr
+description: "Take a GitHub issue through TDD to an opened PR."
+disable-model-invocation: true
+---
+
+Take a GitHub issue number through validation, TDD implementation, and an opened PR that closes it.
+
+## 1. Fetch and validate
+
+Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. State the verdict in one line per claim (confirmed / stale / partially true). Stop if the issue is stale and ask how to proceed.
+
+## 2. Branch
+
+Check `git status` is clean and `git branch --show-current` is `main`, then create a dedicated branch: `fix/issue-<number>-<short-slug>`.
+
+## 3. Implement with /tdd
+
+Follow the `tdd` skill: confirm the seams under test before writing anything, then red → green in vertical slices (one seam, one test, one minimal implementation per cycle). Run single test namespaces during the loop and the full suite (`lein test`) once at the end; it must be green before proceeding.
+
+## 4. Test and lint gate
+
+Both gates must pass before proceeding; fix what they report, don't work around it:
+
+- `lein test` — full suite green, zero failures and zero errors.
+- `clj-kondo --lint src test` — no findings in files this change touched. Pre-existing findings elsewhere are out of scope: leave them, never fix unrelated files to satisfy the gate.
+
+Re-run each gate after its fixes until clean.
+
+## 5. Open the PR
+
+Stage only intended files, commit with a message describing what changed and why, push with `-u origin`, then `gh pr create` with:
+
+- Title naming the change.
+- `Closes #<number>.` as the first body line.
+- Validation / Changes / Verification sections: what was confirmed, what changed, and the test counts.
+
+Return the PR URL.
+
+## 6. Request Copilot review
+
+Once the PR is open, request a review from Copilot at Lite effort:
+
+- `gh pr edit <number> --add-reviewer @copilot` (Lite is the default effort level; pick Balanced in the PR UI under Reviewers only if the change is security-sensitive or cross-service).
+- Confirm the request landed: `gh pr view <number> --json reviewRequests -q '.reviewRequests[].login'`.
+
+## 7. File the decision
+
+Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
