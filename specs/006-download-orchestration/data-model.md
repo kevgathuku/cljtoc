@@ -95,13 +95,61 @@ Disk effect abstraction.
 
 ```clojure
 (defprotocol IDiskPort
-  (read-torrent [this path] "Parse .torrent file")
+  (read-torrent-file [this path] "Parse .torrent file")
   (read-piece [this piece-index] "Read cached piece data")
-  (write-piece [this piece-index bytes] "Write verified piece to disk")
+  (write-piece [this piece-index bytes] "Write verified piece to the piece cache")
+  (write-output-piece [this info output-dir piece-index bytes]
+    "Write one verified piece into the torrent file layout under output-dir")
+  (initialize-output-layout [this info output-dir]
+    "Create every declared output path at its declared length, including zero-length files")
   (ensure-directory [this path] "Create directory if missing")
   (save-state [this download] "Persist download state")
-  (load-state [this id] "Load persisted state"))
+  (load-state [this id] "Load persisted download state")
+  (delete-state [this id] "Delete persisted download state"))
 ```
+
+#### Result semantics
+
+Every method returns a channel delivering exactly one envelope.
+
+| Envelope | Delivered by |
+|----------|--------------|
+| `{:ok metadata}` | `read-torrent-file` |
+| `{:ok bytes}` or `{:ok nil}` | `read-piece` (nil when not cached) |
+| `{:ok :written}` | `write-piece`, `write-output-piece` |
+| `{:ok :initialized}` | `initialize-output-layout` |
+| `{:ok :created}` | `ensure-directory` |
+| `{:ok :saved}` | `save-state` |
+| `{:ok download}` or `{:ok nil}` | `load-state` (nil when no state exists) |
+| `{:ok :deleted}` | `delete-state` |
+| `{:error reason :message msg}` | any of the above, on failure |
+
+Error reasons emitted by the reference implementation: `:file-not-found`,
+`:invalid-torrent`, `:read-error`, `:write-error`, `:invalid-info`,
+`:unsafe-path`, `:mkdir-error`, `:save-error`, `:load-error`,
+`:delete-error`.
+
+Persisted state must survive a round trip: records are stored as plain maps
+and byte arrays as `{:cljtoc/bytes hex}` tagged maps, so a resumed download
+carries real bytes into handshake and verification
+(`ports.disk/encode-state` / `decode-state`).
+
+#### Output-path containment
+
+`info` is torrent-controlled, so both output methods MUST treat every
+declared path as hostile:
+
+- Reject any path component that is `..`, empty, or separator-bearing —
+  return `{:error :invalid-info}` before building a path.
+- Resolve symlinks and require the canonical file path to stay under the
+  canonical `output-dir` — return `{:error :unsafe-path}` before opening.
+  Lexical component checks alone do not stop a pre-existing symlink inside
+  the target directory from redirecting the write outside it.
+
+`initialize-output-layout` runs once at download start, *before* the
+completion check, so a torrent with no pieces still materializes its
+declared files. `run-download` treats its failure as a `:disk-error` that
+fails the download rather than reporting completion.
 
 ### ITimePort
 
