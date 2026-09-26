@@ -2,14 +2,12 @@
   (:require [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.orchestration.download :as download]
-            [dev.cljtoc.orchestration.manager :as manager]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.ports.time :as time-port]
             [dev.cljtoc.cli.state :as cli-state]
             [clojure.java.io :as io]
-            [clojure.pprint :as pp]
-            [clojure.string :as str])
+            [clojure.pprint :as pp])
   (:gen-class))
 
 (defn- read-torrent-file [path]
@@ -98,15 +96,14 @@
                   piece-count (count (:pieces info))
                   _ (println (str "Pieces: " piece-count))
                   space-check (disk-impl/check-disk-space output-dir required-size)]
-              (if (:error space-check)
-                (do
-                  (println "WARNING: " (:message space-check))
-                  (println "Continuing anyway...")))
+              (when (:error space-check)
+                (println "WARNING: " (:message space-check))
+                (println "Continuing anyway..."))
               (let [disk-port (disk-impl/create {:state-dir "./torrent-state"
                                                  :piece-cache-dir "./torrent-cache"})
                     network-port (network-impl/create)
                     time-port (time-port/->RealTimePort)
-                    m (manager/manager network-port disk-port time-port {})
+                    m (download/manager network-port disk-port time-port {})
                     _ (println "Starting download to: " output-dir)
                     result (download/start-download m torrent-path output-dir)]
                 (if (:error result)
@@ -121,14 +118,14 @@
                                                  :output-dir output-dir))
                     (println (str "Download started: " download-id))
                     (println)
-                    (print-progress (download/progress result))
+                    (print-progress (download/progress time-port result))
                     (println)
                     (let [final-download (download/run-download m result)]
                       (cli-state/save-state (assoc final-download
                                                     :torrent-path torrent-path
                                                     :output-dir output-dir))
                       (println)
-                      (print-progress (download/progress final-download)))))))))))))
+                      (print-progress (download/progress time-port final-download)))))))))))))
 
 (defn- cmd-torrent-pause
   [args]
@@ -147,7 +144,7 @@
           (do
             (cli-state/save-state (get result :ok))
             (println "Download paused.")
-            (print-progress (download/progress (get result :ok)))))))))
+            (print-progress (download/progress (time-port/->RealTimePort) (get result :ok)))))))))
 
 (defn- cmd-torrent-resume
   [args]
@@ -166,7 +163,7 @@
           (do
             (cli-state/save-state (get result :ok))
             (println "Download resumed.")
-            (print-progress (download/progress (get result :ok)))))))))
+            (print-progress (download/progress (time-port/->RealTimePort) (get result :ok)))))))))
 
 (defn- cmd-torrent-status
   [args]
@@ -181,7 +178,7 @@
         (println (str "Download: " (:id state)))
         (when (:torrent-path state)
           (println (str "Torrent: " (:torrent-path state))))
-        (print-progress (download/progress state))))))
+        (print-progress (download/progress (time-port/->RealTimePort) state))))))
 
 (defn- cmd-torrent-stop
   [args]
@@ -195,7 +192,7 @@
       (let [stopped (download/stop-download state)]
         (cli-state/delete-state (:id state))
         (println "Download stopped.")
-        (print-progress (download/progress stopped))))))
+        (print-progress (download/progress (time-port/->RealTimePort) stopped))))))
 
 (defn- cmd-torrent-seed
   [_args]

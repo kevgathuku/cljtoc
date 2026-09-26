@@ -28,7 +28,8 @@
 ### Checking Progress
 
 ```clojure
-(download/progress result)
+;; Reads the rate clock through the ITimePort you started the download with
+(download/progress (time-port/->RealTimePort) result)
 ;; => {:percent 45.2
 ;;     :pieces-complete 230
 ;;     :pieces-total 512
@@ -82,7 +83,7 @@
 (deftest test-download-completes
   (let [[result] (download/start-download m "test.torrent" "/tmp/out")]
     (is (:ok result))
-    (let [progress (download/progress m result)]
+    (let [progress (download/progress time result)]
       (is (= :completed (:state progress))))))
 ```
 

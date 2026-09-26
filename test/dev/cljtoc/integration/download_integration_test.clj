@@ -3,9 +3,8 @@
    
    These tests verify end-to-end download functionality using
    mock ports to simulate real network and disk operations."
-  (:require [clojure.test :refer :all]
+  (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.orchestration.download :as download]
-            [dev.cljtoc.orchestration.manager :as manager]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.test-doubles.time :as mock-time]))
@@ -21,7 +20,7 @@
                                                 :length 2621440
                                                 :files []}}})
         time (mock-time/create)
-        m (manager/manager network disk time {})]
+        m (download/manager network disk time {})]
     
     (testing "can start a download with valid torrent"
       (let [result (download/start-download m "/test.torrent" "/output")]

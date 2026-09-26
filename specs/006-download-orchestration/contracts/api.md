@@ -54,7 +54,7 @@ Resumes a paused download from persisted state.
 Returns current download progress.
 
 ```clojure
-(progress download)
+(progress time-port download)
   → {:percent float              ; 0.0 to 100.0
      :pieces-complete nat-int    ; verified pieces
      :pieces-total nat-int       ; total pieces
@@ -181,14 +181,15 @@ Common errors:
 (require '[dev.cljtoc.orchestration.download :as download])
 
 ;; Create manager with real ports
-(def m (download/manager (real-network) (real-disk) (real-time) {}))
+(def time (real-time))
+(def m (download/manager (real-network) (real-disk) time {}))
 
 ;; Start
 (def download (download/start-download m "test.torrent" "./downloads"))
 ;; => {:id "test", :state :downloading, ...}
 
 ;; Poll progress
-(download/progress download)
+(download/progress time download)
 ;; => {:percent 45.2 :pieces-complete 230 :pieces-total 512 ...}
 
 ;; Pause

@@ -8,6 +8,7 @@
             [clojure.java.io :as io]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.cli.state :as cli-state]))
 
@@ -87,8 +88,9 @@
 (deftest pause-resume-cycle-through-disk-port-test
   (testing "pause persists and resume restores the same download id"
     (let [port (make-port (temp-dir "disk-state-"))
-          started (assoc (download/initial-download {:info {:pieces ["h1" "h2"]}}
-                                                    "/out" "cycle")
+          started (assoc (download/initial-download (time/->RealTimePort)
+                                                     {:info {:pieces ["h1" "h2"]}}
+                                                     "/out" "cycle")
                          :state :downloading)
           paused (:ok (download/pause-download port started))
           resumed (:ok (download/resume-download port nil paused))]
