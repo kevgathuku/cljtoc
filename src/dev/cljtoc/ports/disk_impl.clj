@@ -85,8 +85,8 @@
                         (.write raf slice)
                         (finally (.close raf))))))
                 (async/>! ch {:ok :written}))))
-          (catch Exception e
-            (async/>! ch {:error :write-error :message (.getMessage e)}))))
+          (catch Exception error
+            (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))
 
   (ensure-directory [this path]

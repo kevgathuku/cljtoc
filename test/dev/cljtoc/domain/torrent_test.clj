@@ -1,5 +1,8 @@
 (ns dev.cljtoc.domain.torrent-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.test.check.clojure-test :refer [defspec]]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.domain.bencode :as bencode]))
 
@@ -351,3 +354,36 @@
   (testing "out-of-range piece index is an error"
     (let [info {:name "test.txt" :piece-length 4 :length 8}]
       (is (:error (torrent/piece-file-spans info 2 4))))))
+
+(defspec piece-file-spans-cover-exactly-spec 100
+  (prop/for-all
+   [piece-length (gen/choose 1 16)
+    file-lengths (gen/vector (gen/choose 1 20) 1 4)]
+   (let [total (reduce + file-lengths)
+         file-count (count file-lengths)
+         info (if (= 1 file-count)
+                {:name "f" :piece-length piece-length :length total}
+                {:name "t" :piece-length piece-length
+                 :files (mapv (fn [file-index file-length]
+                                {:path [(str "f" file-index)] :length file-length})
+                              (range file-count) file-lengths)})
+         piece-count (int (Math/ceil (/ total (double piece-length))))
+         file-sizes (if (= 1 file-count)
+                      {["f"] total}
+                      (into {} (map (fn [file-index file-length]
+                                      [[(str "t") (str "f" file-index)] file-length])
+                                    (range file-count) file-lengths)))]
+     (every? true?
+             (for [piece-index (range piece-count)]
+               (let [piece-start (* piece-index piece-length)
+                     expected (min piece-length (- total piece-start))
+                     spans (:ok (torrent/piece-file-spans info piece-index expected))
+                     lengths (map :length spans)
+                     data-offsets (map :data-offset spans)]
+                 (and (vector? spans)
+                      (= expected (reduce + 0 lengths))
+                      (= (vec (butlast (reductions + 0 lengths))) (vec data-offsets))
+                      (every? #(and (>= (:file-offset %) 0)
+                                    (<= (+ (:file-offset %) (:length %))
+                                        (get file-sizes (:path %) -1)))
+                              spans))))))))
