@@ -363,6 +363,14 @@
     (is (thrown? clojure.lang.ExceptionInfo
                  (download/manager network disk time {:max-peers -1})))))
 
+(deftest manager-rejects-zero-max-peers-test
+  (testing "zero max-peers would dial no workers and hang run-download"
+    (let [network (mock-net/create)
+          disk (mock-disk/create)
+          time (mock-time/create)]
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (download/manager network disk time {:max-peers 0}))))))
+
 (deftest manager-merges-default-config-test
   (let [network (mock-net/create)
         disk (mock-disk/create)

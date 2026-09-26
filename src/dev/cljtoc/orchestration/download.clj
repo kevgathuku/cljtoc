@@ -768,7 +768,7 @@
   :args (s/cat :download map?)
   :ret (s/keys :req-un [::state ::peers]))
 
-(s/def ::max-peers nat-int?)
+(s/def ::max-peers pos-int?)
 (s/def ::min-peers nat-int?)
 (s/def ::request-queue-size nat-int?)
 (s/def ::piece-timeout-ms nat-int?)

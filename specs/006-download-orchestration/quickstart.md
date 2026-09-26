@@ -11,10 +11,11 @@
          '[dev.cljtoc.ports.time :as time-port])
 
 ;; Create a manager with your ports
+(def time (time-port/->RealTimePort))
 (def m (download/manager 
          (network-port/create)
          (disk-port/create)
-         (time-port/create)
+         time
          {:max-peers 50
           :output-dir "./downloads"}))
 
@@ -28,8 +29,8 @@
 ### Checking Progress
 
 ```clojure
-;; Reads the rate clock through the ITimePort you started the download with
-(download/progress (time-port/->RealTimePort) result)
+;; Reads the rate clock through the same time port the manager holds
+(download/progress time result)
 ;; => {:percent 45.2
 ;;     :pieces-complete 230
 ;;     :pieces-total 512
@@ -75,7 +76,7 @@
 (def network (mock-net/create {:peers [{:address "127.0.0.1:6881"
                                         :bitfield #{0 1 2 3 4}}]}))
 (def disk (mock-disk/create {}))
-(def time (mock-time/create {:now #inst "2026-01-01T00:00:00Z"}))
+(def time (mock-time/create {:now 0}))
 
 ;; Create manager with mocks
 (def m (download/manager network disk time {}))
