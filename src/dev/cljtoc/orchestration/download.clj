@@ -19,10 +19,8 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
-            [dev.cljtoc.protocol.tracker :as tracker]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.disk :as disk]
-            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.coordination.peer-worker :as peer-worker])
   (:import [java.util BitSet]
            [java.security SecureRandom]))
@@ -85,30 +83,6 @@
           (async/>! ch (download-error :tracker-error (:message result)))
           (async/>! ch {:ok (:ok result)}))))
     ch))
-
-(defn- select-next-piece [piece-state peers]
-  (let [peer-availables (map :bitfield peers)]
-    (pieces/select-piece piece-state (first peer-availables) peer-availables)))
-
-(defn- request-pieces [manager download peer]
-  (let [piece-state (:piece-state download)
-        result (select-next-piece piece-state (:peers download))]
-    (if-let [piece-idx (:ok result)]
-      (let [marked (pieces/mark-in-flight piece-state piece-idx)]
-        (if (:error marked)
-          {:ok nil}
-          {:ok {:piece-index piece-idx
-                :piece-state (:ok marked)}}))
-      {:ok nil})))
-
-(defn- verify-and-write-piece [disk-port piece-index bytes piece-hash]
-  (let [verify-result (pieces/verify-piece piece-index bytes piece-hash)]
-    (if (:error verify-result)
-      {:error (:error verify-result)}
-      (let [write-result (disk/write-piece disk-port piece-index bytes)]
-        (if (:error write-result)
-          {:error (:error write-result)}
-          {:ok piece-index})))))
 
 (defn initial-stats []
   (let [now (System/currentTimeMillis)]

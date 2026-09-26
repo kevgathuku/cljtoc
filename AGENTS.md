@@ -169,6 +169,10 @@ All PRs must verify:
 4. No new global state introduced
 5. New code has corresponding tests; domain tests are pure
 
+## Memory
+
+After implementing an issue and opening its PR, file the key decision addressed in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
+
 <!-- MANUAL ADDITIONS END -->
 
 ## Agent skills
