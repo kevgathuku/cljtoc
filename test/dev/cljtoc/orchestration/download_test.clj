@@ -891,3 +891,19 @@
         (is (contains? (get-in result [:piece-state :needed]) 1))
         (is (empty? (get-in result [:piece-state :in-flight])))
         (is (empty? (get-in result [:piece-state :verified])))))))
+
+(deftest run-coordinator-write-error-closes-peers-test
+  (testing "a fatal write closes every active connection"
+    (let [disk (mock-disk/create {:write-error {:error :write-error
+                                                :message "disk full"}})
+          net (mock-net/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}]
+          result (scripted-run events (loop-download) disk {:net net})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))

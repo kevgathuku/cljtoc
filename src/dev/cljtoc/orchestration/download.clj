@@ -724,11 +724,12 @@
           (:write-verified effect)
           (let [{:keys [piece-idx data]} (:write-verified effect)
                 result (async/<!! (disk/write-piece disk-port piece-idx data))]
-            (if (:error result)
-              ;; Bytes never landed: unwind the write's piece plus every
-              ;; follow-up assignment this batch planned (their sends never
-              ;; ran), so the failed record stays honest and retryable.
-              (let [send-addrs (distinct (keep #(get-in % [:send :address]) effects))
+          (if (:error result)
+            ;; Bytes never landed: unwind the write's piece plus every
+            ;; follow-up assignment this batch planned (their sends never
+            ;; ran), close every connection (a failed download must not
+            ;; leak workers), and fail so the record stays retryable.
+            (let [send-addrs (distinct (keep #(get-in % [:send :address]) effects))
                     state (reduce (fn [unwound address]
                                     (if-let [assigned (get-in unwound [:active-peers address :assigned-piece])]
                                       (requeue-assignment unwound address assigned)
@@ -736,6 +737,8 @@
                                   state send-addrs)
                     piece-state (get-in state [:download :piece-state])
                     requeued (pieces/requeue-piece piece-state piece-idx)]
+                (doseq [[_ peer-info] (:active-peers state)]
+                  (network/close-peer network-port (:peer-data peer-info)))
                 [(-> state
                      (assoc-in [:download :piece-state] (or (:ok requeued) piece-state))
                      (update :expected-blocks #(apply dissoc % send-addrs)))
