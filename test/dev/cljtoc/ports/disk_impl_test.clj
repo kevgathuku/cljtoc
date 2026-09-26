@@ -127,3 +127,20 @@
       (is (java.util.Arrays/equals (byte-array [4 5 6 7 8 9])
                                    (java.nio.file.Files/readAllBytes
                                     (.toPath (io/file output-dir "t" "b"))))))))
+
+(deftest write-output-piece-truncates-stale-file-test
+  (testing "a longer file left by an earlier run comes out byte-identical"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-stale-")
+          info {:name "data.bin" :piece-length 4 :length 10}
+          stale (io/file output-dir "data.bin")]
+      (.mkdirs (.getParentFile stale))
+      (java.nio.file.Files/write (.toPath stale) (byte-array (repeat 20 (byte 9)))
+                                 (into-array java.nio.file.OpenOption []))
+      (doseq [[piece-index piece-data] (map-indexed vector [(byte-array [0 1 2 3])
+                                                            (byte-array [4 5 6 7])
+                                                            (byte-array [8 9])])]
+        (is (= {:ok :written}
+               (<!! (disk/write-output-piece port info output-dir piece-index piece-data)))))
+      (is (java.util.Arrays/equals (byte-array (range 10))
+                                   (java.nio.file.Files/readAllBytes (.toPath stale)))))))

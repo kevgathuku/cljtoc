@@ -130,6 +130,35 @@
        (not= ".." component)
        (not (re-find #"[/\\]" component))))
 
+(defn- file-layout
+  "Relative output layout of an info dict: [{:path [name ...] :length n}].
+   Single-file info yields its :length under [:name]; multi-file info
+   yields each entry under [name + path]. Nil when :name is missing."
+  [info]
+  (if (:files info)
+    (let [root (:name info)]
+      (when-not (nil? root)
+        (mapv (fn [file-entry]
+                {:path (into [root] (:path file-entry))
+                 :length (:length file-entry)})
+              (:files info))))
+    (when (:name info)
+      [{:path [(:name info)] :length (:length info)}])))
+
+(defn output-file-sizes
+  "Declared output sizes of an info dict: {relative-path-vector length}.
+   Returns {:ok sizes} or {:error ...} when :name is missing."
+  [info]
+  (if-let [layout (file-layout info)]
+    {:ok (into {} (map (fn [{file-path :path file-length :length}]
+                         [file-path file-length])
+                       layout))}
+    (bencode/torrent-error "info must carry :name for output paths" {})))
+
+(s/fdef output-file-sizes
+  :args (s/cat :info ::info)
+  :ret map?)
+
 (defn piece-file-spans
   "Map one piece to file-layout spans: per overlapped file,
    {:path [name ...] :file-offset n :data-offset m :length k}.
@@ -158,17 +187,7 @@
           (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
                                  {:piece-index piece-index})
           (let [piece-end (min total (+ piece-start piece-byte-count))
-                layout (if (:files info)
-                         (let [root (:name info)]
-                           (if (nil? root)
-                             nil
-                             (mapv (fn [file-entry]
-                                     {:path (into [root] (:path file-entry))
-                                      :length (:length file-entry)})
-                                   (:files info))))
-                         (if (:name info)
-                           [{:path [(:name info)] :length (:length info)}]
-                           nil))]
+                layout (file-layout info)]
             (if (nil? layout)
               (bencode/torrent-error "info must carry :name for output paths" {})
               (let [spans (loop [remaining layout

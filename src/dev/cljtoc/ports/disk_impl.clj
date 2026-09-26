@@ -64,25 +64,33 @@
     (let [ch (async/chan 1)]
       (async/go
         (try
-          (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))]
+          (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
+                sizes-result (torrent/output-file-sizes info)]
             (if (:error spans-result)
               (async/>! ch {:error :invalid-info
                             :message (str "Cannot map piece " piece-index ": "
                                           (:message spans-result))})
               (do
-                (doseq [{file-path :path file-offset :file-offset
-                         data-offset :data-offset span-length :length} (:ok spans-result)]
+                ;; One handle per touched file: write this piece's spans,
+                ;; then truncate to the declared length so a longer file
+                ;; left by an earlier run cannot leave stale trailing bytes.
+                (doseq [[file-path file-spans] (group-by :path (:ok spans-result))]
                   (let [out-file (apply io/file output-dir file-path)
                         parent (.getParentFile out-file)]
                     (when parent
                       (.mkdirs parent))
-                    (let [slice (Arrays/copyOfRange ^bytes bytes
-                                                    (int data-offset)
-                                                    (int (+ data-offset span-length)))
-                          raf (RandomAccessFile. out-file "rw")]
+                    (let [raf (RandomAccessFile. out-file "rw")]
                       (try
-                        (.seek raf file-offset)
-                        (.write raf slice)
+                        (doseq [{file-offset :file-offset
+                                 data-offset :data-offset
+                                 span-length :length} file-spans]
+                          (let [slice (Arrays/copyOfRange ^bytes bytes
+                                                          (int data-offset)
+                                                          (int (+ data-offset span-length)))]
+                            (.seek raf file-offset)
+                            (.write raf slice)))
+                        (when-let [declared (get (:ok sizes-result) file-path)]
+                          (.setLength raf declared))
                         (finally (.close raf))))))
                 (async/>! ch {:ok :written}))))
           (catch Exception error
