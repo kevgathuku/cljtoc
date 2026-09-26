@@ -16,3 +16,7 @@ pom.xml.asc
 .lsp/.cache/
 tmp/
 torrent-state/
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
