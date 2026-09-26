@@ -13,7 +13,6 @@
    code testable with mock implementations."
   (:require [clojure.core.async :as async]
             [clojure.spec.alpha :as s]
-            [clojure.string :as str]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.domain.torrent :as torrent]
@@ -21,6 +20,7 @@
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.coordination.peer-worker :as peer-worker])
   (:import [java.util BitSet]
            [java.security SecureRandom]))
@@ -61,6 +61,59 @@
 
 (def valid-states #{:idle :starting :downloading :paused :completed :failed})
 
+(def default-config
+  "Default limits for downloads. Only :max-peers is currently enforced
+   (see capped-peer-addresses); the rest are reserved for future use."
+  {:max-peers 50
+   :min-peers 5
+   :request-queue-size 16
+   :piece-timeout-ms 30000
+   :tracker-announce-interval-ms 1800000
+   :output-dir "./downloads"})
+
+;; ============================================================================
+;; Download Manager
+;; ============================================================================
+
+(defrecord DownloadManager
+           [network-port
+            disk-port
+            time-port
+            downloads
+            config])
+
+(defn manager
+  "Create a DownloadManager with the given port implementations and config.
+
+   Parameters:
+   - network-port: implementation of INetworkPort
+   - disk-port: implementation of IDiskPort
+   - time-port: implementation of ITimePort
+   - config: optional map of configuration overrides (validated)
+
+   Returns a DownloadManager record."
+  ([network-port disk-port time-port]
+   (manager network-port disk-port time-port {}))
+  ([network-port disk-port time-port config]
+   (let [merged (merge default-config config)]
+     (when-not (s/valid? ::config merged)
+       (throw (ex-info "Invalid manager config"
+                       (s/explain-data ::config merged))))
+     (->DownloadManager network-port
+                        disk-port
+                        time-port
+                        {}
+                        merged))))
+
+(defn add-download [manager download]
+  (update manager :downloads assoc (:id download) download))
+
+(defn get-download [manager id]
+  (get (:downloads manager) id))
+
+(defn remove-download [manager id]
+  (update manager :downloads dissoc id))
+
 (defn- download-error
   [reason message & [failed-piece]]
   {:error reason :message message :failed-piece failed-piece})
@@ -84,12 +137,12 @@
           (async/>! ch {:ok (:ok result)}))))
     ch))
 
-(defn initial-stats []
-  (let [now (System/currentTimeMillis)]
+(defn initial-stats [time-port]
+  (let [now (time/now time-port)]
     (->DownloadStats now nil 0 0 now)))
 
-(defn update-stats-bytes [stats bytes-received]
-  (let [now (System/currentTimeMillis)
+(defn update-stats-bytes [time-port stats bytes-received]
+  (let [now (time/now time-port)
         prev-bytes (:bytes-downloaded stats)
         prev-time (:last-update stats)
         elapsed-seconds (max 1 (/ (- now prev-time) 1000.0))
@@ -100,15 +153,15 @@
         (assoc :last-update now)
         (assoc :rate rate))))
 
-(defn calculate-rate [stats]
-  (let [now (System/currentTimeMillis)
+(defn calculate-rate [time-port stats]
+  (let [now (time/now time-port)
         elapsed-seconds (/ (- now (:last-update stats)) 1000.0)
         bytes-downloaded (:bytes-downloaded stats)]
     (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
       (long (/ bytes-downloaded elapsed-seconds))
       0)))
 
-(defn initial-download [torrent output-dir download-id]
+(defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
         total-pieces (count (:pieces info))
         piece-state (pieces/initial-piece-state total-pieces)]
@@ -118,8 +171,15 @@
                 #{}
                 :starting
                 output-dir
-                (initial-stats)
+                (initial-stats time-port)
                 nil)))
+
+(defn capped-peer-addresses
+  "Limit dial candidates to :max-peers, falling back to the
+   default-config limit when the context carries no config."
+  [peer-addresses config]
+  (let [max-peers (or (:max-peers config) (:max-peers default-config))]
+    (take max-peers peer-addresses)))
 
 (defn- build-peers
   "Build Peer records from announced address strings, skipping invalid ones."
@@ -137,12 +197,12 @@
              announced-addresses)))
 
 (defn start-download [manager torrent-path output-dir]
-  (let [{:keys [network-port disk-port]} manager
+  (let [{:keys [network-port disk-port time-port config]} manager
         parse-result (async/<!! (parse-torrent disk-port torrent-path))]
     (if (:error parse-result)
       parse-result
       (let [torrent (:ok parse-result)
-            download (initial-download torrent output-dir (disk/id-from-path torrent-path))
+            download (initial-download time-port torrent output-dir (disk/id-from-path torrent-path))
             announce-result (async/<!! (announce-to-tracker network-port torrent))]
         (if (:error announce-result)
           (assoc download :state :failed
@@ -152,9 +212,9 @@
                 _ (println (str "[start-download] Raw peer addresses sample: " (vec (take 5 peers))))]
             (assoc download
                    :state :downloading
-                   :peers (build-peers peers))))))))
+                   :peers (set (capped-peer-addresses (build-peers peers) config)))))))))
 
-(defn progress [download]
+(defn progress [time-port download]
   (let [piece-state (:piece-state download)
         total (pieces/verified-count piece-state)
         total-pieces (:total-pieces piece-state)
@@ -163,7 +223,7 @@
                   (* 100.0 (/ total total-pieces)))
         stats (:stats download)
         bytes-downloaded (:bytes-downloaded stats)
-        rate (calculate-rate stats)]
+        rate (calculate-rate time-port stats)]
     {:percent percent
      :pieces-complete total
      :pieces-total total-pieces
@@ -213,14 +273,16 @@
          {:ok (assoc restored :state :downloading)}))
      {:error :not-paused :message "Download is not paused"})))
 
-(defn load-persisted-state [disk-port download-id]
+(defn load-persisted-state
   "Load persisted download state from disk."
+  [disk-port download-id]
   (if disk-port
     (async/<!! (disk/load-state disk-port download-id))
     nil))
 
-(defn persist-download-state [disk-port download]
+(defn persist-download-state
   "Persist current download state to disk for recovery."
+  [disk-port download]
   (if disk-port
     (async/<!! (disk/save-state disk-port download))
     {:ok :no-disk-port}))
@@ -232,53 +294,61 @@
 ;; Error Handling (User Story 3)
 ;; ============================================================================
 
-(defn requeue-piece [download piece-index]
+(defn requeue-piece
   "Move a piece back to needed state for re-download.
    Returns updated download."
+  [download piece-index]
   (let [piece-state (:piece-state download)
         result (pieces/requeue-piece piece-state piece-index)]
     (if (:error result)
       download
       (assoc download :piece-state (:ok result)))))
 
-(defn handle-piece-verification-failure [download piece-index]
+(defn handle-piece-verification-failure
   "Handle piece verification failure by re-queuing the piece.
    Returns updated download with piece back in needed state."
+  [download piece-index]
   (requeue-piece download piece-index))
 
-(defn handle-peer-disconnect [download peer-id]
+(defn handle-peer-disconnect
   "Handle peer disconnection by removing peer and re-queueing in-flight pieces.
    Returns updated download."
+  [download peer-id]
   (let [peer (first (filter #(= (:id %) peer-id) (:peers download)))
         in-flight-pieces (if peer (:in-flight (:piece-state download)) #{})
         download (update download :peers disj peer)]
     (reduce requeue-piece download in-flight-pieces)))
 
-(defn add-peer [download peer]
+(defn add-peer
   "Add a new peer to the download.
    Returns updated download."
+  [download peer]
   (update download :peers conj peer))
 
-(defn remove-peer [download peer-id]
+(defn remove-peer
   "Remove a peer from the download by ID.
    Returns updated download."
+  [download peer-id]
   (let [peer (first (filter #(= (:id %) peer-id) (:peers download)))]
     (if peer
       (update download :peers disj peer)
       download)))
 
-(defn transition-to-failed [download error-info]
+(defn transition-to-failed
   "Transition download to failed state with error information.
    Returns updated download."
+  [download error-info]
   (assoc download :state :failed :error error-info))
 
-(defn can-retry? [download]
+(defn can-retry?
   "Check if download can be retried (hasn't exceeded retry limit)."
+  [download]
   (let [retry-count (or (get-in download [:error :retry-count]) 0)]
     (< retry-count 3)))
 
-(defn retry-download [download]
+(defn retry-download
   "Retry a failed download by resetting state and clearing error."
+  [download]
   (if (can-retry? download)
     (let [current-retry (or (get-in download [:error :retry-count]) 0)
           new-retry-count (inc current-retry)
@@ -286,17 +356,20 @@
       download)
     {:error :max-retries-exceeded :message "Download has exceeded maximum retry attempts"}))
 
-(defn get-failed-piece [download]
+(defn get-failed-piece
   "Get the piece index that failed, if any."
+  [download]
   (get-in download [:error :failed-piece]))
 
-(defn has-active-peers? [download]
+(defn has-active-peers?
   "Check if download has any active peer connections."
+  [download]
   (pos? (count (:peers download))))
 
-(defn handle-no-peers [download]
+(defn handle-no-peers
   "Handle the case when all peers disconnect.
    Returns updated download with appropriate state."
+  [download]
   (if (pieces/complete? (:piece-state download))
     (assoc download :state :completed)
     (transition-to-failed download
@@ -385,9 +458,20 @@
    Connects to peers, requests pieces, writes verified pieces.
    Returns the final Download record."
   [manager download]
-  (let [{:keys [network-port disk-port]} manager
+  (cond
+    (pieces/complete? (:piece-state download))
+    (assoc download :state :completed)
+
+    ;; No dial candidates: no workers would spawn and the coordinator
+    ;; would block on the event channel forever.
+    (empty? (:peers download))
+    (assoc download :state :failed
+           :error {:reason :no-peers
+                   :message "No peers available: nothing to connect to"})
+
+    :else
+    (let [{:keys [network-port disk-port time-port]} manager
         config (:config manager)
-        max-peers (or (:max-peers config) 100)
         torrent (:torrent download)
         info (:info torrent)
         info-hash (:info-hash torrent)
@@ -398,7 +482,7 @@
         peer-id (let [b (byte-array 20)]
                   (.nextBytes (SecureRandom.) b)
                   b)
-        peer-addresses (map :address (:peers download))
+        peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
         events-ch (async/chan 256)
         total-attempted (count peer-addresses)
         conn-stats (atom {:connected 0 :failed 0})]
@@ -432,7 +516,7 @@
               (assoc download :state :failed
                      :error {:reason :no-peers :message "All peers disconnected"}))
 
-            (let [now (System/currentTimeMillis)
+            (let [now (time/now time-port)
                   show-progress? (> (- now last-progress-time) 2000)]
 
               (case (:type event)
@@ -536,9 +620,9 @@
                                           (let [mark-result (pieces/mark-verified
                                                              (:piece-state download) piece-idx)
                                                 download (if (:ok mark-result)
-                                                           (-> download
-                                                               (assoc :piece-state (:ok mark-result))
-                                                               (update :stats update-stats-bytes (alength assembled)))
+                                                            (-> download
+                                                                (assoc :piece-state (:ok mark-result))
+                                                                (update :stats #(update-stats-bytes time-port % (alength assembled))))
                                                            download)
                                                 active-peers (assoc-in active-peers [address :assigned-piece] nil)
                                                 blocks-received (dissoc blocks-received address)]
@@ -643,7 +727,7 @@
 
                 ;; Unknown event type
                 (recur download active-peers blocks-received expected-blocks
-                       last-progress-time)))))))))
+                       last-progress-time))))))))))
 
 ;; ============================================================================
 ;; Spec Validation
@@ -671,14 +755,15 @@
                    ::state]))
 
 (s/fdef initial-stats
+  :args (s/cat :time-port any?)
   :ret (s/keys :req-un [::started-at]))
 
 (s/fdef initial-download
-  :args (s/cat :torrent map? :output-dir string? :download-id string?)
+  :args (s/cat :time-port any? :torrent map? :output-dir string? :download-id string?)
   :ret (s/keys :req-un [::download-id ::state]))
 
 (s/fdef progress
-  :args (s/cat :download map?)
+  :args (s/cat :time-port any? :download map?)
   :ret ::progress-response)
 
 (s/fdef pause-download
@@ -694,4 +779,45 @@
 (s/fdef stop-download
   :args (s/cat :download map?)
   :ret (s/keys :req-un [::state ::peers]))
+
+(s/def ::max-peers pos-int?)
+(s/def ::min-peers nat-int?)
+(s/def ::request-queue-size nat-int?)
+(s/def ::piece-timeout-ms nat-int?)
+(s/def ::tracker-announce-interval-ms nat-int?)
+
+(s/def ::config
+  (s/keys :opt-un [::max-peers
+                   ::min-peers
+                   ::request-queue-size
+                   ::piece-timeout-ms
+                   ::tracker-announce-interval-ms
+                   ::output-dir]))
+
+(s/def ::network-port any?)
+(s/def ::disk-port any?)
+(s/def ::time-port any?)
+(s/def ::downloads map?)
+
+(s/def ::download-manager
+  (s/keys :req-un [::network-port ::disk-port ::time-port ::downloads ::config]))
+
+(s/fdef manager
+  :args (s/cat :network-port any?
+               :disk-port any?
+               :time-port any?
+               :config (s/? ::config))
+  :ret ::download-manager)
+
+(s/fdef add-download
+  :args (s/cat :manager ::download-manager :download map?)
+  :ret ::download-manager)
+
+(s/fdef get-download
+  :args (s/cat :manager ::download-manager :id any?)
+  :ret (s/or :download map? :nil nil?))
+
+(s/fdef remove-download
+  :args (s/cat :manager ::download-manager :id any?)
+  :ret ::download-manager)
 
