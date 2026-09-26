@@ -24,6 +24,54 @@ The `dev.cljtoc.domain.bencode` and `dev.cljtoc.domain.torrent` namespaces provi
 
 ---
 
+## Bencode Format (BEP-3)
+
+A recursive-descent parser handles all four bencode types with explicit byte-position tracking and strict validation:
+
+**Strings**: `<length>:<string>` — e.g. `4:spam` → "spam". Length is base-10 ASCII; `0:` (empty) is valid.
+
+**Integers**: `i<number>e` — e.g. `i42e` → 42, `i-3e` → -3. Decoded as 64-bit `long`. **Invalid**: `i-0e` (negative zero), `i03e` (leading zeros); `i0e` is the only zero form.
+
+**Lists**: `l<elements>e`, elements bencoded recursively; `le` is valid.
+
+**Dictionaries**: `d<key><value>...e` — keys must be strings in sorted (raw byte comparison) order; `de` is valid. Decode produces sorted maps; encode sorts keys lexicographically.
+
+### Edge cases enforced
+
+- Empty values (`0:`, `le`, `de`) accepted; truncated data (`4:spa`, `i42`, `l4:spam`) reported with byte position.
+- Duplicate dictionary keys: last value wins.
+- Non-UTF-8 byte strings kept as byte arrays; decoded to strings only when needed.
+
+### Error messages
+
+Parse failures return `{:error :bencode-parse-error :message … :position …}` with byte position and context (e.g. `"leading zeros in integer"`, `"unexpected end of input in list"`), never thrown exceptions.
+
+### Alternatives considered and rejected
+
+Existing Java bencode library (unidiomatic, poor errors, extra dependency); parser combinators like instaparse (overkill, weak byte control); state-machine approach (verbose, less idiomatic than recursion).
+
+---
+
+## SHA-1 and the Info Hash
+
+SHA-1 uses Java's `java.security.MessageDigest` via interop, wrapped as a pure function over byte arrays — no extra dependency, negligible cost on small info dicts. The info hash is computed over the info dictionary's **exact original bytes** sliced from the `.torrent` file (`Arrays/copyOfRange`), never by decode-then-re-encode, since re-encoding may reorder keys and silently change the identity hash. Hash once and store it in the domain model; don't recompute per access.
+
+### Alternatives considered and rejected
+
+Apache Commons Codec (no value over the JDK built-in); buddy-core (extra dependency for trivial interop); pure-Clojure SHA-1 (slower, complex, security risk).
+
+---
+
+## Property-Based Testing
+
+Generative round-trip tests via `test.check`/`defspec` sit alongside example-based edge-case tests: encode/decode identity, determinism, dictionary key ordering, and invalid-input rejection (asserted as error maps, not thrown exceptions). Generators cover valid values recursively plus invalid shapes (leading zeros, `i-0e`, wrong lengths, unterminated values); test.check shrinking reduces failures to minimal inputs.
+
+### Alternatives considered and rejected
+
+Manual random testing (no shrinking, hand-rolled generators); QuickCheck-via-Java interop, Hypothesis-style tooling, and spec-based generation (test.check is Clojure-native, stable, sufficient).
+
+---
+
 ## Usage
 
 ### Require the namespaces
@@ -265,4 +313,12 @@ Check for errors with `(:error result)`:
 lein test
 ```
 
-The test suite includes 37 tests with 155 assertions, including property-based round-trip tests via `test.check`.
+The suite includes generative round-trip tests via `test.check` alongside example-based edge cases.
+
+---
+
+## References
+
+- [BEP-3: BitTorrent Protocol Specification](https://www.bittorrent.org/beps/bep_0003.html)
+- [test.check GitHub](https://github.com/clojure/test.check)
+- [Java MessageDigest API](https://docs.oracle.com/en/java/javase/11/docs/api/java.base/java/security/MessageDigest.html)
