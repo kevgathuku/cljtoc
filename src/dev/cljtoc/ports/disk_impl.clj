@@ -90,7 +90,7 @@
         (try
           (let [state-file (io/file state-dir (str id ".edn"))]
             (if (.exists state-file)
-              (let [data (edn/read-string (slurp state-file))]
+              (let [data (disk/decode-state (edn/read-string (slurp state-file)))]
                 (async/>! ch {:ok data}))
               (async/>! ch {:ok nil})))
           (catch Exception e

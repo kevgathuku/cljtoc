@@ -32,12 +32,12 @@
   ([id state-dir]
    (let [path (state-file-path id state-dir)
          file (io/file path)]
-     (if (.exists file)
-       (try
-         (edn/read-string (slurp path))
-         (catch Exception _
-           nil))
-       nil))))
+      (if (.exists file)
+        (try
+          (disk/decode-state (edn/read-string (slurp path)))
+          (catch Exception _
+            nil))
+        nil))))
 
 (defn load-most-recent
   "Load the most recently started download."
@@ -47,10 +47,10 @@
    (let [dir (io/file state-dir)]
      (when (.exists dir)
        (let [files (sort-by #(.lastModified %) > (.listFiles dir))]
-         (when (seq files)
-           (try
-             (edn/read-string (slurp (first files)))
-             (catch Exception _ nil))))))))
+          (when (seq files)
+            (try
+              (disk/decode-state (edn/read-string (slurp (first files))))
+              (catch Exception _ nil))))))))
 
 (defn save-state
   "Save download state to disk."

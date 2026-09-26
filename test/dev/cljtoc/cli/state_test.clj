@@ -34,15 +34,17 @@
         (is (= "/downloads/my-torrent.torrent" (:torrent-path loaded)))))))
 
 (deftest save-load-with-byte-arrays-test
-  (testing "byte arrays survive as deterministic hex strings (EDN-safe)"
+  (testing "byte arrays round-trip as bytes through the CLI seam (EDN-safe on disk)"
     (let [dir (temp-dir)
           info-hash (byte-array [0 1 15 16 127 -1])
           download {:id "bytes-torrent"
                     :torrent {:info-hash info-hash}
                     :state :paused}]
       (state/save-state download dir)
-      (let [loaded (state/load-state "bytes-torrent" dir)]
-        (is (= "00010f107fff" (get-in loaded [:torrent :info-hash])))))))
+      (let [loaded-hash (get-in (state/load-state "bytes-torrent" dir)
+                                [:torrent :info-hash])]
+        (is (bytes? loaded-hash))
+        (is (java.util.Arrays/equals info-hash loaded-hash))))))
 
 (deftest load-missing-returns-nil-test
   (testing "loading an unknown id returns nil (resume can detect fresh start)"

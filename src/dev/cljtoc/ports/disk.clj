@@ -7,7 +7,8 @@
   (:require [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.domain.bencode :as bencode]
             [clojure.walk :as walk]
-            [clojure.java.io :as io]))
+            [clojure.java.io :as io]
+            [clojure.spec.alpha :as s]))
 
 (defprotocol IDiskPort
   "Abstraction for disk operations needed by download orchestration."
@@ -62,18 +63,40 @@
 ;; written by one seam loads through the other.
 ;; ---------------------------------------------------------------------------
 
+(defn hex-string->bytes
+  "Parse a lowercase hex string back into a byte array."
+  [hex-string]
+  (byte-array (map #(unchecked-byte (Integer/parseInt (apply str %) 16))
+                   (partition 2 hex-string))))
+
 (defn encode-state
   "Convert a download to EDN-safe data: records become plain maps and
-   byte arrays become hex strings (raw pr-str of byte arrays does not
-   round-trip — it emits #object tags that edn/read-string rejects)."
+   byte arrays become {:cljtoc/bytes hex} tagged maps. The tag keeps the
+   encoding self-describing so decode-state can restore bytes without a
+   schema (raw pr-str of byte arrays does not round-trip — it emits
+   #object tags that edn/read-string rejects)."
   [download]
   (walk/postwalk
     (fn [node]
       (cond
         (record? node) (into {} node)
-        (bytes? node) (bencode/bytes->hex-string node)
+        (bytes? node) {:cljtoc/bytes (bencode/bytes->hex-string node)}
         :else node))
     download))
+
+(defn decode-state
+  "Restore tagged {:cljtoc/bytes hex} maps produced by encode-state back
+   into byte arrays. Applied on every load path so a resumed download
+   carries real bytes into handshake and piece verification."
+  [data]
+  (walk/postwalk
+    (fn [node]
+      (if (and (map? node)
+               (= #{:cljtoc/bytes} (set (keys node)))
+               (string? (:cljtoc/bytes node)))
+        (hex-string->bytes (:cljtoc/bytes node))
+        node))
+    data))
 
 (defn id-from-path
   "Generate the canonical human-readable download ID from a torrent file path."
@@ -83,3 +106,21 @@
     (if (and ext (not (empty? ext)))
       (subs file-name 0 (- (count file-name) (inc (count ext))))
       file-name)))
+
+(s/def ::hex-string (s/and string? #(even? (count %)) #(re-matches #"[0-9a-f]*" %)))
+
+(s/fdef hex-string->bytes
+  :args (s/cat :hex-string ::hex-string)
+  :ret bytes?)
+
+(s/fdef encode-state
+  :args (s/cat :download map?)
+  :ret map?)
+
+(s/fdef decode-state
+  :args (s/cat :data any?)
+  :ret any?)
+
+(s/fdef id-from-path
+  :args (s/cat :torrent-path string?)
+  :ret string?)
