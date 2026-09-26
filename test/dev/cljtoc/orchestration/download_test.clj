@@ -276,52 +276,31 @@
     (is (= :paused (get-in result [:ok :state])))
     (is (empty? (get-in result [:ok :peers])))))
 
-;; Peer port parsing tests
+;; start-download builds peers through the peer-address seam
 
-(deftest peer-record-parses-port-from-address
-  (testing "String splitting correctly parses ip:port address"
-    (let [addr "192.168.1.100:5142"
-          [host port-str] (clojure.string/split addr #":")
-          port (Integer/parseInt port-str)]
-      (is (= "192.168.1.100" host))
-      (is (= 5142 port)))))
+(deftest start-download-builds-peers-with-host-and-port
+  (testing "announced peers become records with canonical address, host and port"
+    (let [disk (mock-disk/create)
+          _ (mock-disk/add-torrent disk "/t.torrent"
+                                   {:info-hash (byte-array 20)
+                                    :info {:pieces ["h1" "h2"]}})
+          net (mock-net/create {:mock-peers ["10.0.0.1:6881" "10.0.0.2"]})
+          result (download/start-download {:network-port net :disk-port disk}
+                                          "/t.torrent" "/out")]
+      (is (= :downloading (:state result)))
+      (is (= #{["10.0.0.1:6881" 6881] ["10.0.0.2:6881" 6881]}
+             (set (map (juxt :address :port) (:peers result)))))))
+  (testing "peers with garbage ports are skipped, not fatal"
+    (let [disk (mock-disk/create)
+          _ (mock-disk/add-torrent disk "/t.torrent"
+                                   {:info-hash (byte-array 20)
+                                    :info {:pieces ["h1" "h2"]}})
+          net (mock-net/create {:mock-peers ["10.0.0.1:6881" "bad:port"]})
+          result (download/start-download {:network-port net :disk-port disk}
+                                          "/t.torrent" "/out")]
+      (is (= :downloading (:state result)))
+      (is (= #{["10.0.0.1:6881" 6881]}
+             (set (map (juxt :address :port) (:peers result))))))))
 
-(deftest peer-record-parses-standard-bittorrent-port
-  (testing "Standard BitTorrent port 6881 is parsed correctly"
-    (let [addr "10.0.0.1:6881"
-          [host port-str] (clojure.string/split addr #":")
-          port (Integer/parseInt port-str)]
-      (is (= "10.0.0.1" host))
-      (is (= 6881 port)))))
-
-(deftest peer-record-parses-high-port
-  (testing "High port numbers are parsed correctly"
-    (let [addr "example.com:65535"
-          [host port-str] (clojure.string/split addr #":")
-          port (Integer/parseInt port-str)]
-      (is (= "example.com" host))
-      (is (= 65535 port)))))
-
-;; Test that exposes bug: peer address should include port when passed to run-peer
-(deftest peer-addresses-include-port-for-connection
-  (testing "Peer addresses for connection should include ip:port format"
-    (let [torrent {:info-hash (byte-array 20)
-                   :name "test.torrent"
-                   :piece-length 262144
-                   :pieces (byte-array (* 20 3))
-                   :length 786432
-                   :files []}
-          peers #{(download/->Peer "192.168.1.1:51413" "192.168.1.1" 51413 #{} true false true false 0 0)
-                  (download/->Peer "10.0.0.1:6881" "10.0.0.1" 6881 #{} true false true false 0 0)}
-          download {:id (UUID/randomUUID)
-                    :torrent torrent
-                    :piece-state (pieces/initial-piece-state 3)
-                    :peers peers
-                    :state :downloading
-                    :output-dir "/output"
-                    :stats (download/initial-stats)
-                    :error nil}]
-      (let [peer-addresses (map :address (:peers download))
-            peer-ports (map :port (:peers download))
-            full-addresses (map (fn [a p] (str a ":" p)) peer-addresses peer-ports)]
-        (is (= #{"192.168.1.1:51413" "10.0.0.1:6881"} (set full-addresses)))))))
+;; (peer-address construction is covered by start-download-builds-peers-with-host-and-port
+;;  above and the dev.cljtoc.domain.peer-address-test suite.)

@@ -4,6 +4,7 @@
    Provides functions for TCP peer connections and tracker communication."
   (:require [clojure.core.async :as async]
             [clojure.string :as str]
+            [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker])
@@ -32,26 +33,21 @@
     (async/thread
       (try
         (println (str "[connect] Attempting to connect to: " address))
-        (let [parts (str/split address #":")
-              _ (println (str "[connect-peer] Split result: " parts))
-              host (first parts)
-              port-str (second parts)
-              _ (println (str "[connect-peer] host=" host " port-str=" port-str))
-              port (if (or (nil? port-str) (empty? port-str))
-                     (do
-                       (println (str "[connect-peer] WARNING: No port in address, using default 6881"))
-                       6881)
-                     (Integer/parseInt port-str))
-              socket (doto (Socket.)
-                       (.connect (InetSocketAddress. host port) 5000)
-                       (.setSoTimeout 10000))
-              peer-data {:id address
-                         :address address
-                         :socket socket
-                         :in (.getInputStream socket)
-                         :out (.getOutputStream socket)}]
-          (swap! (:peer-connections network) assoc address peer-data)
-          (async/>!! ch {:ok peer-data}))
+        (let [parsed (peer-address/parse address)]
+          (if (:error parsed)
+            (async/>!! ch {:error :invalid-address :message (:message parsed)})
+            (let [{:keys [host port]} (:ok parsed)
+                  _ (println (str "[connect-peer] host=" host " port=" port))
+                  socket (doto (Socket.)
+                           (.connect (InetSocketAddress. host port) 5000)
+                           (.setSoTimeout 10000))
+                  peer-data {:id address
+                             :address address
+                             :socket socket
+                             :in (.getInputStream socket)
+                             :out (.getOutputStream socket)}]
+              (swap! (:peer-connections network) assoc address peer-data)
+              (async/>!! ch {:ok peer-data}))))
         (catch Exception e
           (async/>!! ch {:error :connect-failed :message (.getMessage e)}))))
     ch))

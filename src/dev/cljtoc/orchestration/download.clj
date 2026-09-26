@@ -15,6 +15,7 @@
             [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [dev.cljtoc.domain.pieces :as pieces]
+            [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
@@ -162,16 +163,17 @@
                 _ (println (str "[start-download] Raw peer addresses sample: " (vec (take 5 peers))))]
             (assoc download
                    :state :downloading
-                   :peers (set (map (fn [addr]
-                                      (let [[host port-str] (str/split addr #":")
-                                            port (if (or (nil? port-str) (empty? port-str))
-                                                   (do
-                                                     (println (str "[start-download] WARNING: Peer " addr " has no port, using default 6881"))
-                                                     6881)
-                                                   (Integer/parseInt port-str))
-                                            _ (println (str "[start-download] Created peer: " addr " -> host=" host " port=" port))]
-                                        (->Peer addr host port #{} true false true false 0 0)))
-                                    peers)))))))))
+                   :peers (set (keep (fn [addr]
+                                       (let [parsed (peer-address/parse addr)]
+                                         (if (:error parsed)
+                                           (do
+                                             (println (str "[start-download] WARNING: Skipping invalid peer address " addr ": " (:message parsed)))
+                                             nil)
+                                           (let [{:keys [host port]} (:ok parsed)
+                                                 canonical (peer-address/format-address (:ok parsed))
+                                                 _ (println (str "[start-download] Created peer: " addr " -> host=" host " port=" port))]
+                                             (->Peer canonical canonical port #{} true false true false 0 0)))))
+                                     peers)))))))))
 
 (defn progress [download]
   (let [piece-state (:piece-state download)
@@ -417,17 +419,15 @@
                   (.nextBytes (SecureRandom.) b)
                   b)
         peer-addresses (map :address (:peers download))
-        peer-ports (map :port (:peers download))
-        full-peer-addresses (map (fn [a p] (str a ":" p)) peer-addresses peer-ports)
         events-ch (async/chan 256)
-        total-attempted (count full-peer-addresses)
+        total-attempted (count peer-addresses)
         conn-stats (atom {:connected 0 :failed 0})]
 
     (println (str "  Connecting to " total-attempted " peers..."))
-    (println (str "  First 5 peer addresses: " (vec (take 5 full-peer-addresses))))
+    (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
     ;; Spawn peer workers
-    (doseq [addr full-peer-addresses]
+    (doseq [addr peer-addresses]
       (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
 
     ;; Coordinator loop
