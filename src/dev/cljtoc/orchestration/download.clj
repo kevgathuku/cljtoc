@@ -713,10 +713,34 @@
             [planned (into effects send-effects)])
           [updated effects])))))
 
+(defn- fail-verified-write
+  "Unwind a failed verified-piece write: requeue the write's piece plus
+   every follow-up assignment this batch planned (their sends never ran),
+   close every connection (a failed download must not leak workers), and
+   fail so the record stays retryable. Returns [state {:fatal ...}]."
+  [state effects piece-idx message network-port]
+  (let [send-addrs (distinct (keep #(get-in % [:send :address]) effects))
+        state (reduce (fn [unwound address]
+                        (if-let [assigned (get-in unwound [:active-peers address :assigned-piece])]
+                          (requeue-assignment unwound address assigned)
+                          unwound))
+                      state send-addrs)
+        piece-state (get-in state [:download :piece-state])
+        requeued (pieces/requeue-piece piece-state piece-idx)]
+    (doseq [[_ peer-info] (:active-peers state)]
+      (network/close-peer network-port (:peer-data peer-info)))
+    [(-> state
+         (assoc-in [:download :piece-state] (or (:ok requeued) piece-state))
+         (update :expected-blocks #(apply dissoc % send-addrs)))
+     {:fatal {:reason :disk-error
+              :message (str "Failed to write piece " piece-idx ": " message)
+              :failed-piece piece-idx}}]))
+
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
-   over the network port, verified pieces go to the disk port with the
-   download stats updated. Returns [state outcome]: :ok, or
+   over the network port, verified pieces go to the piece cache and the
+   output file layout via the disk port with the download stats updated.
+   Returns [state outcome]: :ok, or
    {:fatal error-info} when a verified write failed and the download
    cannot honestly continue.
 
@@ -755,38 +779,29 @@
 
           (:write-verified effect)
           (let [{:keys [piece-idx data]} (:write-verified effect)
+                download (:download state)
                 result (async/<!! (disk/write-piece disk-port piece-idx data))]
             (if (:error result)
-            ;; Bytes never landed: unwind the write's piece plus every
-            ;; follow-up assignment this batch planned (their sends never
-            ;; ran), close every connection (a failed download must not
-            ;; leak workers), and fail so the record stays retryable.
-              (let [send-addrs (distinct (keep #(get-in % [:send :address]) effects))
-                    state (reduce (fn [unwound address]
-                                    (if-let [assigned (get-in unwound [:active-peers address :assigned-piece])]
-                                      (requeue-assignment unwound address assigned)
-                                      unwound))
-                                  state send-addrs)
-                    piece-state (get-in state [:download :piece-state])
-                    requeued (pieces/requeue-piece piece-state piece-idx)]
-                (doseq [[_ peer-info] (:active-peers state)]
-                  (network/close-peer network-port (:peer-data peer-info)))
-                [(-> state
-                     (assoc-in [:download :piece-state] (or (:ok requeued) piece-state))
-                     (update :expected-blocks #(apply dissoc % send-addrs)))
-                 {:fatal {:reason :disk-error
-                          :message (str "Failed to write piece " piece-idx
-                                        ": " (:message result))
-                          :failed-piece piece-idx}}])
-              (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
-                    state (if (:ok mark-result)
-                            (assoc-in state [:download :piece-state] (:ok mark-result))
-                            state)]
-                (recur (update state :download
-                               (fn [download]
-                                 (update download :stats
-                                         #(update-stats-bytes time-port % (alength ^bytes data)))))
-                       rest-effects))))
+              ;; Bytes never landed in the cache: unwind and fail.
+              (fail-verified-write state effects piece-idx (:message result) network-port)
+              (let [output-result (async/<!! (disk/write-output-piece
+                                              disk-port
+                                              (:info (:torrent download))
+                                              (:output-dir download)
+                                              piece-idx data))]
+                (if (:error output-result)
+                  ;; Cache holds bytes the layout lacks: unwind and fail
+                  ;; rather than verify air on resume.
+                  (fail-verified-write state effects piece-idx (:message output-result) network-port)
+                  (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
+                        state (if (:ok mark-result)
+                                (assoc-in state [:download :piece-state] (:ok mark-result))
+                                state)]
+                    (recur (update state :download
+                                   (fn [download]
+                                     (update download :stats
+                                             #(update-stats-bytes time-port % (alength ^bytes data)))))
+                           rest-effects))))))
 
           :else
           (recur state rest-effects))))))

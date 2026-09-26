@@ -1028,3 +1028,35 @@
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
+
+(deftest run-coordinator-writes-output-layout-test
+  (testing "verified pieces land in the output layout as well as the piece cache"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1)))))))
+
+(deftest run-coordinator-output-write-error-fails-download-test
+  (testing "a failed output-layout write fails the download like a cache write"
+    (let [disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "output full"}})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (contains? (get-in result [:piece-state :needed]) 0))
+      (is (empty? (get-in result [:piece-state :verified]))))))
