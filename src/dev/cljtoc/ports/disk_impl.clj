@@ -12,6 +12,34 @@
            [java.nio.file Files Paths]
            [java.util Arrays]))
 
+(defn- containment-prefix
+  "A canonical directory as a path prefix for containment checks. The
+   separator is appended only when missing: a canonical dir that is itself the
+   filesystem root already ends in one, and doubling it yields \"//\", which
+   no canonical child can start with — every write refused as :unsafe-path."
+  [canonical-dir]
+  (if (.endsWith canonical-dir File/separator)
+    canonical-dir
+    (str canonical-dir File/separator)))
+
+(defn- declined-output-dir
+  "Policy, not a containment check: refuse to assemble a torrent directly in
+   the filesystem root. A caller who passes / almost always means an explicit
+   directory, and scattering declared files across / risks overwriting
+   unrelated system paths. Containment holds either way — declared path
+   components are still validated — so this only makes the mistake loud and
+   deterministic instead of a :write-error that depends on whether the
+   process happens to be allowed to write there.
+   Returns the error envelope, or nil when the directory is acceptable."
+  [output-dir]
+  (let [canonical (try
+                    (.getCanonicalPath (io/file output-dir))
+                    (catch Exception _ nil))]
+    (when (= canonical File/separator)
+      {:error :unsafe-output-dir
+       :message (str "Refusing to download into the filesystem root: " output-dir
+                     ". Pass an explicit output directory.")})))
+
 (defn- resolve-contained
   "Resolve relative path components under output-dir for writing.
    Creates missing parents, then requires the canonical file path to stay
@@ -25,7 +53,7 @@
       (.mkdirs parent))
     (let [canonical-dir (.getCanonicalPath (io/file output-dir))
           canonical-file (.getCanonicalPath out-file)]
-      (if (.startsWith canonical-file (str canonical-dir File/separator))
+      (if (.startsWith canonical-file (containment-prefix canonical-dir))
         {:ok out-file}
         {:error :unsafe-path
          :message (str "Output path escapes " output-dir ": " (pr-str file-path))}))))
@@ -131,15 +159,22 @@
       (async/go
         (try
           (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
-                sizes-result (torrent/output-file-sizes info)]
+                sizes-result (torrent/output-file-sizes info)
+                declined (declined-output-dir output-dir)]
             ;; No sizes-error branch: output-file-sizes errors only when :name
             ;; is absent, and piece-file-spans already rejects a nil :name as
             ;; an unsafe path component, so spans-result is always the first
             ;; to fail.
-            (if (:error spans-result)
+            (cond
+              declined
+              (async/>! ch declined)
+
+              (:error spans-result)
               (async/>! ch {:error :invalid-info
                             :message (str "Cannot map piece " piece-index ": "
                                           (:message spans-result))})
+
+              :else
               (async/>! ch (write-layout! output-dir
                                           (:ok sizes-result)
                                           (:ok spans-result)
@@ -152,9 +187,16 @@
     (let [ch (async/chan 1)]
       (async/go
         (try
-          (let [sizes-result (torrent/output-file-sizes info)]
-            (if (:error sizes-result)
+          (let [sizes-result (torrent/output-file-sizes info)
+                declined (declined-output-dir output-dir)]
+            (cond
+              declined
+              (async/>! ch declined)
+
+              (:error sizes-result)
               (async/>! ch {:error :invalid-info :message (:message sizes-result)})
+
+              :else
               (async/>! ch (init-layout! output-dir (:ok sizes-result)))))
           (catch Exception error
             (async/>! ch {:error :write-error :message (.getMessage error)}))))

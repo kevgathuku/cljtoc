@@ -13,7 +13,8 @@
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.orchestration.download :as download]
-            [dev.cljtoc.cli.state :as cli-state]))
+            [dev.cljtoc.cli.state :as cli-state])
+  (:import [java.io File]))
 
 (defn- temp-dir [prefix]
   (let [dir (io/file (System/getProperty "java.io.tmpdir")
@@ -195,6 +196,35 @@
         (is (= :unsafe-path (:error result)))
         (is (not (.exists (io/file outside-dir "a"))))
         (is (not (.exists (io/file outside-dir "b"))))))))
+
+(deftest initialize-output-layout-refuses-the-filesystem-root-test
+  (testing "assembling a torrent into / is a mistake, not a download to attempt"
+    (let [port (make-port (temp-dir "disk-state-"))
+          info {:name "t" :piece-length 4 :files [{:path ["a"] :length 4}]}
+          result (<!! (disk/initialize-output-layout port info File/separator))]
+      (is (= :unsafe-output-dir (:error result)))
+      (is (re-find #"(?i)explicit output director" (:message result)))
+      (is (not (.exists (io/file File/separator "t" "a")))))))
+
+(deftest write-output-piece-refuses-the-filesystem-root-test
+  (testing "the piece writer refuses / too, not just layout init"
+    (let [port (make-port (temp-dir "disk-state-"))
+          info {:name "t" :piece-length 4 :files [{:path ["a"] :length 4}]}
+          result (<!! (disk/write-output-piece port info File/separator 0 (byte-array 4)))]
+      (is (= :unsafe-output-dir (:error result)))
+      (is (not (.exists (io/file File/separator "t" "a")))))))
+
+(deftest containment-prefix-does-not-double-the-filesystem-root-test
+  (testing "a canonical dir that is itself the filesystem root keeps its single separator"
+    ;; Independent of the policy guard above: resolve-contained must stay
+    ;; correct for any output-dir it is handed, so the containment primitive
+    ;; is pinned on its own rather than only through paths that reach it.
+    (let [containment-prefix #'disk-impl/containment-prefix]
+      (is (= File/separator (containment-prefix File/separator)))
+      (is (= (str "tmp" File/separator "out" File/separator)
+             (containment-prefix (str "tmp" File/separator "out"))))
+      (is (= (str "tmp" File/separator "out" File/separator)
+             (containment-prefix (str "tmp" File/separator "out" File/separator)))))))
 
 (deftest initialize-output-layout-rejects-escaping-component-test
   (testing "layout init refuses the hostile components the piece write refuses"

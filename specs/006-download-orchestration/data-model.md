@@ -126,8 +126,8 @@ Every method returns a channel delivering exactly one envelope.
 
 Error reasons emitted by the reference implementation: `:file-not-found`,
 `:invalid-torrent`, `:read-error`, `:write-error`, `:invalid-info`,
-`:unsafe-path`, `:mkdir-error`, `:save-error`, `:load-error`,
-`:delete-error`.
+`:unsafe-path`, `:unsafe-output-dir`, `:mkdir-error`, `:save-error`,
+`:load-error`, `:delete-error`.
 
 Persisted state must survive a round trip: records are stored as plain maps
 and byte arrays as `{:cljtoc/bytes hex}` tagged maps, so a resumed download
@@ -144,7 +144,16 @@ declared path as hostile:
 - Resolve symlinks and require the canonical file path to stay under the
   canonical `output-dir` — return `{:error :unsafe-path}` before opening.
   Lexical component checks alone do not stop a pre-existing symlink inside
-  the target directory from redirecting the write outside it.
+  the target directory from redirecting the write outside it. The prefix
+  comparison must not double the separator: a canonical `output-dir` that is
+  itself the filesystem root already ends in one.
+- Refuse an `output-dir` that is the filesystem root — return
+  `{:error :unsafe-output-dir}` before creating or opening anything. This is
+  policy rather than containment: declared components are validated either
+  way, but a caller passing `/` almost always means an explicit directory,
+  and scattering files across the root risks overwriting unrelated system
+  paths. Without it the failure is a `:write-error` that depends on whether
+  the process happens to be permitted to write there.
 
 `initialize-output-layout` runs once at download start, *before* the
 completion check, so a torrent with no pieces still materializes its
