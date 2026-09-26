@@ -45,7 +45,9 @@
   (announce [this torrent-metadata]
     (let [ch (async/chan 1)]
       (async/go
-        (async/>! ch {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])}))
+        (if-let [announce-error (:announce-error config)]
+          (async/>! ch announce-error)
+          (async/>! ch {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])})))
       ch))
   
   (scrape [this torrent-metadata]
@@ -59,7 +61,8 @@
    
    Options:
    - :default-bitfield - set of piece indices this mock peer has (default: #{0 1 2 3 4})
-   - :mock-peers - vector of peer addresses to return on announce"
+   - :mock-peers - vector of peer addresses to return on announce
+   - :announce-error - error map to return from announce instead of peers"
   ([]
    (create {}))
   ([config]

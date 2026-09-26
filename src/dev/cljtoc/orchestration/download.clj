@@ -147,6 +147,21 @@
                 (initial-stats)
                 nil)))
 
+(defn- build-peers
+  "Build Peer records from announced address strings, skipping invalid ones."
+  [announced-addresses]
+  (set (keep (fn [address-str]
+               (let [parsed (peer-address/parse address-str)]
+                 (if (:error parsed)
+                   (do
+                     (println (str "[peers] WARNING: Skipping invalid peer address " address-str ": " (:message parsed)))
+                     nil)
+                   (let [{:keys [host port]} (:ok parsed)
+                         canonical (peer-address/format-address (:ok parsed))
+                         _ (println (str "[peers] Created peer: " address-str " -> host=" host " port=" port))]
+                     (->Peer canonical canonical port #{} true false true false 0 0)))))
+             announced-addresses)))
+
 (defn start-download [manager torrent-path output-dir]
   (let [{:keys [network-port disk-port]} manager
         parse-result (async/<!! (parse-torrent disk-port torrent-path))]
@@ -163,17 +178,7 @@
                 _ (println (str "[start-download] Raw peer addresses sample: " (vec (take 5 peers))))]
             (assoc download
                    :state :downloading
-                   :peers (set (keep (fn [addr]
-                                       (let [parsed (peer-address/parse addr)]
-                                         (if (:error parsed)
-                                           (do
-                                             (println (str "[start-download] WARNING: Skipping invalid peer address " addr ": " (:message parsed)))
-                                             nil)
-                                           (let [{:keys [host port]} (:ok parsed)
-                                                 canonical (peer-address/format-address (:ok parsed))
-                                                 _ (println (str "[start-download] Created peer: " addr " -> host=" host " port=" port))]
-                                             (->Peer canonical canonical port #{} true false true false 0 0)))))
-                                     peers)))))))))
+                   :peers (build-peers peers))))))))
 
 (defn progress [download]
   (let [piece-state (:piece-state download)
@@ -214,7 +219,8 @@
 (defn resume-download
   "Resume a paused download.
    - Loads persisted state from disk
-   - Reconnects to peers
+   - Re-announces to the tracker when a network port is given, since
+     pause clears :peers and run-download derives every worker from them
    - Returns download in :downloading state"
   ([download]
    (resume-download nil nil download))
@@ -222,9 +228,16 @@
    (if (= :paused (:state download))
      (let [stored (when disk-port
                     (:ok (async/<!! (disk/load-state disk-port (:id download)))))
-           resumed-download (assoc (or stored download) :state :downloading)]
-        {:ok resumed-download})
-      {:error :not-paused :message "Download is not paused"})))
+           restored (or stored download)]
+       (if network-port
+         (let [announce-result (async/<!! (announce-to-tracker network-port (:torrent restored)))]
+           (if (:error announce-result)
+             announce-result
+             {:ok (assoc restored
+                         :state :downloading
+                         :peers (build-peers (:ok announce-result)))}))
+         {:ok (assoc restored :state :downloading)}))
+     {:error :not-paused :message "Download is not paused"})))
 
 (defn load-persisted-state [disk-port download-id]
   "Load persisted download state from disk."
