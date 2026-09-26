@@ -614,98 +614,58 @@
             (format-bytes-rate (or (:rate stats) 0)))
     (flush)))
 
-(defn run-download
-  "Run the download to completion. Blocking call.
-   Connects to peers, requests pieces, writes verified pieces.
-   Returns the final Download record."
-  [manager download]
-  (cond
-    (pieces/complete? (:piece-state download))
-    (assoc download :state :completed)
+(defn run-coordinator
+  "Drive one download from events-ch to completion or swarm exhaustion.
+   Handlers plan state transitions, the edge performs effects.
+   Returns the final Download record.
 
-    ;; No dial candidates: no workers would spawn and the coordinator
-    ;; would block on the event channel forever.
-    (empty? (:peers download))
-    (assoc download :state :failed
-           :error {:reason :no-peers
-                   :message "No peers available: nothing to connect to"})
+   state — initial coordinator state map
+           {:download ... :active-peers ... :blocks-received ... :expected-blocks ...}
+   events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
+   env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
+          :ports {:network-port ... :disk-port ... :time-port ...}
+          :conn-stats (atom {:connected n :failed n})
+          :total-attempted n}"
+  [state events-ch env]
+  (loop [state state
+         last-progress-time 0]
 
-    :else
-    (let [{:keys [network-port disk-port time-port]} manager
-        config (:config manager)
-        torrent (:torrent download)
-        info (:info torrent)
-        info-hash (:info-hash torrent)
-        total-pieces (count (:pieces info))
-        piece-hashes (:pieces info)
-        piece-length (:piece-length info)
-        total-length (torrent/total-size info)
-        peer-id (let [b (byte-array 20)]
-                  (.nextBytes (SecureRandom.) b)
-                  b)
-        peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
-        events-ch (async/chan 256)
-        total-attempted (count peer-addresses)
-        conn-stats (atom {:connected 0 :failed 0})]
+    (let [download (:download state)
+          {:keys [message-ctx ports conn-stats total-attempted]} env
+          {:keys [network-port disk-port time-port]} ports]
+      (if (pieces/complete? (:piece-state download))
+        (do
+          (println)
+          (println "  Download complete!")
+          (assoc download :state :completed))
 
-    (println (str "  Connecting to " total-attempted " peers..."))
-    (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+        (let [event (async/<!! events-ch)]
+          (if (nil? event)
+            ;; Channel closed, all peers gone
+            (do
+              (println)
+              (println "  All peers disconnected.")
+              (assoc download :state :failed
+                     :error {:reason :no-peers :message "All peers disconnected"}))
 
-    ;; Spawn peer workers
-    (doseq [addr peer-addresses]
-      (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
+            (let [now (time/now time-port)
+                  show-progress? (> (- now last-progress-time) 2000)]
 
-    ;; Coordinator loop: handlers plan state transitions, the edge performs effects
-    (loop [state {:download download
-                  :active-peers {}     ;; {address -> {:peer-data ... :peer-state PeerState :assigned-piece idx}}
-                  :blocks-received {}  ;; {address -> [{:offset n :data bytes} ...]}
-                  :expected-blocks {}} ;; {address -> int count of expected blocks}
-           last-progress-time 0]
+              (case (:type event)
 
-      (let [download (:download state)]
-        (if (pieces/complete? (:piece-state download))
-          (do
-            (println)
-            (println "  Download complete!")
-            (assoc download :state :completed))
-
-          (let [event (async/<!! events-ch)]
-            (if (nil? event)
-              ;; Channel closed, all peers gone
-              (do
-                (println)
-                (println "  All peers disconnected.")
-                (assoc download :state :failed
-                       :error {:reason :no-peers :message "All peers disconnected"}))
-
-              (let [now (time/now time-port)
-                    show-progress? (> (- now last-progress-time) 2000)
-                    message-ctx {:piece-hashes piece-hashes
-                                 :piece-length piece-length
-                                 :total-length total-length
-                                 :total-pieces total-pieces}]
-
-                (case (:type event)
-
-                  :peer-connected
-                  (let [[planned effects] (on-connected state event)
-                        planned (perform-effects! planned effects
-                                                  {:network-port network-port
-                                                   :disk-port disk-port
-                                                   :time-port time-port})
-                        download (:download planned)
-                        active-peers (:active-peers planned)]
-                    (swap! conn-stats update :connected inc)
-                    (when show-progress?
-                      (print-download-progress download active-peers))
-                    (recur planned (if show-progress? now last-progress-time)))
+                :peer-connected
+                (let [[planned effects] (on-connected state event)
+                      planned (perform-effects! planned effects ports)
+                      download (:download planned)
+                      active-peers (:active-peers planned)]
+                  (swap! conn-stats update :connected inc)
+                  (when show-progress?
+                    (print-download-progress download active-peers))
+                  (recur planned (if show-progress? now last-progress-time)))
 
                 :peer-message
                 (let [[planned effects] (on-message state event message-ctx)
-                      planned (perform-effects! planned effects
-                                                {:network-port network-port
-                                                 :disk-port disk-port
-                                                 :time-port time-port})
+                      planned (perform-effects! planned effects ports)
                       wrote? (boolean (some :write-verified effects))]
                   (when (and show-progress? wrote?)
                     (print-download-progress (:download planned) (:active-peers planned)))
@@ -714,10 +674,7 @@
                 :peer-disconnected
                 (let [{:keys [reason]} event
                       [planned effects] (on-disconnected state event)
-                      planned (perform-effects! planned effects
-                                                {:network-port network-port
-                                                 :disk-port disk-port
-                                                 :time-port time-port})
+                      planned (perform-effects! planned effects ports)
                       download (:download planned)
                       active-peers (:active-peers planned)]
                   (swap! conn-stats update :failed inc)
@@ -736,7 +693,64 @@
                            (if show-progress? now last-progress-time))))
 
                 ;; Unknown event type
-                (recur state last-progress-time)))))))))))
+                (recur state last-progress-time)))))))))
+
+(defn run-download
+  "Run the download to completion. Blocking call.
+   Connects to peers, requests pieces, writes verified pieces.
+   Returns the final Download record."
+  [manager download]
+  (cond
+    (pieces/complete? (:piece-state download))
+    (assoc download :state :completed)
+
+    ;; No dial candidates: no workers would spawn and the coordinator
+    ;; would block on the event channel forever.
+    (empty? (:peers download))
+    (assoc download :state :failed
+           :error {:reason :no-peers
+                   :message "No peers available: nothing to connect to"})
+
+    :else
+    (let [{:keys [network-port disk-port time-port]} manager
+          config (:config manager)
+          torrent (:torrent download)
+          info (:info torrent)
+          info-hash (:info-hash torrent)
+          total-pieces (count (:pieces info))
+          piece-hashes (:pieces info)
+          piece-length (:piece-length info)
+          total-length (torrent/total-size info)
+          peer-id (let [b (byte-array 20)]
+                    (.nextBytes (SecureRandom.) b)
+                    b)
+          peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
+          events-ch (async/chan 256)
+          total-attempted (count peer-addresses)
+          conn-stats (atom {:connected 0 :failed 0})]
+
+      (println (str "  Connecting to " total-attempted " peers..."))
+      (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+
+      ;; Spawn peer workers
+      (doseq [addr peer-addresses]
+        (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
+
+      ;; Hand the event channel to the coordinator loop
+      (run-coordinator {:download download
+                        :active-peers {}
+                        :blocks-received {}
+                        :expected-blocks {}}
+                       events-ch
+                       {:message-ctx {:piece-hashes piece-hashes
+                                      :piece-length piece-length
+                                      :total-length total-length
+                                      :total-pieces total-pieces}
+                        :ports {:network-port network-port
+                                :disk-port disk-port
+                                :time-port time-port}
+                        :conn-stats conn-stats
+                        :total-attempted total-attempted}))))
 
 ;; ============================================================================
 ;; Spec Validation

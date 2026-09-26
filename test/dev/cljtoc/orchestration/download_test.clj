@@ -1,6 +1,7 @@
 (ns dev.cljtoc.orchestration.download-test
   "Unit tests for download orchestration."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.core.async :as async]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
@@ -722,3 +723,92 @@
       (is (= 2 (pieces/verified-count (:piece-state result))))
       (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk 0))))
       (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk 1)))))))
+
+;; Scripted events-ch through the extracted loop (issue #2.4): feed
+;; run-coordinator a pre-loaded channel and assert piece-state
+;; transitions, including requeue on choke and disconnect.
+
+(defn- two-piece-torrent []
+  {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+   :info {:pieces [(bencode/sha1-hash (test-utils/to-bytes "abcd"))
+                   (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+          :piece-length 4
+          :length 8}})
+
+(defn- loop-peer-state []
+  (-> (peer-state/initial-peer-state 2)
+      (peer-state/set-am-interested true)
+      (peer-state/apply-message (peer/->Unchoke))
+      (peer-state/mark-piece-available 0)
+      (peer-state/mark-piece-available 1)))
+
+(defn- scripted-run [events download disk]
+  (let [torrent (:torrent download)
+        info (:info torrent)
+        events-ch (async/chan 16)
+        env {:message-ctx {:piece-hashes (:pieces info)
+                           :piece-length (:piece-length info)
+                           :total-length (:length info)
+                           :total-pieces (count (:pieces info))}
+             :ports {:network-port (mock-net/create)
+                     :disk-port disk
+                     :time-port (mock-time/create)}
+             :conn-stats (atom {:connected 0 :failed 0})
+             :total-attempted 1}
+        state {:download download
+               :active-peers {}
+               :blocks-received {}
+               :expected-blocks {}}]
+    (doseq [event events]
+      (async/>!! events-ch event))
+    (async/close! events-ch)
+    (deref (future (download/run-coordinator state events-ch env))
+           15000 :timed-out)))
+
+(defn- loop-download []
+  (assoc (download/initial-download (mock-time/create) (two-piece-torrent) "/out" "loop")
+         :state :downloading))
+
+(deftest run-coordinator-verifies-pieces-test
+  (testing "connected -> unchoke -> both pieces completes the download"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 2 (pieces/verified-count (:piece-state result))))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-piece disk 0))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-piece disk 1)))))))
+
+(deftest run-coordinator-choke-requeues-through-loop-test
+  (testing "choke mid-piece returns the piece to needed"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Choke)}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (contains? (get-in result [:piece-state :needed]) 0))
+      (is (empty? (get-in result [:piece-state :in-flight]))))))
+
+(deftest run-coordinator-disconnect-requeues-through-loop-test
+  (testing "disconnect mid-piece returns the piece to needed"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-disconnected :address "peer-a" :reason "boom"}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (contains? (get-in result [:piece-state :needed]) 0))
+      (is (empty? (get-in result [:piece-state :in-flight]))))))
