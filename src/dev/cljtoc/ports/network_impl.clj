@@ -188,6 +188,12 @@
       (.receive socket recv-pkt)
       (java.util.Arrays/copyOf recv-buf (.getLength recv-pkt)))))
 
+(defn- tracker-peer->address
+  "Render a tracker {:ip :port} peer map as a canonical address string.
+   IPv6 hosts are bracketed so the port survives parsing downstream."
+  [{:keys [ip port]}]
+  (peer-address/format-address {:host ip :port port}))
+
 (defn- try-udp-tracker
   "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
   [tracker-url request]
@@ -225,7 +231,7 @@
               (if (:error announce-parsed)
                 {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
                 (let [peers (:peers (:ok announce-parsed))]
-                  {:ok (set (map #(str (:ip %) ":" (:port %)) peers))})))))
+                  {:ok (set (map tracker-peer->address peers))})))))
         (finally (.close socket))))
     (catch Exception e
       {:error :udp-failed :message (str tracker-url ": " (.getMessage e))})))
@@ -247,7 +253,7 @@
               {:error :parse-failed :message (:message parse-result)}
               (let [peers (:peers (:ok parse-result))
                     _ (println (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
-                    addresses (set (map #(str (:ip %) ":" (:port %)) peers))
+                    addresses (set (map tracker-peer->address peers))
                     _ (println (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
                 {:ok addresses}))))))))
 

@@ -17,13 +17,16 @@
 
 (defn- with-port
   "Build the result for host h with optional port string p.
-   A missing or empty port falls back to default-port."
+   A missing or empty port falls back to default-port.
+   A blank host is an error: it would silently resolve to localhost."
   [h p]
-  (if (or (nil? p) (empty? p))
-    {:ok {:host h :port default-port}}
-    (if-let [port (parse-port-num p)]
-      {:ok {:host h :port port}}
-      {:error :invalid-port :message (str "invalid port in peer address: " (pr-str p))})))
+  (if (str/blank? h)
+    {:error :invalid-address :message (str "blank host in peer address")}
+    (if (or (nil? p) (empty? p))
+      {:ok {:host h :port default-port}}
+      (if-let [port (parse-port-num p)]
+        {:ok {:host h :port port}}
+        {:error :invalid-port :message (str "invalid port in peer address: " (pr-str p))}))))
 
 (defn host
   "The host part of a parsed address value."
@@ -63,8 +66,11 @@
 
           ;; Bare IPv6: more than one colon outside brackets is
           ;; ambiguous, so the whole string is the host.
+          ;; All-colons is not an address at all.
           (> colon-count 1)
-          {:ok {:host s :port default-port}}
+          (if (every? #(= \: %) s)
+            {:error :invalid-address :message (str "blank host in peer address: " (pr-str s))}
+            {:ok {:host s :port default-port}})
 
           :else
           (let [i (.lastIndexOf s ":")]

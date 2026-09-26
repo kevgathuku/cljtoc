@@ -48,7 +48,16 @@
 
 (deftest parse-malformed-bracket-test
   (testing "an unclosed bracket is an error"
-    (is (= :invalid-address (:error (addr/parse "[::1"))))))
+    (is (= :invalid-address (:error (addr/parse "[::1")))))
+  (testing "empty brackets are an error"
+    (is (= :invalid-address (:error (addr/parse "[]:80"))))))
+
+(deftest parse-blank-host-test
+  (testing "a missing host is an error, never localhost-by-accident"
+    (is (= :invalid-address (:error (addr/parse ":6881"))))
+    (is (= :invalid-address (:error (addr/parse ":")))))
+  (testing "an all-colons host is an error"
+    (is (= :invalid-address (:error (addr/parse "::"))))))
 
 (deftest parse-port-boundaries-test
   (testing "port 0 and 65535 are accepted"

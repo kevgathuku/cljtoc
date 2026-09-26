@@ -300,6 +300,17 @@
                                           "/t.torrent" "/out")]
       (is (= :downloading (:state result)))
       (is (= #{["10.0.0.1:6881" 6881]}
+             (set (map (juxt :address :port) (:peers result)))))))
+  (testing "bracketed IPv6 peers keep their announced port"
+    (let [disk (mock-disk/create)
+          _ (mock-disk/add-torrent disk "/t.torrent"
+                                   {:info-hash (byte-array 20)
+                                    :info {:pieces ["h1" "h2"]}})
+          net (mock-net/create {:mock-peers ["[::1]:51413"]})
+          result (download/start-download {:network-port net :disk-port disk}
+                                          "/t.torrent" "/out")]
+      (is (= :downloading (:state result)))
+      (is (= #{["[::1]:51413" 51413]}
              (set (map (juxt :address :port) (:peers result))))))))
 
 ;; (peer-address construction is covered by start-download-builds-peers-with-host-and-port
