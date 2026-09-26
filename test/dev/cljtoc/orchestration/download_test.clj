@@ -3,7 +3,10 @@
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.domain.pieces :as pieces]
+            [dev.cljtoc.domain.bencode :as bencode]
+            [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
+            [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.test-doubles.time :as mock-time])
@@ -520,3 +523,160 @@
       (is (false? exhausted?))
       (is (contains? (:active-peers updated) "peer-a"))
       (is (contains? (get-in updated [:download :piece-state :in-flight]) 1)))))
+
+;; on-message takes [state event ctx] and returns [new-state effects].
+;; Effects are data: {:send {:peer-data ... :bytes ...}} for block requests,
+;; {:write-verified {:piece-idx ... :data ...}} for verified pieces.
+;; Channel I/O stays at the run-download loop edge.
+
+(defn- ready-peer-state []
+  (-> (peer-state/initial-peer-state 2)
+      (peer-state/set-am-interested true)
+      (peer-state/apply-message (peer/->Unchoke))
+      (peer-state/mark-piece-available 0)
+      (peer-state/mark-piece-available 1)))
+
+(defn- message-state []
+  {:download {:piece-state (pieces/initial-piece-state 2)}
+   :active-peers {"peer-a" {:peer-data {:id "data-a"}
+                            :peer-state (ready-peer-state)
+                            :assigned-piece nil}}
+   :blocks-received {}
+   :expected-blocks {}})
+
+(defn- message-ctx [hashes]
+  {:piece-hashes hashes :piece-length 4 :total-length 8 :total-pieces 2})
+
+(defn- two-piece-hashes []
+  [(bencode/sha1-hash (test-utils/to-bytes "abcd"))
+   (bencode/sha1-hash (test-utils/to-bytes "efgh"))])
+
+(deftest on-message-unchoke-plans-request-test
+  (testing "unchoke assigns the rarest-needed piece and plans its block sends"
+    (let [[updated effects] (download/on-message
+                             (message-state)
+                             {:address "peer-a" :message (peer/->Unchoke)}
+                             (message-ctx (two-piece-hashes)))]
+      (is (= 0 (get-in updated [:active-peers "peer-a" :assigned-piece])))
+      (is (contains? (get-in updated [:download :piece-state :in-flight]) 0))
+      (is (= {"peer-a" 1} (:expected-blocks updated)))
+      (is (= 1 (count effects)))
+      (is (= {:id "data-a"} (get-in (first effects) [:send :peer-data])))
+      (is (bytes? (get-in (first effects) [:send :bytes]))))))
+
+(deftest on-message-choke-requeues-test
+  (testing "choke requeues the assigned piece with no effects"
+    (let [state (-> (message-state)
+                    (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
+                    (assoc-in [:download :piece-state]
+                              (:ok (pieces/mark-in-flight
+                                    (pieces/initial-piece-state 2) 0))))
+          [updated effects] (download/on-message
+                             state
+                             {:address "peer-a" :message (peer/->Choke)}
+                             (message-ctx (two-piece-hashes)))]
+      (is (= [] effects))
+      (is (contains? (get-in updated [:download :piece-state :needed]) 0))
+      (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece]))))))
+
+(deftest on-message-have-plans-request-test
+  (testing "have from an unchoked peer with nothing available triggers a request"
+    (let [bare (-> (peer-state/initial-peer-state 2)
+                   (peer-state/set-am-interested true)
+                   (peer-state/apply-message (peer/->Unchoke)))
+          state (assoc-in (message-state) [:active-peers "peer-a" :peer-state] bare)
+          [updated effects] (download/on-message
+                             state
+                             {:address "peer-a" :message (peer/->Have 1)}
+                             (message-ctx (two-piece-hashes)))]
+      (is (= 1 (get-in updated [:active-peers "peer-a" :assigned-piece])))
+      (is (= 1 (count effects))))))
+
+(deftest on-message-piece-buffers-partial-test
+  (testing "a non-final block is buffered with no effects"
+    (let [ctx {:piece-hashes (two-piece-hashes)
+               :piece-length 16385 :total-length 32770 :total-pieces 2}
+          state (-> (message-state)
+                    (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
+                    (assoc :expected-blocks {"peer-a" 2})
+                    (assoc-in [:download :piece-state]
+                              (:ok (pieces/mark-in-flight
+                                    (pieces/initial-piece-state 2) 0))))
+          [updated effects] (download/on-message
+                             state
+                             {:address "peer-a"
+                              :message (peer/->Piece 0 0 (byte-array 16384))}
+                             ctx)]
+      (is (= [] effects))
+      (is (= 1 (count (get (:blocks-received updated) "peer-a"))))
+      (is (= 0 (get-in updated [:active-peers "peer-a" :assigned-piece]))))))
+
+(deftest on-message-piece-verified-writes-and-requests-next-test
+  (testing "a complete verified piece plans a write plus the next request"
+    (let [state (-> (message-state)
+                    (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
+                    (assoc :expected-blocks {"peer-a" 1})
+                    (assoc-in [:download :piece-state]
+                              (:ok (pieces/mark-in-flight
+                                    (pieces/initial-piece-state 2) 0))))
+          [updated effects] (download/on-message
+                             state
+                             {:address "peer-a"
+                              :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                             (message-ctx (two-piece-hashes)))
+          by-kind (group-by (comp first keys) effects)]
+      (is (contains? (get-in updated [:download :piece-state :verified]) 0))
+      (is (= 0 (get-in (first (by-kind :write-verified)) [:write-verified :piece-idx])))
+      (is (= (seq (test-utils/to-bytes "abcd"))
+             (seq (get-in (first (by-kind :write-verified)) [:write-verified :data]))))
+      (is (= 1 (count (by-kind :send))))
+      (is (= 1 (get-in updated [:active-peers "peer-a" :assigned-piece]))))))
+
+(deftest on-message-piece-assembly-failure-requeues-test
+  (testing "blocks with a gap requeue the piece with no effects"
+    (let [state (-> (message-state)
+                    (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
+                    (assoc :expected-blocks {"peer-a" 1})
+                    (assoc-in [:download :piece-state]
+                              (:ok (pieces/mark-in-flight
+                                    (pieces/initial-piece-state 2) 0))))
+          [updated effects] (download/on-message
+                             state
+                             {:address "peer-a"
+                              :message (peer/->Piece 0 5 (byte-array 1))}
+                             (message-ctx (two-piece-hashes)))]
+      (is (= [] effects))
+      (is (contains? (get-in updated [:download :piece-state :needed]) 0))
+      (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece]))))))
+
+(deftest on-message-piece-verify-failure-requeues-test
+  (testing "a hash mismatch requeues the piece with no effects"
+    (let [wrong-hashes [(bencode/sha1-hash (test-utils/to-bytes "xxxx"))
+                        (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+          state (-> (message-state)
+                    (assoc-in [:active-peers "peer-a" :assigned-piece] 0)
+                    (assoc :expected-blocks {"peer-a" 1})
+                    (assoc-in [:download :piece-state]
+                              (:ok (pieces/mark-in-flight
+                                    (pieces/initial-piece-state 2) 0))))
+          [updated effects] (download/on-message
+                             state
+                             {:address "peer-a"
+                              :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                             (message-ctx wrong-hashes))]
+      (is (= [] effects))
+      (is (contains? (get-in updated [:download :piece-state :needed]) 0))
+      (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece]))))))
+
+(deftest on-message-unknown-peer-and-keepalive-noop-test
+  (testing "unknown peers and keep-alives return the state untouched"
+    (let [state (message-state)
+          ctx (message-ctx (two-piece-hashes))]
+      (is (= [state []] (download/on-message
+                         state
+                         {:address "ghost" :message (peer/->Unchoke)}
+                         ctx)))
+      (is (= [state []] (download/on-message
+                         state
+                         {:address "peer-a" :message (peer/->KeepAlive)}
+                         ctx))))))

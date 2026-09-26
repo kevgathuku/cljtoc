@@ -436,6 +436,135 @@
          (peer-state/available-pieces (:peer-state peer-info)))
        active-peers))
 
+(defn- requestable?
+  "True when the peer may be given a piece: unchoked, interested, idle."
+  [state address]
+  (let [peer-info (get (:active-peers state) address)]
+    (and (peer-state/can-request? (:peer-state peer-info))
+         (nil? (:assigned-piece peer-info)))))
+
+(defn- plan-request
+  "Select a piece and plan its block requests without touching the network.
+   ctx carries :piece-length and :total-length from the torrent info.
+   Returns [new-state sends] or nil when nothing can be requested.
+   Each send is {:peer-data ... :bytes ...} for the loop edge to deliver."
+  [state address ctx]
+  (let [download (:download state)
+        active-peers (:active-peers state)
+        peer-info (get active-peers address)
+        piece-state (:piece-state download)
+        select-result (pieces/select-piece piece-state
+                                           (peer-state/available-pieces (:peer-state peer-info))
+                                           (all-peer-available-sets active-peers))]
+    (when-let [piece-idx (:ok select-result)]
+      (let [mark-result (pieces/mark-in-flight piece-state piece-idx)]
+        (when (:ok mark-result)
+          (let [blocks-result (pieces/piece-blocks piece-idx
+                                                   (:piece-length ctx)
+                                                   (:total-length ctx))]
+            (when (:ok blocks-result)
+              (let [blocks (:ok blocks-result)
+                    peer-data (:peer-data peer-info)
+                    sends (vec (keep (fn [block]
+                                       (let [req-msg (peer/->Request (:piece-index block)
+                                                                     (:offset block)
+                                                                     (:length block))]
+                                         (when-let [req-bytes (:ok (peer/build-message req-msg))]
+                                           {:peer-data peer-data :bytes req-bytes})))
+                                     blocks))]
+                [(assoc state
+                        :download (assoc download :piece-state (:ok mark-result))
+                        :active-peers (assoc-in active-peers [address :assigned-piece] piece-idx)
+                        :expected-blocks (assoc (:expected-blocks state) address (count blocks)))
+                 sends]))))))))
+
+(defn- maybe-request
+  "The single 'after state update, maybe request' step: plan a request
+   when the peer is requestable. Returns [new-state send-effects]."
+  [state address ctx]
+  (if (requestable? state address)
+    (if-let [[planned sends] (plan-request state address ctx)]
+      [planned (mapv (fn [send] {:send send}) sends)]
+      [state []])
+    [state []]))
+
+(defn- assemble-and-verify
+  "Assemble buffered blocks, verify the hash, plan the disk write.
+   Returns [new-state effects] (requeueing with no effects on failure)."
+  [state address piece-idx addr-blocks ctx]
+  (let [{:keys [piece-length total-length total-pieces piece-hashes]} ctx
+        piece-len (if (= piece-idx (dec total-pieces))
+                    (- total-length (* piece-idx piece-length))
+                    piece-length)]
+    (if-let [assembled (:ok (pieces/assemble-piece addr-blocks piece-len))]
+      (if (:ok (pieces/verify-piece piece-idx assembled (nth piece-hashes piece-idx)))
+        (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
+              state (cond-> (-> state
+                                (assoc-in [:active-peers address :assigned-piece] nil)
+                                (update :blocks-received dissoc address))
+                      (:ok mark-result)
+                      (assoc-in [:download :piece-state] (:ok mark-result)))
+              effects [{:write-verified {:piece-idx piece-idx :data assembled}}]
+              download (:download state)]
+          (if (and (peer-state/can-request? (get-in state [:active-peers address :peer-state]))
+                   (not (pieces/complete? (:piece-state download))))
+            (let [[planned send-effects] (maybe-request state address ctx)]
+              [planned (into effects send-effects)])
+            [state effects]))
+        [(requeue-assignment state address piece-idx) []])
+      [(requeue-assignment state address piece-idx) []])))
+
+(defn- handle-piece-message
+  "Accumulate one Piece message; assemble on the final block.
+   Returns [new-state effects]."
+  [state address message ctx]
+  (let [piece-idx (:piece-index message)
+        assigned (get-in state [:active-peers address :assigned-piece])]
+    (if (not= piece-idx assigned)
+      [state []]
+      (let [block {:offset (:begin message) :data (:data message)}
+            addr-blocks (conj (get (:blocks-received state) address []) block)
+            state (assoc-in state [:blocks-received address] addr-blocks)
+            expected (get (:expected-blocks state) address 0)]
+        (if (< (count addr-blocks) expected)
+          [state []]
+          (assemble-and-verify state address piece-idx addr-blocks ctx))))))
+
+(defn on-message
+  "Handle one peer message. Pure planning: takes [state event ctx] and
+   returns [new-state effects]. ctx carries :piece-hashes, :piece-length,
+   :total-length and :total-pieces from the torrent info.
+   Effects are data for the loop edge:
+     {:send {:peer-data ... :bytes ...}}
+     {:write-verified {:piece-idx ... :data ...}}"
+  [state event ctx]
+  (let [{:keys [address message]} event
+        peer-info (get (:active-peers state) address)]
+    (if (nil? peer-info)
+      [state []]
+      (let [ps (peer-state/apply-message (:peer-state peer-info) message)
+            state (assoc-in state [:active-peers address :peer-state] ps)]
+        (cond
+          (instance? dev.cljtoc.protocol.peer.Unchoke message)
+          (maybe-request state address ctx)
+
+          (instance? dev.cljtoc.protocol.peer.Piece message)
+          (handle-piece-message state address message ctx)
+
+          (instance? dev.cljtoc.protocol.peer.Choke message)
+          (let [assigned (get-in state [:active-peers address :assigned-piece])]
+            [(if assigned
+               (requeue-assignment state address assigned)
+               state)
+             []])
+
+          (or (instance? dev.cljtoc.protocol.peer.Have message)
+              (instance? dev.cljtoc.protocol.peer.Bitfield message))
+          (maybe-request state address ctx)
+
+          :else
+          [state []])))))
+
 (defn- try-request-piece
   "Try to select and request a piece from a peer. Returns updated state map or nil."
   [{:keys [download active-peers network-port] :as state} address]
