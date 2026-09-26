@@ -188,26 +188,27 @@
                                  {:piece-index piece-index})
           (let [piece-end (min total (+ piece-start piece-byte-count))
                 layout (file-layout info)]
-            (if (nil? layout)
-              (bencode/torrent-error "info must carry :name for output paths" {})
-              (let [spans (loop [remaining layout
-                                 file-start 0
-                                 acc (transient [])]
-                            (if (empty? remaining)
-                              (persistent! acc)
-                              (let [{file-path :path file-length :length} (first remaining)
-                                    file-end (+ file-start file-length)
-                                    overlap-start (max piece-start file-start)
-                                    overlap-end (min piece-end file-end)]
-                                (recur (rest remaining)
-                                       file-end
-                                       (if (< overlap-start overlap-end)
-                                         (conj! acc {:path file-path
-                                                     :file-offset (- overlap-start file-start)
-                                                     :data-offset (- overlap-start piece-start)
-                                                     :length (- overlap-end overlap-start)})
-                                         acc)))))]
-                {:ok spans}))))))))
+            ;; layout is non-nil here: safe-path-component? has already
+            ;; rejected a nil or unsafe :name, which is the only way
+            ;; file-layout returns nil.
+            (let [spans (loop [remaining layout
+                               file-start 0
+                               acc (transient [])]
+                          (if (empty? remaining)
+                            (persistent! acc)
+                            (let [{file-path :path file-length :length} (first remaining)
+                                  file-end (+ file-start file-length)
+                                  overlap-start (max piece-start file-start)
+                                  overlap-end (min piece-end file-end)]
+                              (recur (rest remaining)
+                                     file-end
+                                     (if (< overlap-start overlap-end)
+                                       (conj! acc {:path file-path
+                                                   :file-offset (- overlap-start file-start)
+                                                   :data-offset (- overlap-start piece-start)
+                                                   :length (- overlap-end overlap-start)})
+                                       acc)))))]
+              {:ok spans})))))))
 
 (s/fdef piece-file-spans
   :args (s/cat :info ::info

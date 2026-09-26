@@ -132,18 +132,14 @@
         (try
           (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
                 sizes-result (torrent/output-file-sizes info)]
-            (cond
-              (:error spans-result)
+            ;; No sizes-error branch: output-file-sizes errors only when :name
+            ;; is absent, and piece-file-spans already rejects a nil :name as
+            ;; an unsafe path component, so spans-result is always the first
+            ;; to fail.
+            (if (:error spans-result)
               (async/>! ch {:error :invalid-info
                             :message (str "Cannot map piece " piece-index ": "
                                           (:message spans-result))})
-
-              (:error sizes-result)
-              (async/>! ch {:error :invalid-info
-                            :message (str "Cannot size piece " piece-index ": "
-                                          (:message sizes-result))})
-
-              :else
               (async/>! ch (write-layout! output-dir
                                           (:ok sizes-result)
                                           (:ok spans-result)
