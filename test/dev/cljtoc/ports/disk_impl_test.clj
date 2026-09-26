@@ -324,3 +324,90 @@
                                     (.toPath (io/file output-dir "t" "a"))))))))
 
 ;; ---------------------------------------------------------------------------
+
+;; ---------------------------------------------------------------------------
+;; The property this branch exists to guarantee: a completed download is
+;; byte-identical to the torrent content, whatever the layout, whatever the
+;; piece length, and whatever junk an earlier run left behind.
+;; ---------------------------------------------------------------------------
+
+(defn- file-layout-oracle
+  "Segments, declared length, and byte offset for each declared file, derived
+   only from the declared lengths so no domain logic is reused as the oracle."
+  [single? file-lengths]
+  (mapv (fn [file-index file-length start]
+          {:segments (if single? ["f"] ["t" (str "f" file-index)])
+           :length file-length
+           :start start})
+        (range (count file-lengths))
+        file-lengths
+        (reductions + 0 file-lengths)))
+
+(defn- generated-info
+  "The same single-file/multi-file shape the port tests use, built from
+   generated lengths."
+  [piece-length file-lengths single?]
+  (if single?
+    {:name "f" :piece-length piece-length :length (reduce + 0 file-lengths)}
+    {:name "t" :piece-length piece-length
+     :files (mapv (fn [file-index file-length]
+                    {:path [(str "f" file-index)] :length file-length})
+                  (range (count file-lengths)) file-lengths)}))
+
+(defn- generated-bytes
+  [total]
+  (byte-array (map #(unchecked-byte (mod (+ (* % 1103515245) 12345) 256))
+                   (range total))))
+
+(defn- write-piece-at
+  "Write the piece starting at start, len bytes of source-bytes, via the port."
+  [port info output-dir source-bytes piece-length piece-index total]
+  (let [start (* piece-index piece-length)
+        len (min piece-length (- total start))]
+    (<!! (disk/write-output-piece
+          port info output-dir piece-index
+          (java.util.Arrays/copyOfRange source-bytes (int start) (int (+ start len)))))))
+
+(defn- prefill-with-junk!
+  [output-dir layout]
+  (doseq [{:keys [segments length]} layout]
+    (let [file (apply io/file output-dir segments)]
+      (.mkdirs (.getParentFile file))
+      (with-open [out (io/output-stream file)]
+        (.write out (byte-array (repeat (+ length 37) (byte 74))))))))
+
+(defn- assembled-content-matches?
+  [output-dir source-bytes layout]
+  (every? (fn [{:keys [segments length start]}]
+            (let [target (apply io/file output-dir segments)
+                  actual (with-open [in (io/input-stream target)]
+                           (.readAllBytes ^java.io.InputStream in))]
+              (and (= length (alength actual))
+                   (java.util.Arrays/equals
+                    actual
+                    (java.util.Arrays/copyOfRange
+                     source-bytes (int start) (int (+ start length)))))))
+          layout))
+
+(defspec output-assembly-is-byte-identical-spec 20
+  (prop/for-all
+   [piece-length (gen/choose 1 16)
+    file-lengths (gen/vector (gen/choose 0 20) 1 4)
+    prefill? gen/boolean]
+   (let [file-count (count file-lengths)
+         single? (= 1 file-count)
+         total (reduce + 0 file-lengths)
+         info (generated-info piece-length file-lengths single?)
+         layout (file-layout-oracle single? file-lengths)
+         source-bytes (generated-bytes total)
+         output-dir (temp-dir "assembly-")
+         port (make-port (temp-dir "disk-state-"))
+         piece-count (int (Math/ceil (/ total (double piece-length))))]
+     (when prefill? (prefill-with-junk! output-dir layout))
+     (and (= {:ok :initialized}
+             (<!! (disk/initialize-output-layout port info output-dir)))
+          (every? #(= {:ok :written} %)
+                  (mapv #(write-piece-at port info output-dir source-bytes
+                                         piece-length % total)
+                        (range piece-count)))
+          (assembled-content-matches? output-dir source-bytes layout)))))

@@ -420,3 +420,59 @@
                                     (<= (+ (:file-offset %) (:length %))
                                         (get file-sizes (:path %) -1)))
                               spans))))))))
+
+;; ---------------------------------------------------------------------------
+;; Cross-function invariants between output-file-sizes and piece-file-spans.
+;; write-layout! looks each spanned path up in the sizes map to truncate it, so
+;; a path emitted by one function and absent from the other is an NPE, not a
+;; wrong-but-safe result. Neither function's own test checks the agreement.
+;; ---------------------------------------------------------------------------
+
+(defn- generated-info
+  "Build an info dict for the given piece length and file lengths."
+  [piece-length file-lengths]
+  (let [total (reduce + 0 file-lengths)
+        file-count (count file-lengths)]
+    (if (= 1 file-count)
+      {:name "f" :piece-length piece-length :length total}
+      {:name "t" :piece-length piece-length
+       :files (mapv (fn [file-index file-length]
+                      {:path [(str "f" file-index)] :length file-length})
+                    (range file-count) file-lengths)})))
+
+(defspec output-file-sizes-match-declared-total-spec 100
+  (prop/for-all
+   [piece-length (gen/choose 1 16)
+    file-lengths (gen/vector (gen/choose 0 20) 1 5)]
+   (let [info (generated-info piece-length file-lengths)
+         sizes (:ok (torrent/output-file-sizes info))]
+     (and (some? sizes)
+          (= (reduce + 0 file-lengths) (reduce + 0 (vals sizes)))
+          (= (count file-lengths) (count sizes))
+          (= (set (vals sizes)) (set file-lengths))))))
+
+(defspec piece-span-paths-are-declared-by-output-file-sizes-spec 100
+  (prop/for-all
+   [piece-length (gen/choose 1 16)
+    file-lengths (gen/vector (gen/choose 1 20) 1 5)]
+   (let [info (generated-info piece-length file-lengths)
+         total (reduce + 0 file-lengths)
+         sizes (set (keys (:ok (torrent/output-file-sizes info))))
+         piece-count (int (Math/ceil (/ total (double piece-length))))
+         span-paths (set (for [piece-index (range piece-count)
+                               :let [start (* piece-index piece-length)
+                                     len (min piece-length (- total start))]
+                               span (:ok (torrent/piece-file-spans info piece-index len))]
+                           (:path span)))]
+     (every? sizes span-paths))))
+
+(defspec hostile-path-components-never-produce-a-layout-spec 100
+  (prop/for-all
+   [hostile (gen/elements [".." "." "a/b" "a\\b" "/abs" "" "./.." "f/.."
+                           "/etc/passwd" "\\\\host\\share" "~/x" "sub/../../x"])]
+   (let [single (:ok (torrent/output-file-sizes {:name hostile :piece-length 4 :length 4}))
+         multi (:ok (torrent/output-file-sizes
+                     {:name "t" :piece-length 4
+                      :files [{:path [hostile] :length 4}]}))
+         spans (:ok (torrent/piece-file-spans {:name hostile :piece-length 4 :length 4} 0 4))]
+     (and (nil? single) (nil? multi) (nil? spans)))))
