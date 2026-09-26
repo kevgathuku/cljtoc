@@ -32,7 +32,10 @@
   (receive-message [this peer]
     (let [ch (async/chan 1)]
       (async/go
-        (async/>! ch {:ok {:type :keep-alive}}))
+        (let [queued (when-let [receive-queue (:receive-responses config)]
+                       (let [[queued-responses _] (swap-vals! receive-queue rest)]
+                         (first queued-responses)))]
+          (async/>! ch (or queued {:ok {:type :keep-alive}}))))
       ch))
 
   (receive-handshake [this peer]
@@ -66,7 +69,10 @@
    - :mock-peers - vector of peer addresses to return on announce
    - :announce-error - error map to return from announce instead of peers
    - :handshake-response - map or (fn [peer]) returning {:ok handshake}
-     or {:error ...} for receive-handshake"
+     or {:error ...} for receive-handshake
+   - :receive-responses - atom holding a seq of {:ok ...} / {:error ...}
+     returned one per receive-message call; falls back to keep-alive
+     once the queue is empty"
   ([]
    (create {}))
   ([config]

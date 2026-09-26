@@ -36,14 +36,21 @@
   (testing "matching info-hash surfaces as :peer-connected via the port"
     (let [info-hash (test-info-hash)
           net (mock-net/create {:handshake-response {:ok {:info-hash info-hash
-                                                           :peer-id (test-peer-id)}}})
-          events-ch (async/chan 10)]
-      (peer-worker/run-peer net info-hash (test-peer-id)
-                            "127.0.0.1:6881" 4 events-ch)
-      (let [event (take-timeout events-ch 2000)]
-        (is (not= :timeout event) "worker produced no event")
-        (is (= :peer-connected (:type event)))
-        (is (= "127.0.0.1:6881" (:address event)))))))
+                                                           :peer-id (test-peer-id)}}
+                                :receive-responses (atom [{:error :disconnected
+                                                           :message "peer went away"}])})
+          events-ch (async/chan 10)
+          done-ch (peer-worker/run-peer net info-hash (test-peer-id)
+                                        "127.0.0.1:6881" 4 events-ch)
+          connected-event (take-timeout events-ch 2000)
+          disconnected-event (take-timeout events-ch 2000)
+          worker-exit (take-timeout done-ch 2000)]
+      (is (not= :timeout connected-event) "worker produced no event")
+      (is (= :peer-connected (:type connected-event)))
+      (is (= "127.0.0.1:6881" (:address connected-event)))
+      (is (= :peer-disconnected (:type disconnected-event))
+          "scripted receive error ends the read loop")
+      (is (not= :timeout worker-exit) "worker thread terminated, nothing leaked"))))
 
 (deftest handshake-info-hash-mismatch-emits-peer-disconnected-test
   (testing "mismatched info-hash surfaces as :peer-disconnected"
