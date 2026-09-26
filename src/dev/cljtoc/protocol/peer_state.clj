@@ -288,6 +288,12 @@
           (recur (.nextSetBit ^BitSet bitfield (inc piece-index)) (conj! acc piece-index)))))
     #{}))
 
+(s/fdef available-pieces
+  :args (s/cat :peer-state ::peer-state)
+  :ret (s/coll-of ::piece-index :kind set?)
+  :fn #(every? (fn [idx] (< idx (-> % :args :peer-state :total-pieces)))
+               (:ret %)))
+
 ;; ============================================================================
 ;; State Transitions
 ;; ============================================================================
