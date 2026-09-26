@@ -9,69 +9,69 @@
 
 (defn- parse-port-num
   "Parse a port string to a number in range, or nil."
-  [s]
+  [port-str]
   (try
-    (let [p (Integer/parseInt s)]
-      (when (<= 0 p 65535) p))
+    (let [port-num (Integer/parseInt port-str)]
+      (when (<= 0 port-num 65535) port-num))
     (catch NumberFormatException _ nil)))
 
 (defn- with-port
-  "Build the result for host h with optional port string p.
+  "Build the result for host with optional port string.
    A missing or empty port falls back to default-port.
    A blank host is an error: it would silently resolve to localhost."
-  [h p]
-  (if (str/blank? h)
+  [host port-str]
+  (if (str/blank? host)
     {:error :invalid-address :message (str "blank host in peer address")}
-    (if (or (nil? p) (empty? p))
-      {:ok {:host h :port default-port}}
-      (if-let [port (parse-port-num p)]
-        {:ok {:host h :port port}}
-        {:error :invalid-port :message (str "invalid port in peer address: " (pr-str p))}))))
+    (if (or (nil? port-str) (empty? port-str))
+      {:ok {:host host :port default-port}}
+      (if-let [port-num (parse-port-num port-str)]
+        {:ok {:host host :port port-num}}
+        {:error :invalid-port :message (str "invalid port in peer address: " (pr-str port-str))}))))
 
 (defn host
   "The host part of a parsed address value."
-  [addr]
-  (:host addr))
+  [address]
+  (:host address))
 
 (defn port
   "The port part of a parsed address value."
-  [addr]
-  (:port addr))
+  [address]
+  (:port address))
 
 (defn format-address
   "Format an address value back to its canonical string.
    IPv6 hosts are bracketed: \"[::1]:6881\"."
-  [addr]
-  (let [h (:host addr)
-        h (if (str/includes? h ":") (str "[" h "]") h)]
-    (str h ":" (:port addr))))
+  [address]
+  (let [host (:host address)
+        host (if (str/includes? host ":") (str "[" host "]") host)]
+    (str host ":" (:port address))))
 
 (defn parse
-  "Parse a peer address string into {:ok {:host h :port p}}.
+  "Parse a peer address string into {:ok {:host host :port port}}.
    Accepts \"host:port\", bare \"host\" (default port 6881),
    \"[v6-host]:port\", and bare IPv6 (default port).
    Returns {:error ...} instead of throwing on bad input."
-  [s]
-  (if (or (nil? s) (str/blank? s))
-    {:error :invalid-address :message (str "blank peer address: " (pr-str s))}
-    (if (str/starts-with? s "[")
-      (let [[_ h p] (re-matches #"\[([^\]]+)\](?::(.*))?" s)]
-        (if (nil? h)
-          {:error :invalid-address :message (str "malformed peer address: " (pr-str s))}
-          (with-port h p)))
-      (let [colon-count (count (filter #(= \: %) s))]
+  [address-str]
+  (if (or (nil? address-str) (str/blank? address-str))
+    {:error :invalid-address :message (str "blank peer address: " (pr-str address-str))}
+    (if (str/starts-with? address-str "[")
+      (let [[_ host port-str] (re-matches #"\[([^\]]+)\](?::(.*))?" address-str)]
+        (if (nil? host)
+          {:error :invalid-address :message (str "malformed peer address: " (pr-str address-str))}
+          (with-port host port-str)))
+      (let [colon-count (count (filter #(= \: %) address-str))]
         (cond
           (zero? colon-count)
-          {:ok {:host s :port default-port}}
+          {:ok {:host address-str :port default-port}}
 
           ;; Bare IPv6: more than one colon outside brackets is
           ;; ambiguous, so the whole string is the host.
           ;; All-colons is not an address at all.
           (> colon-count 1)
-          (if (every? #(= \: %) s)
-            {:error :invalid-address :message (str "blank host in peer address: " (pr-str s))}
-            {:ok {:host s :port default-port}})
+          (if (every? #(= \: %) address-str)
+            {:error :invalid-address :message (str "blank host in peer address: " (pr-str address-str))}
+            {:ok {:host address-str :port default-port}})
 
           :else
-          (let [i (.lastIndexOf s ":")]
-            (with-port (subs s 0 i) (subs s (inc i)))))))))
+          (let [sep-index (.lastIndexOf address-str ":")]
+            (with-port (subs address-str 0 sep-index) (subs address-str (inc sep-index)))))))))

@@ -29,6 +29,13 @@ Clojure 1.11+ (JVM-based): Follow standard conventions
 - 004-peer-wire-protocol: Added Clojure 1.11+ (JVM-based) + None (pure functions only, core.async not needed at this layer)
 
 <!-- MANUAL ADDITIONS START -->
+
+## Naming
+
+Prefer human-readable names everywhere. Avoid single-letter variables;
+use full words that say what the value is (`address-str` not `s`,
+`host` / `port-str` not `h` / `p`, `colon-index` not `i`).
+
 <!-- MANUAL ADDITIONS END -->
 
 ## Agent skills
