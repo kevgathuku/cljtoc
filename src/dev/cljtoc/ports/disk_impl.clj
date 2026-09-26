@@ -4,9 +4,10 @@
    Implements the IDiskPort protocol for actual file system operations.
    Includes disk space checking and state persistence."
   (:require [dev.cljtoc.ports.disk :as disk]
-            [dev.cljtoc.domain.torrent :as torrent]
-            [clojure.java.io :as io]
-            [clojure.core.async :as async])
+             [dev.cljtoc.domain.torrent :as torrent]
+             [clojure.java.io :as io]
+             [clojure.edn :as edn]
+             [clojure.core.async :as async])
   (:import [java.io File FileInputStream FileOutputStream]
            [java.nio.file Files Paths]))
 
@@ -77,7 +78,7 @@
           (let [state-file (io/file state-dir (str (:id download) ".edn"))]
             (when-not (.exists state-dir)
               (.mkdirs state-dir))
-            (spit state-file (pr-str download))
+            (spit state-file (pr-str (disk/encode-state download)))
             (async/>! ch {:ok :saved}))
           (catch Exception e
             (async/>! ch {:error :save-error :message (.getMessage e)}))))
@@ -89,7 +90,7 @@
         (try
           (let [state-file (io/file state-dir (str id ".edn"))]
             (if (.exists state-file)
-              (let [data (read-string (slurp state-file))]
+              (let [data (disk/decode-state (edn/read-string (slurp state-file)))]
                 (async/>! ch {:ok data}))
               (async/>! ch {:ok nil})))
           (catch Exception e
@@ -155,6 +156,4 @@
 (defn get-torrent-size
   "Get total size of torrent from metadata."
   [torrent-metadata]
-  (or (:length torrent-metadata)
-      (reduce + (map :length (:files torrent-metadata)))
-      0))
+  (torrent/total-size torrent-metadata))

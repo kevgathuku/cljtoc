@@ -51,7 +51,7 @@
   (load-state [this id]
     (let [ch (async/chan 1)]
       (async/go
-        (async/>! ch (get @state-files id)))
+        (async/>! ch {:ok (get @state-files id)}))
       ch))
   
   (delete-state [this id]

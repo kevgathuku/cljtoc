@@ -90,8 +90,7 @@
               (System/exit 1))
             (let [torrent-meta (:ok parse-result)
                   info (:info torrent-meta)
-                  required-size (or (:length info)
-                                    (reduce + (map :length (:files info))))
+                  required-size (torrent/total-size info)
                   _ (println (str "Torrent: " (:name info)))
                   _ (println (str "Size: " (format-bytes required-size)))
                   _ (println (str "Piece length: " (:piece-length info)))
@@ -116,8 +115,8 @@
                     (println "  " (or (:message result)
                                       (str (:error result))))
                     (System/exit 1))
-                  (let [download-id (cli-state/id-from-path torrent-path)]
-                    (cli-state/save-state (assoc result :id download-id
+                  (let [download-id (:id result)]
+                    (cli-state/save-state (assoc result
                                                  :torrent-path torrent-path
                                                  :output-dir output-dir))
                     (println (str "Download started: " download-id))
@@ -125,9 +124,9 @@
                     (print-progress (download/progress result))
                     (println)
                     (let [final-download (download/run-download m result)]
-                      (cli-state/save-state (assoc final-download :id download-id
-                                                   :torrent-path torrent-path
-                                                   :output-dir output-dir))
+                      (cli-state/save-state (assoc final-download
+                                                    :torrent-path torrent-path
+                                                    :output-dir output-dir))
                       (println)
                       (print-progress (download/progress final-download)))))))))))))
 

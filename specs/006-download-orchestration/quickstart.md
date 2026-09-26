@@ -22,32 +22,31 @@
 (def result (download/start-download m "my-file.torrent" "./output"))
 
 (println result)
-;; => {:ok #uuid "550e8400-e29b-41d4-a716-446655440000"}
+;; => {:id "my-file", :state :downloading, ...}
 ```
 
 ### Checking Progress
 
 ```clojure
-(let [download-id (:ok result)]
-  (download/progress m download-id))
-;; => {:ok {:percent 45.2
-;;          :pieces-complete 230
-;;          :pieces-total 512
-;;          :bytes-downloaded 120053248
-;;          :rate-bytes-per-sec 524288
-;;          :peers-connected 12
-;;          :state :downloading}}
+(download/progress result)
+;; => {:percent 45.2
+;;     :pieces-complete 230
+;;     :pieces-total 512
+;;     :bytes-downloaded 120053248
+;;     :rate-bytes-per-sec 524288
+;;     :peers-connected 12
+;;     :state :downloading}
 ```
 
 ### Pause and Resume
 
 ```clojure
 ;; Pause - saves state to disk
-(download/pause-download m download-id)
-;; => {:ok {:state :paused :bytes-downloaded 120053248 :pieces-complete 230}}
+(def paused (:ok (download/pause-download result)))
+;; => {:state :paused :bytes-downloaded 120053248 :pieces-complete 230}
 
 ;; Resume - continues from saved state
-(download/resume-download m download-id)
+(download/resume-download paused)
 ;; => {:ok {:state :downloading :peers-connected 8}}
 ```
 
@@ -55,8 +54,8 @@
 
 ```clojure
 ;; Stop and cleanup
-(download/stop-download m download-id)
-;; => {:ok}
+(download/stop-download paused)
+;; => {:state :idle, ...}
 ```
 
 ---

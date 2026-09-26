@@ -8,7 +8,7 @@ Starts a new torrent download.
 
 ```clojure
 (start-download manager torrent-path output-dir)
-  → {:ok download-id :uuid}
+  → download (map with string :id derived from torrent-path, :state :downloading)
   | {:error :invalid-torrent :message string}
   | {:error :file-not-found :message string}
 ```
@@ -30,12 +30,9 @@ Starts a new torrent download.
 Pauses an active download, closing peer connections and persisting state.
 
 ```clojure
-(pause-download manager download-id)
-  → {:ok {:state :paused
-          :bytes-downloaded nat-int
-          :pieces-complete nat-int}}
+(pause-download download)
+  → {:ok paused-download}              ; :state :paused, :peers #{}
   | {:error :not-running :message string}
-  | {:error :already-paused :message string}
 ```
 
 ---
@@ -45,11 +42,9 @@ Pauses an active download, closing peer connections and persisting state.
 Resumes a paused download from persisted state.
 
 ```clojure
-(resume-download manager download-id)
-  → {:ok {:state :downloading
-          :peers-connected nat-int}}
+(resume-download download)
+  → {:ok resumed-download}             ; :state :downloading, state reloaded from disk when a disk port is given
   | {:error :not-paused :message string}
-  | {:error :torrent-missing :message string}
 ```
 
 ---
@@ -59,15 +54,14 @@ Resumes a paused download from persisted state.
 Returns current download progress.
 
 ```clojure
-(progress manager download-id)
-  → {:ok {:percent float              ; 0.0 to 100.0
-          :pieces-complete nat-int    ; verified pieces
-          :pieces-total nat-int       ; total pieces
-          :bytes-downloaded nat-int  ; verified bytes
-          :rate-bytes-per-sec nat-int ; current download rate
-          :peers-connected nat-int   ; active peers
-          :state keyword}}            ; :downloading :paused :completed :failed
-  | {:error :not-found :message string}
+(progress download)
+  → {:percent float              ; 0.0 to 100.0
+     :pieces-complete nat-int    ; verified pieces
+     :pieces-total nat-int       ; total pieces
+     :bytes-downloaded nat-int  ; verified bytes
+     :rate-bytes-per-sec nat-int ; current download rate
+     :peers-connected nat-int   ; active peers
+     :state keyword}            ; :downloading :paused :completed :failed
 ```
 
 ---
@@ -77,9 +71,8 @@ Returns current download progress.
 Stops a download and cleans up resources.
 
 ```clojure
-(stop-download manager download-id)
-  → {:ok}
-  | {:error :not-found :message string}
+(stop-download download)
+  → stopped-download                   ; :state :idle, :peers #{}
 ```
 
 ---
@@ -141,7 +134,7 @@ Called with peer list from tracker.
  [network -port  ; INetworkPort
    disk-port     ; IDiskPort
    time-port     ; ITimePort
-   downloads     ; {uuid Download}
+   downloads     ; {string Download}
    supervisor    ; Supervisor
    config])      ; {max-peers, request-queue-size, ...}
 ```
@@ -191,21 +184,19 @@ Common errors:
 (def m (download/manager (real-network) (real-disk) (real-time) {}))
 
 ;; Start
-(let [{:keys [ok error]} (download/start-download m "test.torrent" "./downloads")]
-  (if ok
-    (println "Started download" ok)
-    (println "Error:" error)))
+(def download (download/start-download m "test.torrent" "./downloads"))
+;; => {:id "test", :state :downloading, ...}
 
 ;; Poll progress
-(download/progress m download-id)
-;; => {:ok {:percent 45.2 :pieces-complete 230 :pieces-total 512 ...}}
+(download/progress download)
+;; => {:percent 45.2 :pieces-complete 230 :pieces-total 512 ...}
 
 ;; Pause
-(download/pause-download m download-id)
+(def paused (:ok (download/pause-download download)))
 
-;; Resume  
-(download/resume-download m download-id)
+;; Resume
+(download/resume-download paused)
 
 ;; Stop
-(download/stop-download m download-id)
+(download/stop-download download)
 ```
