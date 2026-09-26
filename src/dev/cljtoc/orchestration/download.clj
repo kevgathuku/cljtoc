@@ -488,9 +488,23 @@
 ;; ============================================================================
 ;;
 ;; The loop threads one state map:
-;;   {:download ... :active-peers ... :blocks-received ... :expected-blocks ...}
+;;   {:download ... :active-peers ... :blocks-received ... :expected-blocks ...
+;;    :pending-dials #{...}}
+;; :pending-dials holds dialed addresses with no resolved
+;; :peer-connected/:peer-disconnected yet (issue #11).
 ;; Handlers take that map plus an event and return [new-state effects];
 ;; channel I/O (sends, disk writes) happens at the loop edge.
+
+(defn initial-coordinator-state
+  "The coordinator state for a download about to dial peer-addresses.
+    Every dialed address starts pending; handlers resolve addresses out
+    as :peer-connected/:peer-disconnected events arrive. Pure."
+  [download peer-addresses]
+  {:download download
+   :active-peers {}
+   :blocks-received {}
+   :expected-blocks {}
+   :pending-dials (set peer-addresses)})
 
 (defn requeue-assignment
   "Requeue address's assigned piece and clear its bookkeeping.
@@ -507,28 +521,45 @@
         (assoc-in [:active-peers address :assigned-piece] nil)
         (update :blocks-received dissoc address))))
 
+(defn- resolve-dial
+  "Drop address from :pending-dials: its dial resolved, whether by
+   connecting or by failing. Idempotent — repeats and unknown
+   addresses are no-ops, matching attempted-minus-resolved exactly."
+  [state address]
+  (update state :pending-dials (fnil disj #{}) address))
+
 (defn on-connected
   "Record a newly connected peer with no assignment yet.
-   Pure. Returns [updated-state effects] (a connection plans no I/O)."
+    The address resolves its dial, so it leaves :pending-dials too.
+    Pure. Returns [updated-state effects] (a connection plans no I/O)."
   [state event]
   (let [{:keys [address peer-data peer-state]} event]
-    [(assoc-in state [:active-peers address]
-               {:peer-data peer-data
-                :peer-state peer-state
-                :assigned-piece nil})
+    [(-> state
+         (assoc-in [:active-peers address]
+                   {:peer-data peer-data
+                    :peer-state peer-state
+                    :assigned-piece nil})
+         (resolve-dial address))
      []]))
 
 (defn swarm-exhausted?
-  "True when no peers remain and pieces are still incomplete:
-   the caller fails the download (unchanged behavior, see issue #11)."
+  "True when the swarm can no longer make progress: no active peers,
+   no dials still in flight, and pieces still incomplete.
+   :pending-dials is the set of dialed addresses with no resolved
+   :peer-connected/:peer-disconnected yet (issue #11); a missing key
+   counts as none pending. The caller fails the download."
   [state]
   (and (empty? (:active-peers state))
+       (empty? (:pending-dials state))
        (not (pieces/complete? (get-in state [:download :piece-state])))))
 
 (defn on-disconnected
   "Drop a peer, requeueing its assigned piece if any. Pure.
-   Returns [updated-state effects] (a disconnect plans no I/O);
-   the caller checks swarm-exhausted? to decide on failure."
+    Any resolved address leaves :pending-dials (attempted minus
+    resolved): a refused dial was still pending, a connected peer
+    resolved at connect time, and a repeat event is a no-op.
+    Returns [updated-state effects] (a disconnect plans no I/O);
+    the caller checks swarm-exhausted? to decide on failure."
   [state event]
   (let [{:keys [address]} event
         assigned (get-in state [:active-peers address :assigned-piece])
@@ -538,7 +569,8 @@
     [(-> state
          (update :active-peers dissoc address)
          (update :blocks-received dissoc address)
-         (update :expected-blocks dissoc address))
+         (update :expected-blocks dissoc address)
+         (resolve-dial address))
      []]))
 
 (defn- all-peer-available-sets
@@ -793,8 +825,9 @@
    Handlers plan state transitions, the edge performs effects.
    Returns the final Download record.
 
-   state — initial coordinator state map
-           {:download ... :active-peers ... :blocks-received ... :expected-blocks ...}
+   state — initial coordinator state map (see initial-coordinator-state):
+           {:download ... :active-peers ... :blocks-received ... :expected-blocks ...
+            :pending-dials #{...}}
    events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
    env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
           :ports {:network-port ... :disk-port ... :time-port ...}
@@ -923,10 +956,7 @@
         (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
 
       ;; Hand the event channel to the coordinator loop
-      (run-coordinator {:download download
-                        :active-peers {}
-                        :blocks-received {}
-                        :expected-blocks {}}
+      (run-coordinator (initial-coordinator-state download peer-addresses)
                        events-ch
                        {:message-ctx {:piece-hashes piece-hashes
                                       :piece-length piece-length

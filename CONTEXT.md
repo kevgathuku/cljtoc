@@ -41,6 +41,9 @@ A live link to a peer carrying the handshake, availability, choking and interest
 A peer's network location: a host plus a port, written canonically as `host:port` (`[host]:port` for IPv6).
 _Avoid_: peer string, endpoint, peer ID
 
+**Swarm exhaustion**:
+No live peer connections, no dials still in flight, and pieces still incomplete — the only condition under which the coordinator fails a download for lack of peers. Connected-but-choking peers and tracker re-announce are deliberately outside this definition.
+
 ## Peer exchange
 
 **Handshake**:

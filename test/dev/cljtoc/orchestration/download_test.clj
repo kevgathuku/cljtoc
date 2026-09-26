@@ -483,7 +483,15 @@
       (is (= {:peer-data {:id "data-a"}
               :peer-state peer-state-value
               :assigned-piece nil}
-             (get-in updated [:active-peers "peer-a"]))))))
+             (get-in updated [:active-peers "peer-a"])))))
+  (testing "a resolving dial leaves the pending set"
+    (let [peer-state-value (peer-state/initial-peer-state 2)
+          state (download/initial-coordinator-state {} ["peer-a" "peer-b"])
+          [updated effects] (download/on-connected state {:address "peer-a"
+                                                          :peer-data {:id "data-a"}
+                                                          :peer-state peer-state-value})]
+      (is (= [] effects))
+      (is (= #{"peer-b"} (:pending-dials updated))))))
 
 (deftest on-disconnected-test
   (testing "requeues the assigned piece and drops the peer with no effects"
@@ -527,7 +535,66 @@
       (is (= [] effects))
       (is (false? (download/swarm-exhausted? updated)))
       (is (contains? (:active-peers updated) "peer-a"))
-      (is (contains? (get-in updated [:download :piece-state :in-flight]) 1)))))
+      (is (contains? (get-in updated [:download :piece-state :in-flight]) 1))))
+  (testing "a refused dial leaves the pending set without touching peers"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{"peer-a" "peer-b"})
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "refused"})]
+      (is (= [] effects))
+      (is (= #{"peer-b"} (:pending-dials updated)))
+      (is (false? (download/swarm-exhausted? updated)))))
+  (testing "dropping a connected peer leaves pending dials alone"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {"peer-a" {:assigned-piece nil}}
+                       :pending-dials #{"peer-b"})
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "boom"})]
+      (is (= [] effects))
+      (is (= #{"peer-b"} (:pending-dials updated)))
+      (is (false? (download/swarm-exhausted? updated)))))
+  (testing "a duplicate disconnect for a resolved dial is a no-op on pending"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{})
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "late duplicate"})]
+      (is (= [] effects))
+      (is (= #{} (:pending-dials updated)))
+      (is (true? (download/swarm-exhausted? updated))))))
+
+;; swarm-exhausted? (issue #11): pending dials count as a live swarm —
+;; failure only when nothing is active, nothing is dialing, and pieces
+;; are still incomplete.
+
+(deftest swarm-exhausted-pending-dials-test
+  (testing "dials in flight mean the swarm is not exhausted"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{"peer-b"})]
+      (is (false? (download/swarm-exhausted? state)))))
+  (testing "no active peers and no pending dials is exhausted"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{})]
+      (is (true? (download/swarm-exhausted? state)))))
+  (testing "active peers still count, pending or not"
+    (let [state (assoc (coordinator-state 1)
+                       :pending-dials #{"peer-b"})]
+      (is (false? (download/swarm-exhausted? state)))))
+  (testing "a complete download is never exhausted"
+    (let [complete-state (pieces/initial-piece-state 2)
+          complete-state (:ok (pieces/mark-in-flight complete-state 0))
+          complete-state (:ok (pieces/mark-in-flight complete-state 1))
+          complete-state (:ok (pieces/mark-verified complete-state 0))
+          complete-state (:ok (pieces/mark-verified complete-state 1))
+          state {:download {:piece-state complete-state}
+                 :active-peers {}
+                 :pending-dials #{}
+                 :blocks-received {}
+                 :expected-blocks {}}]
+      (is (false? (download/swarm-exhausted? state))))))
 
 ;; on-message takes [state event ctx] and returns [new-state effects].
 ;; Effects are data: {:send {:peer-data ... :bytes ...}} for block requests,
@@ -761,7 +828,8 @@
         state {:download download
                :active-peers {}
                :blocks-received {}
-               :expected-blocks {}}]
+               :expected-blocks {}
+               :pending-dials (get opts :pending-dials)}]
     (doseq [event events]
       (async/>!! events-ch event))
     (when (get opts :close? true)
@@ -832,6 +900,43 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
+
+;; Issue #11: the first refused dial must not fail the download while
+;; other dials are still in flight; failure waits until every dial has
+;; resolved with zero connections.
+
+(deftest run-coordinator-waits-for-pending-dials-test
+  (testing "the coordinator starts with every dialed address pending"
+    (let [state (download/initial-coordinator-state (loop-download) ["peer-a" "peer-b"])]
+      (is (= #{"peer-a" "peer-b"} (:pending-dials state)))
+      (is (empty? (:active-peers state)))))
+  (testing "first disconnect with dials outstanding keeps waiting, then completes"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-disconnected :address "peer-a" :reason "Connection refused"}
+                  {:type :peer-connected :address "peer-b"
+                   :peer-data {:id "data-b"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-b" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-b"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-b"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk
+                               {:pending-dials #{"peer-a" "peer-b"}})]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 2 (pieces/verified-count (:piece-state result))))))
+  (testing "failure only after all dials resolve with zero connections"
+    (let [disk (mock-disk/create)
+          conn-stats (atom {:connected 0 :failed 0})
+          events [{:type :peer-disconnected :address "peer-a" :reason "refused"}
+                  {:type :peer-disconnected :address "peer-b" :reason "timeout"}]
+          result (scripted-run events (loop-download) disk
+                               {:pending-dials #{"peer-a" "peer-b"}
+                                :conn-stats conn-stats})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (= 2 (:failed @conn-stats))))))
 
 (deftest run-coordinator-send-failure-counts-peer-once-test
   (testing "a dropped peer's late disconnect is not double-counted"
