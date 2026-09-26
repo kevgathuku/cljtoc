@@ -934,51 +934,62 @@
    Connects to peers, requests pieces, writes verified pieces.
    Returns the final Download record."
   [manager download]
-  (cond
-    (pieces/complete? (:piece-state download))
-    (assoc download :state :completed)
+  (let [{:keys [disk-port]} manager
+        init-result (async/<!! (disk/initialize-output-layout
+                                disk-port
+                                (:info (:torrent download))
+                                (:output-dir download)))]
+    (cond
+      (:error init-result)
+      (assoc download :state :failed
+             :error {:reason :disk-error
+                     :message (str "Failed to initialize output layout: "
+                                   (:message init-result))})
+
+      (pieces/complete? (:piece-state download))
+      (assoc download :state :completed)
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.
-    (empty? (:peers download))
-    (assoc download :state :failed
-           :error {:reason :no-peers
-                   :message "No peers available: nothing to connect to"})
+      (empty? (:peers download))
+      (assoc download :state :failed
+             :error {:reason :no-peers
+                     :message "No peers available: nothing to connect to"})
 
-    :else
-    (let [{:keys [network-port disk-port time-port]} manager
-          config (:config manager)
-          torrent (:torrent download)
-          info (:info torrent)
-          info-hash (:info-hash torrent)
-          total-pieces (count (:pieces info))
-          piece-hashes (:pieces info)
-          piece-length (:piece-length info)
-          total-length (torrent/total-size info)
-          peer-id (let [b (byte-array 20)]
-                    (.nextBytes (SecureRandom.) b)
-                    b)
-          peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
-          events-ch (async/chan 256)
-          total-attempted (count peer-addresses)
-          conn-stats (atom {:connected 0 :failed 0})]
+      :else
+      (let [{:keys [network-port disk-port time-port]} manager
+            config (:config manager)
+            torrent (:torrent download)
+            info (:info torrent)
+            info-hash (:info-hash torrent)
+            total-pieces (count (:pieces info))
+            piece-hashes (:pieces info)
+            piece-length (:piece-length info)
+            total-length (torrent/total-size info)
+            peer-id (let [b (byte-array 20)]
+                      (.nextBytes (SecureRandom.) b)
+                      b)
+            peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
+            events-ch (async/chan 256)
+            total-attempted (count peer-addresses)
+            conn-stats (atom {:connected 0 :failed 0})]
 
-      (println (str "  Connecting to " total-attempted " peers..."))
-      (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+        (println (str "  Connecting to " total-attempted " peers..."))
+        (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
       ;; Spawn peer workers
-      (doseq [addr peer-addresses]
-        (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
+        (doseq [addr peer-addresses]
+          (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
 
       ;; Hand the event channel to the coordinator loop
-      (run-coordinator (initial-coordinator-state download peer-addresses)
-                       events-ch
-                       {:message-ctx {:piece-hashes piece-hashes
-                                      :piece-length piece-length
-                                      :total-length total-length
-                                      :total-pieces total-pieces}
-                        :ports {:network-port network-port
-                                :disk-port disk-port
-                                :time-port time-port}
-                        :conn-stats conn-stats
-                        :total-attempted total-attempted}))))
+        (run-coordinator (initial-coordinator-state download peer-addresses)
+                         events-ch
+                         {:message-ctx {:piece-hashes piece-hashes
+                                        :piece-length piece-length
+                                        :total-length total-length
+                                        :total-pieces total-pieces}
+                          :ports {:network-port network-port
+                                  :disk-port disk-port
+                                  :time-port time-port}
+                          :conn-stats conn-stats
+                          :total-attempted total-attempted})))))

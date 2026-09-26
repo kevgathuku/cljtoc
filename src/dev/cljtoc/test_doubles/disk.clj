@@ -10,6 +10,7 @@
             torrent-data
             piece-cache
             output-pieces
+            layouts-initialized
             state-files
             directories-created]
 
@@ -46,6 +47,13 @@
           (do
             (swap! output-pieces assoc piece-index bytes)
             (async/>! ch {:ok :written}))))
+      ch))
+
+  (initialize-output-layout [_ info output-dir]
+    (let [ch (async/chan 1)]
+      (async/go
+        (swap! layouts-initialized conj {:info info :output-dir output-dir})
+        (async/>! ch {:ok :initialized}))
       ch))
 
   (ensure-directory [_ path]
@@ -89,6 +97,7 @@
                    (atom (or (:torrent-data config) {}))
                    (atom {})
                    (atom {})
+                   (atom [])
                    (atom {})
                    (atom #{}))))
 

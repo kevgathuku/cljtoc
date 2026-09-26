@@ -40,6 +40,15 @@
 
      Side effects: writes to filesystem")
 
+  (initialize-output-layout [this info output-dir]
+    "Create every declared output path under output-dir at its declared
+     length, including zero-length files. Runs once at download start so
+     a torrent with no pieces still materializes its empty files, and so
+     piece writes only touch files they overlap.
+     Returns a channel that will deliver {:ok :initialized} or {:error reason}.
+
+     Side effects: creates files and directories")
+
   (ensure-directory [this path]
     "Ensure a directory exists, creating it if necessary.
      Returns a channel that will deliver :ok or {:error reason}.

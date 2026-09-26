@@ -31,23 +31,23 @@
          :message (str "Output path escapes " output-dir ": " (pr-str file-path))}))))
 
 (defn- write-layout!
-  "Blocking write of one piece into the torrent file layout. Every declared
-   output path is resolved (symlink-contained), created, and truncated to its
-   declared length — including zero-length files, which no piece span covers —
-   then this piece's spans land. Returns {:ok :written} or {:error ...}."
+  "Blocking write of one piece into the torrent file layout. Only files this
+   piece overlaps are opened; each is resolved (symlink-contained), truncated
+   to its declared length, then the spans land. Returns {:ok :written} or
+   {:error ...}."
   [output-dir sizes spans bytes]
-  (let [resolved (into {} (map (fn [[declared-path _]]
+  (let [touched (group-by :path spans)
+        resolved (into {} (map (fn [declared-path]
                                  [declared-path (resolve-contained output-dir declared-path)])
-                               sizes))
+                               (keys touched)))
         escaped (first (filter #(-> % val :error) resolved))]
     (if escaped
       (val escaped)
       (try
-        (doseq [[declared-path declared-length] sizes]
-          (let [out-file (:ok (get resolved declared-path))
-                file-spans (get (group-by :path spans) declared-path [])]
+        (doseq [[declared-path file-spans] touched]
+          (let [out-file (:ok (get resolved declared-path))]
             (with-open [raf (RandomAccessFile. out-file "rw")]
-              (.setLength raf declared-length)
+              (.setLength raf (get sizes declared-path))
               (doseq [{file-offset :file-offset
                        data-offset :data-offset
                        span-length :length} file-spans]
@@ -57,6 +57,24 @@
                   (.seek raf file-offset)
                   (.write raf slice))))))
         {:ok :written}
+        (catch Exception error
+          {:error :write-error :message (.getMessage error)})))))
+
+(defn- init-layout!
+  "Blocking creation of every declared output path at its declared length,
+   including zero-length files. Returns {:ok :initialized} or {:error ...}."
+  [output-dir sizes]
+  (let [resolved (into {} (map (fn [[declared-path _]]
+                                 [declared-path (resolve-contained output-dir declared-path)])
+                               sizes))
+        escaped (first (filter #(-> % val :error) resolved))]
+    (if escaped
+      (val escaped)
+      (try
+        (doseq [[declared-path declared-length] sizes]
+          (with-open [raf (RandomAccessFile. (:ok (get resolved declared-path)) "rw")]
+            (.setLength raf declared-length)))
+        {:ok :initialized}
         (catch Exception error
           {:error :write-error :message (.getMessage error)})))))
 
@@ -130,6 +148,18 @@
                                           (:ok sizes-result)
                                           (:ok spans-result)
                                           bytes))))
+          (catch Exception error
+            (async/>! ch {:error :write-error :message (.getMessage error)}))))
+      ch))
+
+  (initialize-output-layout [this info output-dir]
+    (let [ch (async/chan 1)]
+      (async/go
+        (try
+          (let [sizes-result (torrent/output-file-sizes info)]
+            (if (:error sizes-result)
+              (async/>! ch {:error :invalid-info :message (:message sizes-result)})
+              (async/>! ch (init-layout! output-dir (:ok sizes-result)))))
           (catch Exception error
             (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))

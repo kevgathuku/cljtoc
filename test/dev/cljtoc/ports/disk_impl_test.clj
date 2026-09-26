@@ -170,6 +170,7 @@
                         {:path ["empty"] :length 0}
                         {:path ["b"] :length 4}]}
           empty-file (io/file output-dir "t" "empty")]
+      (is (= {:ok :initialized} (<!! (disk/initialize-output-layout port info output-dir))))
       (is (= {:ok :written}
              (<!! (disk/write-output-piece port info output-dir 0 (byte-array [0 1 2 3])))))
       (is (= {:ok :written}
@@ -182,3 +183,30 @@
       (is (java.util.Arrays/equals (byte-array [4 5 6 7])
                                    (java.nio.file.Files/readAllBytes
                                     (.toPath (io/file output-dir "t" "b"))))))))
+
+(deftest initialize-output-layout-creates-empty-files-test
+  (testing "a torrent with no pieces still materializes its empty files"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-empty-only-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 0} {:path ["b"] :length 0}]}]
+      (is (= {:ok :initialized} (<!! (disk/initialize-output-layout port info output-dir))))
+      (is (.exists (io/file output-dir "t" "a")))
+      (is (zero? (.length (io/file output-dir "t" "a"))))
+      (is (.exists (io/file output-dir "t" "b"))))))
+
+(deftest write-output-piece-leaves-untouched-files-alone-test
+  (testing "writing one piece does not re-truncate a file it does not touch"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-untouched-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          sentinel (io/file output-dir "t" "b")]
+      (<!! (disk/initialize-output-layout port info output-dir))
+      (spit sentinel "sentinel")
+      (is (= {:ok :written}
+             (<!! (disk/write-output-piece port info output-dir 0 (byte-array [0 1 2 3])))))
+      (is (= "sentinel" (slurp sentinel)))
+      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "a"))))))))
