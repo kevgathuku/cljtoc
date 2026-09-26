@@ -725,11 +725,20 @@
           (let [{:keys [piece-idx data]} (:write-verified effect)
                 result (async/<!! (disk/write-piece disk-port piece-idx data))]
             (if (:error result)
-            ;; Bytes never landed: return the piece to needed so the
-            ;; failed record stays honest and retryable.
-              (let [piece-state (get-in state [:download :piece-state])
+              ;; Bytes never landed: unwind the write's piece plus every
+              ;; follow-up assignment this batch planned (their sends never
+              ;; ran), so the failed record stays honest and retryable.
+              (let [send-addrs (distinct (keep #(get-in % [:send :address]) effects))
+                    state (reduce (fn [unwound address]
+                                    (if-let [assigned (get-in unwound [:active-peers address :assigned-piece])]
+                                      (requeue-assignment unwound address assigned)
+                                      unwound))
+                                  state send-addrs)
+                    piece-state (get-in state [:download :piece-state])
                     requeued (pieces/requeue-piece piece-state piece-idx)]
-                [(assoc-in state [:download :piece-state] (or (:ok requeued) piece-state))
+                [(-> state
+                     (assoc-in [:download :piece-state] (or (:ok requeued) piece-state))
+                     (update :expected-blocks #(apply dissoc % send-addrs)))
                  {:fatal {:reason :disk-error
                           :message (str "Failed to write piece " piece-idx
                                         ": " (:message result))

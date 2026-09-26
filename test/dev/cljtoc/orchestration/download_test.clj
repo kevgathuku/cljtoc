@@ -888,5 +888,6 @@
         (is (= :failed (:state result)))
         (is (= :disk-error (get-in result [:error :reason])))
         (is (contains? (get-in result [:piece-state :needed]) 0))
-        (is (not (contains? (get-in result [:piece-state :in-flight]) 0)))
+        (is (contains? (get-in result [:piece-state :needed]) 1))
+        (is (empty? (get-in result [:piece-state :in-flight])))
         (is (empty? (get-in result [:piece-state :verified])))))))
