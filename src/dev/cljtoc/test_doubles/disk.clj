@@ -9,6 +9,7 @@
            [config
             torrent-data
             piece-cache
+            output-pieces
             state-files
             directories-created]
 
@@ -34,6 +35,16 @@
           (async/>! ch err)
           (do
             (swap! piece-cache assoc piece-index bytes)
+            (async/>! ch {:ok :written}))))
+      ch))
+
+  (write-output-piece [_ _info _output-dir piece-index bytes]
+    (let [ch (async/chan 1)]
+      (async/go
+        (if-let [err (or (:output-write-error config) (:write-error config))]
+          (async/>! ch err)
+          (do
+            (swap! output-pieces assoc piece-index bytes)
             (async/>! ch {:ok :written}))))
       ch))
 
@@ -69,12 +80,14 @@
    
    Options:
    - :torrent-data - map of path -> torrent metadata to return
-   - :write-error - error map returned from write-piece instead of storing"
+   - :write-error - error map returned from write-piece instead of storing
+   - :output-write-error - error map from write-output-piece (falls back to :write-error)"
   ([]
    (create {}))
   ([config]
    (->MockDiskPort config
                    (atom (or (:torrent-data config) {}))
+                   (atom {})
                    (atom {})
                    (atom {})
                    (atom #{}))))
@@ -84,6 +97,9 @@
 
 (defn get-piece [mock-disk piece-index]
   (get @(:piece-cache mock-disk) piece-index))
+
+(defn get-output-piece [mock-disk piece-index]
+  (get @(:output-pieces mock-disk) piece-index))
 
 (defn get-state [mock-disk id]
   (get @(:state-files mock-disk) id))

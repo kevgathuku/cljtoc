@@ -31,6 +31,15 @@
      
      Side effects: writes to filesystem")
 
+  (write-output-piece [this info output-dir piece-index bytes]
+    "Write one verified piece into the torrent file layout under output-dir.
+     Single-file info (:length) lands at output-dir/<name>; multi-file
+     info (:files) lands at output-dir/<name>/<path...>, splitting pieces
+     that cross a file boundary via domain.torrent/piece-file-spans.
+     Returns a channel that will deliver {:ok :written} or {:error reason}.
+
+     Side effects: writes to filesystem")
+
   (ensure-directory [this path]
     "Ensure a directory exists, creating it if necessary.
      Returns a channel that will deliver :ok or {:error reason}.

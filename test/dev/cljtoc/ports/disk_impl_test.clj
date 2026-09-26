@@ -97,3 +97,33 @@
       (is (= :paused (:state paused)))
       (is (= :downloading (:state resumed)))
       (is (= "cycle" (:id resumed))))))
+
+(deftest write-output-piece-assembles-single-file-test
+  (testing "N pieces written through the port assemble byte-identical under output-dir"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-single-")
+          info {:name "data.bin" :piece-length 4 :length 10}
+          piece-bytes [(byte-array [0 1 2 3]) (byte-array [4 5 6 7]) (byte-array [8 9])]]
+      (doseq [[piece-index piece-data] (map-indexed vector piece-bytes)]
+        (is (= {:ok :written}
+               (<!! (disk/write-output-piece port info output-dir piece-index piece-data)))))
+      (is (java.util.Arrays/equals (byte-array (range 10))
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "data.bin"))))))))
+
+(deftest write-output-piece-spans-file-boundary-test
+  (testing "a piece crossing a file boundary lands split across both files"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-multi-")
+          info {:name "t" :piece-length 6
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
+      (is (= {:ok :written}
+             (<!! (disk/write-output-piece port info output-dir 0 (byte-array [0 1 2 3 4 5])))))
+      (is (= {:ok :written}
+             (<!! (disk/write-output-piece port info output-dir 1 (byte-array [6 7 8 9])))))
+      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "a")))))
+      (is (java.util.Arrays/equals (byte-array [4 5 6 7 8 9])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "b"))))))))

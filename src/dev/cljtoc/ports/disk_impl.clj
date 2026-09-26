@@ -8,8 +8,9 @@
             [clojure.java.io :as io]
             [clojure.edn :as edn]
             [clojure.core.async :as async])
-  (:import [java.io File FileInputStream FileOutputStream]
-           [java.nio.file Files Paths]))
+  (:import [java.io File FileInputStream FileOutputStream RandomAccessFile]
+           [java.nio.file Files Paths]
+           [java.util Arrays]))
 
 (defrecord DiskPortImpl
            [state-dir
@@ -55,6 +56,35 @@
               (.mkdirs parent))
             (clojure.java.io/copy bytes piece-file)
             (async/>! ch {:ok :written}))
+          (catch Exception e
+            (async/>! ch {:error :write-error :message (.getMessage e)}))))
+      ch))
+
+  (write-output-piece [this info output-dir piece-index bytes]
+    (let [ch (async/chan 1)]
+      (async/go
+        (try
+          (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))]
+            (if (:error spans-result)
+              (async/>! ch {:error :invalid-info
+                            :message (str "Cannot map piece " piece-index ": "
+                                          (:message spans-result))})
+              (do
+                (doseq [{file-path :path file-offset :file-offset
+                         data-offset :data-offset span-length :length} (:ok spans-result)]
+                  (let [out-file (apply io/file output-dir file-path)
+                        parent (.getParentFile out-file)]
+                    (when parent
+                      (.mkdirs parent))
+                    (let [slice (Arrays/copyOfRange ^bytes bytes
+                                                    (int data-offset)
+                                                    (int (+ data-offset span-length)))
+                          raf (RandomAccessFile. out-file "rw")]
+                      (try
+                        (.seek raf file-offset)
+                        (.write raf slice)
+                        (finally (.close raf))))))
+                (async/>! ch {:ok :written}))))
           (catch Exception e
             (async/>! ch {:error :write-error :message (.getMessage e)}))))
       ch))
