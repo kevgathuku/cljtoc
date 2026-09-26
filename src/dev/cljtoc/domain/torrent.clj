@@ -123,11 +123,13 @@
 
 (defn- safe-path-component?
   "True when a torrent-declared path component cannot escape the output
-   directory: a non-empty name with no parent reference or separator."
+   directory: a non-empty name with no parent reference, self-reference,
+   or separator."
   [component]
   (and (string? component)
        (not (empty? component))
        (not= ".." component)
+       (not= "." component)
        (not (re-find #"[/\\]" component))))
 
 (defn- file-layout
@@ -147,13 +149,22 @@
 
 (defn output-file-sizes
   "Declared output sizes of an info dict: {relative-path-vector length}.
-   Returns {:ok sizes} or {:error ...} when :name is missing."
+   Rejects a missing :name and any path component that could escape the
+   output directory, so a caller never receives a path it must not open.
+   Returns {:ok sizes} or {:error ...}."
   [info]
-  (if-let [layout (file-layout info)]
-    {:ok (into {} (map (fn [{file-path :path file-length :length}]
-                         [file-path file-length])
-                       layout))}
-    (bencode/torrent-error "info must carry :name for output paths" {})))
+  (let [components (cons (:name info) (mapcat :path (:files info)))]
+    (cond
+      (nil? (:name info))
+      (bencode/torrent-error "info must carry :name for output paths" {})
+
+      (not (every? safe-path-component? components))
+      (bencode/torrent-error "info carries a path component that escapes the output directory" {})
+
+      :else
+      {:ok (into {} (map (fn [{file-path :path file-length :length}]
+                           [file-path file-length])
+                         (file-layout info)))})))
 
 (s/fdef output-file-sizes
   :args (s/cat :info ::info)

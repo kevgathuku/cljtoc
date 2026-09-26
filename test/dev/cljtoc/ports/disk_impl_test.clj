@@ -6,6 +6,9 @@
             [clojure.core.async :refer [<!!]]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
+            [clojure.test.check.clojure-test :refer [defspec]]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
@@ -193,6 +196,24 @@
         (is (not (.exists (io/file outside-dir "a"))))
         (is (not (.exists (io/file outside-dir "b"))))))))
 
+(deftest initialize-output-layout-rejects-escaping-component-test
+  (testing "layout init refuses the hostile components the piece write refuses"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-init-escape-")
+          info {:name "a/b" :piece-length 4 :length 4}
+          result (<!! (disk/initialize-output-layout port info output-dir))]
+      (is (= :invalid-info (:error result)))
+      (is (re-find #"escape" (:message result)))
+      (is (not (.exists (io/file output-dir "a"))))))
+
+  (testing "a nested multi-file path is still accepted"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-init-nested-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["sub" "deep" "a"] :length 4}]}]
+      (is (= {:ok :initialized} (<!! (disk/initialize-output-layout port info output-dir))))
+      (is (.exists (io/file output-dir "t" "sub" "deep" "a"))))))
+
 (deftest write-output-piece-creates-zero-length-file-test
   (testing "a declared zero-length file exists empty after its neighbors land"
     (let [port (make-port (temp-dir "disk-state-"))
@@ -301,3 +322,5 @@
       (is (java.util.Arrays/equals (byte-array [0 1 2 3])
                                    (java.nio.file.Files/readAllBytes
                                     (.toPath (io/file output-dir "t" "a"))))))))
+
+;; ---------------------------------------------------------------------------
