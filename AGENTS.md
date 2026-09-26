@@ -156,6 +156,8 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 - Co-locate function specs: `(s/fdef NAME ...)` directly after its `defn`, never in a trailing section. Data `s/def` specs must be defined before any fdef referencing them (the spec registry resolves at load time)
 - Edge effects must handle port result envelopes: after planning moved state forward, a failed send/write strands it — unwind (requeue + drop bookkeeping) or fail explicitly, never discard `{:error ...}`
 - Test doubles must mirror the real ports' error envelopes (e.g., `MockDiskPort` `:write-error`) so edge failure paths stay drivable; success-only mocks leave failure handling untestable
+- Filesystem writes must containment-check the canonical path: lexical component validation does not stop a pre-existing symlink inside the target dir from redirecting the write outside it — resolve, create parents, then require the canonical file to stay under the canonical dir before opening (see `DiskPortImpl/resolve-contained`)
+- Every declared output path must be initialized on write, not just paths with data: zero-length files produce no spans and would otherwise be missing from a completed download (see `DiskPortImpl/write-layout!`)
 
 ## Common Errors to Avoid
 

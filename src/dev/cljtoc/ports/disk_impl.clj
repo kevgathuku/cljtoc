@@ -12,6 +12,54 @@
            [java.nio.file Files Paths]
            [java.util Arrays]))
 
+(defn- resolve-contained
+  "Resolve relative path components under output-dir for writing.
+   Creates missing parents, then requires the canonical file path to stay
+   under the canonical output dir — a pre-existing symlink component would
+   otherwise redirect the write outside it. Returns {:ok File} or
+   {:error :unsafe-path ...}."
+  [output-dir file-path]
+  (let [out-file (apply io/file output-dir file-path)
+        parent (.getParentFile out-file)]
+    (when parent
+      (.mkdirs parent))
+    (let [canonical-dir (.getCanonicalPath (io/file output-dir))
+          canonical-file (.getCanonicalPath out-file)]
+      (if (.startsWith canonical-file (str canonical-dir File/separator))
+        {:ok out-file}
+        {:error :unsafe-path
+         :message (str "Output path escapes " output-dir ": " (pr-str file-path))}))))
+
+(defn- write-layout!
+  "Blocking write of one piece into the torrent file layout. Every declared
+   output path is resolved (symlink-contained), created, and truncated to its
+   declared length — including zero-length files, which no piece span covers —
+   then this piece's spans land. Returns {:ok :written} or {:error ...}."
+  [output-dir sizes spans bytes]
+  (let [resolved (into {} (map (fn [[declared-path _]]
+                                 [declared-path (resolve-contained output-dir declared-path)])
+                               sizes))
+        escaped (first (filter #(-> % val :error) resolved))]
+    (if escaped
+      (val escaped)
+      (try
+        (doseq [[declared-path declared-length] sizes]
+          (let [out-file (:ok (get resolved declared-path))
+                file-spans (get (group-by :path spans) declared-path [])]
+            (with-open [raf (RandomAccessFile. out-file "rw")]
+              (.setLength raf declared-length)
+              (doseq [{file-offset :file-offset
+                       data-offset :data-offset
+                       span-length :length} file-spans]
+                (let [slice (Arrays/copyOfRange ^bytes bytes
+                                                (int data-offset)
+                                                (int (+ data-offset span-length)))]
+                  (.seek raf file-offset)
+                  (.write raf slice))))))
+        {:ok :written}
+        (catch Exception error
+          {:error :write-error :message (.getMessage error)})))))
+
 (defrecord DiskPortImpl
            [state-dir
             piece-cache-dir
@@ -66,33 +114,22 @@
         (try
           (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
                 sizes-result (torrent/output-file-sizes info)]
-            (if (:error spans-result)
+            (cond
+              (:error spans-result)
               (async/>! ch {:error :invalid-info
                             :message (str "Cannot map piece " piece-index ": "
                                           (:message spans-result))})
-              (do
-                ;; One handle per touched file: write this piece's spans,
-                ;; then truncate to the declared length so a longer file
-                ;; left by an earlier run cannot leave stale trailing bytes.
-                (doseq [[file-path file-spans] (group-by :path (:ok spans-result))]
-                  (let [out-file (apply io/file output-dir file-path)
-                        parent (.getParentFile out-file)]
-                    (when parent
-                      (.mkdirs parent))
-                    (let [raf (RandomAccessFile. out-file "rw")]
-                      (try
-                        (doseq [{file-offset :file-offset
-                                 data-offset :data-offset
-                                 span-length :length} file-spans]
-                          (let [slice (Arrays/copyOfRange ^bytes bytes
-                                                          (int data-offset)
-                                                          (int (+ data-offset span-length)))]
-                            (.seek raf file-offset)
-                            (.write raf slice)))
-                        (when-let [declared (get (:ok sizes-result) file-path)]
-                          (.setLength raf declared))
-                        (finally (.close raf))))))
-                (async/>! ch {:ok :written}))))
+
+              (:error sizes-result)
+              (async/>! ch {:error :invalid-info
+                            :message (str "Cannot size piece " piece-index ": "
+                                          (:message sizes-result))})
+
+              :else
+              (async/>! ch (write-layout! output-dir
+                                          (:ok sizes-result)
+                                          (:ok spans-result)
+                                          bytes))))
           (catch Exception error
             (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))

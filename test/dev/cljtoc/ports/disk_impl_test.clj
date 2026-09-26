@@ -144,3 +144,41 @@
                (<!! (disk/write-output-piece port info output-dir piece-index piece-data)))))
       (is (java.util.Arrays/equals (byte-array (range 10))
                                    (java.nio.file.Files/readAllBytes (.toPath stale)))))))
+
+(deftest write-output-piece-rejects-symlink-escape-test
+  (testing "a symlink inside output-dir cannot redirect a write outside it"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-link-")
+          outside-dir (temp-dir "outside-")
+          target (io/file outside-dir "victim.bin")]
+      (spit target "original")
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "link.bin"))
+       (.toPath target)
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "link.bin" :piece-length 4 :length 4}
+            result (<!! (disk/write-output-piece port info output-dir 0 (byte-array [1 2 3 4])))]
+        (is (:error result))
+        (is (= "original" (slurp target)))))))
+
+(deftest write-output-piece-creates-zero-length-file-test
+  (testing "a declared zero-length file exists empty after its neighbors land"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-empty-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4}
+                        {:path ["empty"] :length 0}
+                        {:path ["b"] :length 4}]}
+          empty-file (io/file output-dir "t" "empty")]
+      (is (= {:ok :written}
+             (<!! (disk/write-output-piece port info output-dir 0 (byte-array [0 1 2 3])))))
+      (is (= {:ok :written}
+             (<!! (disk/write-output-piece port info output-dir 1 (byte-array [4 5 6 7])))))
+      (is (.exists empty-file))
+      (is (zero? (.length empty-file)))
+      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "a")))))
+      (is (java.util.Arrays/equals (byte-array [4 5 6 7])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "b"))))))))
