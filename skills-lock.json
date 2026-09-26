@@ -49,6 +49,18 @@
       "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
       "computedHash": "2449db6ab1ded9581f69fcc56c1f64818112d05e271fd4c5da23c6523f9d3d9d"
     },
+    "mempalace": {
+      "source": "MemPalace/mempalace",
+      "sourceType": "github",
+      "skillPath": "skills/mempalace/SKILL.md",
+      "computedHash": "1e64ff3174c7f1a8b83243fdc11a2497feb9157fe9bede6f6817a34a5dcbd91b"
+    },
+    "mempalace-recall": {
+      "source": "MemPalace/mempalace",
+      "sourceType": "github",
+      "skillPath": "skills/mempalace-recall/SKILL.md",
+      "computedHash": "dc60ca63a00629ea7bc906ff070ad7bacff5381a8badec73bffe4e5916a717eb"
+    },
     "research": {
       "source": "mattpocock/skills",
       "sourceType": "github",
