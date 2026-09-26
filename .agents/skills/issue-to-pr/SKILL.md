@@ -27,11 +27,15 @@ Both gates must pass before proceeding; fix what they report, don't work around 
 
 Re-run each gate after its fixes until clean.
 
-## 5. Update docs and specs
+## 5. Self-review with /code-review
+
+Run the `code-review` skill against the branch (fixed point `main`) before opening the PR: Standards (repo conventions) and Spec (the issue as written). Address what it finds — fix, then re-run the gates in step 4 — and note deliberate deviations for the PR body and the palace entry.
+
+## 6. Update docs and specs
 
 Before opening the PR, keep the docs consistent with the change: search `docs/`, `specs/`, `CONTEXT.md`, and `docs/adr/` for statements this PR invalidates (removed APIs, changed seams, renamed concepts, altered behavior). Update what the change actually breaks, in the same branch so docs and code land together. Scoped to broken assumptions only — never rewrite unrelated docs.
 
-## 6. Open the PR
+## 7. Open the PR
 
 Stage only intended files, commit with a message describing what changed and why, push with `-u origin`, then `gh pr create` with:
 
@@ -41,13 +45,13 @@ Stage only intended files, commit with a message describing what changed and why
 
 Return the PR URL.
 
-## 7. Request Copilot review
+## 8. Request Copilot review
 
 Once the PR is open, request a review from Copilot at Lite effort:
 
 - `gh pr edit <number> --add-reviewer @copilot` (Lite is the default effort level; pick Balanced in the PR UI under Reviewers only if the change is security-sensitive or cross-service).
 - Confirm the request landed: `gh pr view <number> --json reviewRequests -q '.reviewRequests[].login'`.
 
-## 8. File the decision
+## 9. File the decision
 
 Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
