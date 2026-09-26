@@ -22,7 +22,7 @@
                  :pieces (byte-array (* 20 3))
                  :length 786432
                  :files []}
-        d (download/initial-download torrent "/output")]
+        d (download/initial-download torrent "/output" "test")]
     (is (some? (:id d)))
     (is (= torrent (:torrent d)))
     (is (= :starting (:state d)))
@@ -315,3 +315,28 @@
 
 ;; (peer-address construction is covered by start-download-builds-peers-with-host-and-port
 ;;  above and the dev.cljtoc.domain.peer-address-test suite.)
+
+;; Canonical download IDs (issue #7): human-readable, derived once from the
+;; torrent path — never a UUID, never overwritten post-hoc.
+
+(deftest initial-download-uses-given-id-test
+  (let [torrent {:info-hash (byte-array 20)
+                 :name "test.torrent"
+                 :piece-length 262144
+                 :pieces (byte-array (* 20 3))
+                 :length 786432
+                 :files []}
+        d (download/initial-download torrent "/output" "my-torrent")]
+    (is (= "my-torrent" (:id d)))
+    (is (string? (:id d)))))
+
+(deftest start-download-derives-id-from-path-test
+  (let [disk (mock-disk/create)
+        _ (mock-disk/add-torrent disk "/dl/my-torrent.torrent"
+                                 {:info-hash (byte-array 20)
+                                  :info {:pieces ["h1" "h2"]}})
+        net (mock-net/create {:mock-peers ["10.0.0.1:6881"]})
+        result (download/start-download {:network-port net :disk-port disk}
+                                        "/dl/my-torrent.torrent" "/out")]
+    (is (= :downloading (:state result)))
+    (is (= "my-torrent" (:id result)))))

@@ -24,7 +24,7 @@
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.coordination.peer-worker :as peer-worker])
-  (:import [java.util BitSet UUID]
+  (:import [java.util BitSet]
            [java.security SecureRandom]))
 
 (defrecord Download
@@ -134,11 +134,11 @@
       (long (/ bytes-downloaded elapsed-seconds))
       0)))
 
-(defn initial-download [torrent output-dir]
+(defn initial-download [torrent output-dir download-id]
   (let [info (:info torrent)
         total-pieces (count (:pieces info))
         piece-state (pieces/initial-piece-state total-pieces)]
-    (->Download (UUID/randomUUID)
+    (->Download download-id
                 torrent
                 piece-state
                 #{}
@@ -153,7 +153,7 @@
     (if (:error parse-result)
       parse-result
       (let [torrent (:ok parse-result)
-            download (initial-download torrent output-dir)
+            download (initial-download torrent output-dir (disk/id-from-path torrent-path))
             announce-result (async/<!! (announce-to-tracker network-port torrent))]
         (if (:error announce-result)
           (assoc download :state :failed
@@ -220,16 +220,11 @@
    (resume-download nil nil download))
   ([disk-port network-port download]
    (if (= :paused (:state download))
-     (let [download-id (:id download)
-           loaded-download (if disk-port
-                             (async/<!! (disk/load-state disk-port download-id))
-                             download)
-           restored (if (or (nil? loaded-download) (:error loaded-download))
-                      download
-                      loaded-download)
-           resumed-download (assoc restored :state :downloading)]
-       {:ok resumed-download})
-     {:error :not-paused :message "Download is not paused"})))
+     (let [stored (when disk-port
+                    (:ok (async/<!! (disk/load-state disk-port (:id download)))))
+           resumed-download (assoc (or stored download) :state :downloading)]
+        {:ok resumed-download})
+      {:error :not-paused :message "Download is not paused"})))
 
 (defn load-persisted-state [disk-port download-id]
   "Load persisted download state from disk."
@@ -361,8 +356,7 @@
         (when (:ok mark-result)
           (let [info (get-in download [:torrent :info])
                 piece-length (:piece-length info)
-                total-length (or (:length info)
-                                 (reduce + (map :length (:files info))))
+                total-length (torrent/total-size info)
                 blocks-result (pieces/piece-blocks piece-idx piece-length total-length)]
             (when (:ok blocks-result)
               (let [blocks (:ok blocks-result)
@@ -413,8 +407,7 @@
         total-pieces (count (:pieces info))
         piece-hashes (:pieces info)
         piece-length (:piece-length info)
-        total-length (or (:length info)
-                         (reduce + (map :length (:files info))))
+        total-length (torrent/total-size info)
         peer-id (let [b (byte-array 20)]
                   (.nextBytes (SecureRandom.) b)
                   b)
@@ -669,7 +662,7 @@
 ;; Spec Validation
 ;; ============================================================================
 
-(s/def ::download-id uuid?)
+(s/def ::download-id string?)
 (s/def ::state keyword?)
 (s/def ::output-dir string?)
 (s/def ::bytes-downloaded nat-int?)
@@ -694,7 +687,7 @@
   :ret (s/keys :req-un [::started-at]))
 
 (s/fdef initial-download
-  :args (s/cat :torrent map? :output-dir string?)
+  :args (s/cat :torrent map? :output-dir string? :download-id string?)
   :ret (s/keys :req-un [::download-id ::state]))
 
 (s/fdef progress

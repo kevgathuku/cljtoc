@@ -321,3 +321,11 @@
   (testing "torrent errors have context"
     (let [err (bencode/torrent-error "test error" {:field "info"})]
       (is (= {:field "info"} (:context err))))))
+
+(deftest total-size-test
+  (testing "single-file info uses :length"
+    (is (= 500000 (torrent/total-size {:length 500000}))))
+  (testing "multi-file info sums contained file lengths"
+    (is (= 300 (torrent/total-size {:files [{:length 100} {:length 200}]}))))
+  (testing "missing sizes total zero"
+    (is (= 0 (torrent/total-size {})))))

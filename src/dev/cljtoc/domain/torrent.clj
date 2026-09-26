@@ -101,7 +101,14 @@
                   :pieces pieces}
            length (assoc :length length)
            files (assoc :files (mapv parse-file-entry files))
-           (some? private) (assoc :private (= 1 private)))}))
+            (some? private) (assoc :private (= 1 private)))}))
+
+(defn total-size
+  "Total content bytes described by an info dict: :length for single-file
+   torrents, the sum of contained file lengths for multi-file ones."
+  [info]
+  (or (:length info)
+      (reduce + 0 (map :length (:files info)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Validation
