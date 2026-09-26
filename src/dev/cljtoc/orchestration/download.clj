@@ -509,14 +509,17 @@
 
 (defn on-connected
   "Record a newly connected peer with no assignment yet.
-   Pure. Returns [updated-state effects] (a connection plans no I/O)."
+    The address resolves its dial, so it leaves :pending-dials too.
+    Pure. Returns [updated-state effects] (a connection plans no I/O)."
   [state event]
   (let [{:keys [address peer-data peer-state]} event]
-    [(assoc-in state [:active-peers address]
-               {:peer-data peer-data
-                :peer-state peer-state
-                :assigned-piece nil})
-     []]))
+    [(-> state
+         (assoc-in [:active-peers address]
+                   {:peer-data peer-data
+                    :peer-state peer-state
+                    :assigned-piece nil})
+         (update :pending-dials (fnil disj #{}) address))
+      []]))
 
 (defn swarm-exhausted?
   "True when the swarm can no longer make progress: no active peers,
@@ -531,19 +534,25 @@
 
 (defn on-disconnected
   "Drop a peer, requeueing its assigned piece if any. Pure.
-   Returns [updated-state effects] (a disconnect plans no I/O);
-   the caller checks swarm-exhausted? to decide on failure."
+    A disconnect for an address that never connected resolves its dial,
+    so it leaves :pending-dials; a connected peer already resolved its
+    dial at connect time and leaves pending alone. Either way a repeat
+    event for the same address is a no-op on the pending set.
+    Returns [updated-state effects] (a disconnect plans no I/O);
+    the caller checks swarm-exhausted? to decide on failure."
   [state event]
   (let [{:keys [address]} event
+        was-active? (contains? (:active-peers state) address)
         assigned (get-in state [:active-peers address :assigned-piece])
         state (if assigned
                 (requeue-assignment state address assigned)
                 state)]
-    [(-> state
-         (update :active-peers dissoc address)
-         (update :blocks-received dissoc address)
-         (update :expected-blocks dissoc address))
-     []]))
+    [(cond-> (-> state
+                 (update :active-peers dissoc address)
+                 (update :blocks-received dissoc address)
+                 (update :expected-blocks dissoc address))
+       (not was-active?) (update :pending-dials (fnil disj #{}) address))
+      []]))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."

@@ -483,7 +483,16 @@
       (is (= {:peer-data {:id "data-a"}
               :peer-state peer-state-value
               :assigned-piece nil}
-             (get-in updated [:active-peers "peer-a"]))))))
+             (get-in updated [:active-peers "peer-a"])))))
+  (testing "a resolving dial leaves the pending set"
+    (let [peer-state-value (peer-state/initial-peer-state 2)
+          state {:download {} :active-peers {} :blocks-received {} :expected-blocks {}
+                 :pending-dials #{"peer-a" "peer-b"}}
+          [updated effects] (download/on-connected state {:address "peer-a"
+                                                          :peer-data {:id "data-a"}
+                                                          :peer-state peer-state-value})]
+      (is (= [] effects))
+      (is (= #{"peer-b"} (:pending-dials updated))))))
 
 (deftest on-disconnected-test
   (testing "requeues the assigned piece and drops the peer with no effects"
@@ -527,7 +536,34 @@
       (is (= [] effects))
       (is (false? (download/swarm-exhausted? updated)))
       (is (contains? (:active-peers updated) "peer-a"))
-      (is (contains? (get-in updated [:download :piece-state :in-flight]) 1)))))
+      (is (contains? (get-in updated [:download :piece-state :in-flight]) 1))))
+  (testing "a refused dial leaves the pending set without touching peers"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{"peer-a" "peer-b"})
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "refused"})]
+      (is (= [] effects))
+      (is (= #{"peer-b"} (:pending-dials updated)))
+      (is (false? (download/swarm-exhausted? updated)))))
+  (testing "dropping a connected peer leaves pending dials alone"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {"peer-a" {:assigned-piece nil}}
+                       :pending-dials #{"peer-b"})
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "boom"})]
+      (is (= [] effects))
+      (is (= #{"peer-b"} (:pending-dials updated)))
+      (is (false? (download/swarm-exhausted? updated)))))
+  (testing "a duplicate disconnect for a resolved dial is a no-op on pending"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{})
+          [updated effects] (download/on-disconnected state {:address "peer-a"
+                                                             :reason "late duplicate"})]
+      (is (= [] effects))
+      (is (= #{} (:pending-dials updated)))
+      (is (true? (download/swarm-exhausted? updated))))))
 
 ;; swarm-exhausted? (issue #11): pending dials count as a live swarm —
 ;; failure only when nothing is active, nothing is dialing, and pieces
