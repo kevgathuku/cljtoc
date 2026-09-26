@@ -11,21 +11,19 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
 - ✅ **Bencode Parser** - Full bencode encoder/decoder with comprehensive validation
 - ✅ **Torrent Metadata Parser** - Parse `.torrent` files and extract metadata
 - ✅ **Info Hash Computation** - SHA-1 hash computation preserving original encoding
-- ✅ **CLI Interface** - Namespace-based command structure
+- ✅ **CLI Interface** - Parse, download, pause, resume, status, and stop commands (`torrent.seed` not yet implemented)
 - ✅ **Tracker Protocol** - HTTP and UDP tracker communication (BEP 3, BEP 15)
   - Build and parse HTTP announce requests/responses (compact + dictionary peer formats)
   - Full UDP tracker protocol: connect, announce, scrape, error (BEP 15)
   - Re-announce scheduling with exponential backoff
   - clojure.spec validation on all public functions with `s/fdef`
-  - 49 tests, 270 assertions — 100% pure (no network I/O in tests)
 - ✅ **Peer Wire Protocol** - BEP 3 peer message parsing, building, and state machine
   - Parse and build all 9 message types: keep-alive, choke, unchoke, interested, not-interested, have, bitfield, request, piece, cancel
   - 68-byte handshake encode/decode with protocol validation
   - Pure peer connection state machine: `(state, message) → new-state`
   - BitSet-based bitfield with `peer-has-piece?` and `can-request?` queries
   - 16 KiB block size enforcement on request/piece/cancel
-  - Generative round-trip tests for all message types (100 runs each)
-  - 67 tests, 249 assertions — 100% pure (no network I/O in tests)
+  - Generative round-trip tests for all message types
 - ✅ **Piece Management** - Pure domain logic for piece tracking, selection, and verification
   - Immutable PieceState state machine: needed → in-flight → verified (with requeue)
   - Rarest-first piece selection with deterministic tie-breaking
@@ -33,13 +31,16 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
   - SHA-1 integrity verification of assembled piece bytes
   - Endgame mode detection and duplicate requesting
   - Full clojure.spec coverage with `s/fdef` invariants
-  - 33 tests, 91 assertions — 100% pure (no I/O in tests)
+- ✅ **Download Orchestration** - End-to-end download coordination
+  - Download lifecycle: start, pause, resume, stop, progress reporting
+  - Injectable effect ports for network, disk, and time (with test doubles)
+  - Peer worker coordination and piece verification handling
+  - Persisted state with pause/resume across restarts
 
 ### Roadmap
 
-- 🚧 Download orchestration (end-to-end coordination)
+- 🚧 Seeding (`torrent.seed`)
 - 🚧 DHT (Distributed Hash Table)
-- 🚧 CLI interface
 
 ## Quick Start
 
@@ -52,8 +53,8 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/torrent-client-clj.git
-cd torrent-client-clj
+git clone https://github.com/kevgathuku/cljtoc.git
+cd cljtoc
 
 # Run tests to verify setup
 lein test
@@ -117,50 +118,24 @@ lein repl
 ```
 torrent-client-clj/
 ├── src/dev/cljtoc/
-│   ├── core.clj                    # CLI entry point
-│   ├── domain/
-│   │   ├── bencode.clj             # Bencode encoder/decoder
-│   │   ├── torrent.clj             # Torrent metadata parser
-│   │   └── pieces.clj              # Piece management (state machine, selection, blocks, verification)
-│   └── protocol/
-│       ├── tracker.clj             # Tracker protocol (HTTP + UDP)
-│       ├── tracker/
-│       │   └── spec.clj            # Tracker clojure.spec definitions
-│       ├── peer.clj                # Peer wire protocol (BEP 3)
-│       └── peer_state.clj          # Peer connection state machine
-├── test/dev/cljtoc/
-│   ├── core_test.clj
-│   ├── domain/
-│   │   ├── bencode_test.clj        # Bencode tests (property-based)
-│   │   ├── torrent_test.clj        # Torrent parser tests
-│   │   └── pieces_test.clj         # Piece management tests (33 tests)
-│   ├── protocol/
-│   │   ├── tracker_test.clj        # Tracker tests (49 tests)
-│   │   ├── peer_test.clj           # Peer protocol tests (40 tests)
-│   │   └── peer_state_test.clj     # State machine tests (27 tests)
-│   └── test_utils.clj              # Shared test helpers
-├── specs/                          # Feature specifications
+│   ├── core.clj                  # CLI entry point
+│   ├── cli/state.clj             # Persisted CLI download state
+│   ├── domain/                   # Pure torrent logic (bencode, torrent, pieces, peer-address)
+│   ├── protocol/                 # Pure parsing/encoding (tracker, peer, peer-state)
+│   ├── orchestration/            # Download lifecycle (download)
+│   ├── coordination/             # core.async flows (peer-worker)
+│   ├── ports/                    # Effect protocols + real implementations (network, disk, time)
+│   └── test_doubles/             # In-memory ports for tests
+├── test/dev/cljtoc/              # Mirrors src layout, plus integration/
+├── specs/                        # Feature specifications
+│   ├── 001-clojure-bittorrent-client/
 │   ├── 002-bencode-parser/
 │   ├── 003-tracker-protocol/
-│   │   ├── spec.md                 # Feature requirements
-│   │   ├── plan.md                 # Implementation plan
-│   │   ├── tasks.md                # Task breakdown
-│   │   ├── quickstart.md           # API usage examples
-│   │   ├── data-model.md           # Data structures
-│   │   └── contracts/              # HTTP + UDP API contracts
 │   ├── 004-peer-wire-protocol/
-│   │   ├── spec.md                 # Feature requirements
-│   │   ├── tasks.md                # Task breakdown
-│   │   └── README.md               # API reference
-│   └── 005-piece-management/
-│       ├── spec.md                 # Feature requirements
-│       ├── plan.md                 # Implementation plan
-│       ├── tasks.md                # Task breakdown
-│       ├── data-model.md           # Data structures
-│       ├── quickstart.md           # Usage examples
-│       └── contracts/              # API contracts
+│   ├── 005-piece-management/
+│   └── 006-download-orchestration/
 └── doc/
-    └── bencode-parser.md           # Bencode API documentation
+    └── bencode-parser.md         # Bencode API documentation
 ```
 
 ## Development
@@ -176,10 +151,9 @@ lein test
 ```
 
 The test suite includes:
-- 186 tests, 765 assertions across all features
 - Property-based generative tests using test.check
 - Round-trip verification tests (build → parse → verify)
-- 100% pure — no network I/O required
+- Pure domain/protocol tests with no network I/O; orchestration tests run against in-memory test doubles
 
 ### Development Workflow
 
@@ -238,7 +212,11 @@ The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hash
 | Command | Description | Status |
 |---------|-------------|--------|
 | `torrent.parse <file>` | Parse and display torrent metadata | ✅ Implemented |
-| `torrent.download <file>` | Download files from a torrent | 🚧 Not implemented |
+| `torrent.download <file> [dir]` | Download files from a torrent | ✅ Implemented |
+| `torrent.pause [id]` | Pause an active download | ✅ Implemented |
+| `torrent.resume [id]` | Resume a paused download | ✅ Implemented |
+| `torrent.status [id]` | Show download status | ✅ Implemented |
+| `torrent.stop [id]` | Stop a download | ✅ Implemented |
 | `torrent.seed <file>` | Seed a torrent | 🚧 Not implemented |
 
 ## Contributing
