@@ -161,6 +161,38 @@
         (is (:error result))
         (is (= "original" (slurp target)))))))
 
+(deftest initialize-output-layout-rejects-symlink-escape-test
+  (testing "layout init refuses a symlinked declared path, so no write is redirected"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-init-link-")
+          outside-dir (temp-dir "outside-")
+          target (io/file outside-dir "victim.bin")]
+      (spit target "original")
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "link.bin"))
+       (.toPath target)
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "link.bin" :piece-length 4 :length 4}
+            result (<!! (disk/initialize-output-layout port info output-dir))]
+        (is (= :unsafe-path (:error result)))
+        (is (= "original" (slurp target)))))))
+
+(deftest initialize-output-layout-rejects-symlinked-nested-dir-test
+  (testing "a symlinked parent directory cannot redirect the layout init either"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-init-parent-link-")
+          outside-dir (temp-dir "outside-")]
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "t"))
+       (.toPath (io/file outside-dir))
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]}
+            result (<!! (disk/initialize-output-layout port info output-dir))]
+        (is (= :unsafe-path (:error result)))
+        (is (not (.exists (io/file outside-dir "a"))))
+        (is (not (.exists (io/file outside-dir "b"))))))))
+
 (deftest write-output-piece-creates-zero-length-file-test
   (testing "a declared zero-length file exists empty after its neighbors land"
     (let [port (make-port (temp-dir "disk-state-"))
@@ -194,6 +226,65 @@
       (is (.exists (io/file output-dir "t" "a")))
       (is (zero? (.length (io/file output-dir "t" "a"))))
       (is (.exists (io/file output-dir "t" "b"))))))
+
+(deftest initialize-output-layout-write-error-test
+  (testing "a regular file where a parent directory is needed surfaces :write-error"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-init-blocked-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["nested" "a"] :length 4}]}]
+      (spit (io/file output-dir "t") "not a directory")
+      (let [result (<!! (disk/initialize-output-layout port info output-dir))]
+        (is (= :write-error (:error result)))
+        (is (string? (:message result)))))))
+
+(deftest write-output-piece-write-error-test
+  (testing "a piece write into an unwritable path surfaces :write-error"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-write-blocked-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["nested" "a"] :length 4}]}]
+      (spit (io/file output-dir "t") "not a directory")
+      (let [result (<!! (disk/write-output-piece port info output-dir 0 (byte-array [1 2 3 4])))]
+        (is (= :write-error (:error result)))
+        (is (= "not a directory" (slurp (io/file output-dir "t"))))))))
+
+(deftest write-output-piece-invalid-info-test
+  (testing "a torrent-controlled path that escapes the output dir is refused"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-escape-info-")
+          info {:name "t" :piece-length 4
+                :files [{:path [".."] :length 4}]}
+          result (<!! (disk/write-output-piece port info output-dir 0 (byte-array [1 2 3 4])))]
+      (is (= :invalid-info (:error result)))
+      (is (re-find #"escape" (:message result))))))
+
+(deftest initialize-output-layout-invalid-info-test
+  (testing "layout init refuses info that cannot produce a layout"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-init-no-name-")
+          result (<!! (disk/initialize-output-layout port {:piece-length 4 :length 4} output-dir))]
+      (is (= :invalid-info (:error result)))
+      (is (re-find #":name" (:message result))))))
+
+(deftest write-output-piece-catches-non-byte-input-test
+  (testing "a piece that is not a byte array surfaces the port's error envelope"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-bad-input-")
+          info {:name "t" :piece-length 4 :length 4}
+          result (<!! (disk/write-output-piece port info output-dir 0 "not-bytes"))]
+      (is (= :write-error (:error result)))
+      (is (string? (:message result))))))
+
+(deftest initialize-output-layout-catches-malformed-files-test
+  (testing "info whose :files is not a collection surfaces the port's error envelope"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-bad-files-")
+          result (<!! (disk/initialize-output-layout port {:name "t" :piece-length 4
+                                                           :files 42}
+                                                     output-dir))]
+      (is (= :write-error (:error result)))
+      (is (string? (:message result))))))
 
 (deftest write-output-piece-leaves-untouched-files-alone-test
   (testing "writing one piece does not re-truncate a file it does not touch"

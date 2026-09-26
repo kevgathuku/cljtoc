@@ -361,6 +361,33 @@
     (is (:error (torrent/piece-file-spans {:name "a/b" :piece-length 4 :length 8} 0 4)))
     (is (:error (torrent/piece-file-spans {:name "" :piece-length 4 :length 8} 0 4)))))
 
+(deftest piece-file-spans-rejects-unusable-geometry-test
+  (testing "a negative or non-integral piece index or byte count is an error"
+    (let [info {:name "t" :piece-length 4 :length 8}]
+      (is (re-find #"must be valid"
+                   (:message (torrent/piece-file-spans info -1 4))))
+      (is (re-find #"must be valid"
+                   (:message (torrent/piece-file-spans info 0.5 4))))
+      (is (re-find #"must be valid"
+                   (:message (torrent/piece-file-spans info 0 0))))
+      (is (re-find #"must be valid"
+                   (:message (torrent/piece-file-spans info 0 -4))))))
+  (testing "a missing or non-positive piece length is an error"
+    (is (re-find #"positive :piece-length"
+                 (:message (torrent/piece-file-spans {:name "t" :length 8} 0 4))))
+    (is (re-find #"positive :piece-length"
+                 (:message (torrent/piece-file-spans {:name "t" :piece-length 0 :length 8} 0 4))))
+    (is (re-find #"positive :piece-length"
+                 (:message (torrent/piece-file-spans {:name "t" :piece-length -4 :length 8} 0 4))))))
+
+(deftest output-file-sizes-requires-name-test
+  (testing "info without a name cannot yield an output layout"
+    (is (re-find #":name"
+                 (:message (torrent/output-file-sizes {:piece-length 4 :length 8}))))
+    (is (re-find #":name"
+                 (:message (torrent/output-file-sizes {:piece-length 4
+                                                       :files [{:path ["a"] :length 8}]}))))))
+
 (defspec piece-file-spans-cover-exactly-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)

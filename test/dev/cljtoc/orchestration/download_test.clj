@@ -794,6 +794,24 @@
       (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk 0))))
       (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk 1)))))))
 
+(deftest run-download-fails-on-output-layout-error-test
+  (testing "a failed layout init fails the download instead of reporting completion"
+    (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "init-fail")
+                         :state :downloading)
+          disk (mock-disk/create {:output-init-error {:error :write-error
+                                                      :message "no space"}})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (re-find #"no space" (get-in result [:error :message])))
+      (is (empty? @(:layouts-initialized disk))))))
+
 (deftest run-download-initializes-layout-before-completing-test
   (testing "a zero-piece download materializes its output layout before completing"
     (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}

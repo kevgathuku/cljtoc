@@ -52,8 +52,11 @@
   (initialize-output-layout [_ info output-dir]
     (let [ch (async/chan 1)]
       (async/go
-        (swap! layouts-initialized conj {:info info :output-dir output-dir})
-        (async/>! ch {:ok :initialized}))
+        (if-let [err (:output-init-error config)]
+          (async/>! ch err)
+          (do
+            (swap! layouts-initialized conj {:info info :output-dir output-dir})
+            (async/>! ch {:ok :initialized}))))
       ch))
 
   (ensure-directory [_ path]
