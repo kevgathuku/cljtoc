@@ -533,7 +533,7 @@
                     :peer-state peer-state
                     :assigned-piece nil})
          (update :pending-dials (fnil disj #{}) address))
-      []]))
+     []]))
 
 (defn swarm-exhausted?
   "True when the swarm can no longer make progress: no active peers,
@@ -566,7 +566,7 @@
                  (update :blocks-received dissoc address)
                  (update :expected-blocks dissoc address))
        (not was-active?) (update :pending-dials (fnil disj #{}) address))
-      []]))
+     []]))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
