@@ -700,7 +700,7 @@
                   (recur planned (if (and show-progress? wrote?) now last-progress-time)))
 
                 :peer-disconnected
-                (let [{:keys [address reason]} event
+                (let [{:keys [reason]} event
                       [planned exhausted?] (on-disconnected state event)
                       download (:download planned)
                       active-peers (:active-peers planned)]
