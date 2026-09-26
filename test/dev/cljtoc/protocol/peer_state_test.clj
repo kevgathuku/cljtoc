@@ -239,6 +239,15 @@
     (let [initial (peer-state/initial-peer-state 100)]
       (is (= 0 (peer-state/peer-piece-count initial))))))
 
+(deftest available-pieces-test
+  (testing "available-pieces returns the set of piece indices the peer has"
+    (let [initial (peer-state/initial-peer-state 100)]
+      (is (= #{} (peer-state/available-pieces initial)))
+      (let [updated (reduce peer-state/mark-piece-available
+                            initial
+                            [0 5 10 20 50])]
+        (is (= #{0 5 10 20 50} (peer-state/available-pieces updated)))))))
+
 ;; ============================================================================
 ;; Can Request Tests
 ;; ============================================================================

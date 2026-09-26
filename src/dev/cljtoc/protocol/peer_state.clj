@@ -232,6 +232,25 @@
     (.cardinality ^BitSet bitfield)
     0))
 
+(defn available-pieces
+  "Set of piece indices the peer has available.
+
+   Args:
+     peer-state - Current PeerState
+
+   Returns:
+     #{nat-int} of available piece indices (empty when unknown)"
+  [peer-state]
+  {:pre [(s/valid? ::peer-state peer-state)]}
+  (if-let [bitfield (:bitfield peer-state)]
+    (let [total-pieces (:total-pieces peer-state)]
+      (loop [piece-index (.nextSetBit ^BitSet bitfield 0)
+             acc (transient #{})]
+        (if (or (= piece-index -1) (>= piece-index total-pieces))
+          (persistent! acc)
+          (recur (.nextSetBit ^BitSet bitfield (inc piece-index)) (conj! acc piece-index)))))
+    #{}))
+
 ;; ============================================================================
 ;; State Transitions
 ;; ============================================================================

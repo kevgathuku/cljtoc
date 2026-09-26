@@ -22,8 +22,7 @@
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.coordination.peer-worker :as peer-worker])
-  (:import [java.util BitSet]
-           [java.security SecureRandom]))
+  (:import [java.security SecureRandom]))
 
 (defrecord Download
            [id
@@ -381,24 +380,11 @@
 ;; Active Download Coordinator
 ;; ============================================================================
 
-(defn- bitset-to-set
-  "Convert a java.util.BitSet to a Clojure set of piece indices."
-  [^BitSet bs total-pieces]
-  (if (nil? bs)
-    #{}
-    (loop [i (.nextSetBit bs 0)
-           acc (transient #{})]
-      (if (or (= i -1) (>= i total-pieces))
-        (persistent! acc)
-        (recur (.nextSetBit bs (inc i)) (conj! acc i))))))
-
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
   [active-peers]
   (map (fn [[_ peer-info]]
-         (let [ps (:peer-state peer-info)
-               tp (:total-pieces ps)]
-           (bitset-to-set (:bitfield ps) tp)))
+         (peer-state/available-pieces (:peer-state peer-info)))
        active-peers))
 
 (defn- try-request-piece
@@ -407,8 +393,7 @@
   (let [peer-info (get active-peers address)
         ps (:peer-state peer-info)
         piece-state (:piece-state download)
-        tp (:total-pieces ps)
-        peer-avail (bitset-to-set (:bitfield ps) tp)
+        peer-avail (peer-state/available-pieces ps)
         all-avails (all-peer-available-sets active-peers)
         select-result (pieces/select-piece piece-state peer-avail all-avails)]
     (when-let [piece-idx (:ok select-result)]
