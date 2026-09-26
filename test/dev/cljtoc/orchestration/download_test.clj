@@ -444,3 +444,25 @@
                                         "/dl/my-torrent.torrent" "/out")]
     (is (= :downloading (:state result)))
     (is (= "my-torrent" (:id result)))))
+
+;; Coordinator state helpers (issue #2): the run-download loop threads one
+;; state map {:download :active-peers :blocks-received :expected-blocks}.
+
+(defn- coordinator-state [piece-index]
+  (let [piece-state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 2) piece-index))]
+    {:download {:piece-state piece-state}
+     :active-peers {"peer-a" {:assigned-piece piece-index}}
+     :blocks-received {"peer-a" [{:offset 0}]}
+     :expected-blocks {"peer-a" 1}}))
+
+(deftest requeue-assignment-test
+  (testing "requeues the piece, clears the assignment and drops buffered blocks"
+    (let [updated (download/requeue-assignment (coordinator-state 1) "peer-a" 1)]
+      (is (contains? (get-in updated [:download :piece-state :needed]) 1))
+      (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece])))
+      (is (not (contains? (:blocks-received updated) "peer-a")))))
+  (testing "still clears bookkeeping when the piece is no longer in-flight"
+    (let [state (assoc-in (coordinator-state 1) [:download :piece-state :in-flight] #{})
+          updated (download/requeue-assignment state "peer-a" 1)]
+      (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece])))
+      (is (not (contains? (:blocks-received updated) "peer-a"))))))

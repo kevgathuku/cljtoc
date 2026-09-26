@@ -379,6 +379,26 @@
 ;; ============================================================================
 ;; Active Download Coordinator
 ;; ============================================================================
+;;
+;; The loop threads one state map:
+;;   {:download ... :active-peers ... :blocks-received ... :expected-blocks ...}
+;; Handlers take that map plus an event and return [new-state effects];
+;; channel I/O (sends, disk writes) happens at the loop edge.
+
+(defn requeue-assignment
+  "Requeue address's assigned piece and clear its bookkeeping.
+   Best-effort on the piece state (a piece that already left in-flight
+   stays where it is); the assignment and buffered blocks are always
+   cleared. Returns the updated coordinator state map."
+  [state address piece-idx]
+  (let [download (:download state)
+        requeued (pieces/requeue-piece (:piece-state download) piece-idx)]
+    (-> state
+        (assoc :download (if (:ok requeued)
+                           (assoc download :piece-state (:ok requeued))
+                           download))
+        (assoc-in [:active-peers address :assigned-piece] nil)
+        (update :blocks-received dissoc address))))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
