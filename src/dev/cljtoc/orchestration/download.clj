@@ -632,7 +632,7 @@
 
     (let [download (:download state)
           {:keys [message-ctx ports conn-stats total-attempted]} env
-          {:keys [network-port disk-port time-port]} ports]
+          {:keys [time-port]} ports]
       (if (pieces/complete? (:piece-state download))
         (do
           (println)
