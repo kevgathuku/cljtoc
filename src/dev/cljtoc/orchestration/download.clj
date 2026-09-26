@@ -688,53 +688,61 @@
    {:fatal error-info} when a verified write failed and the download
    cannot honestly continue.
 
-   A failed send unwinds that peer's assignment (requeue the piece, drop
-   its expected blocks) so nothing strands in-flight; later sends in the
-   same batch find no assignment and are skipped."
-  [state effects {:keys [network-port disk-port time-port]}]
+   A failed send treats the peer as disconnected: close its socket,
+   requeue its piece and drop it from every bookkeeping map, so a dead
+   peer never strands assignments or blocks exhaustion. Later sends in
+   the same batch find no assignment and are skipped."
+  [state effects env]
   (loop [state state
          [effect & rest-effects] effects]
     (if (nil? effect)
       [state :ok]
-      (cond
-        (:send effect)
-        (let [{:keys [address peer-data bytes]} (:send effect)
-              assigned (get-in state [:active-peers address :assigned-piece])]
-          (if (nil? assigned)
-            (recur state rest-effects)
-            (let [result (async/<!! (network/send-message network-port peer-data bytes))]
-              (recur (if (:error result)
-                       (-> state
-                           (requeue-assignment address assigned)
-                           (update :expected-blocks dissoc address))
-                       state)
-                     rest-effects))))
+      (let [{:keys [ports conn-stats]} env
+            {:keys [network-port disk-port time-port]} ports]
+        (cond
+          (:send effect)
+          (let [{:keys [address peer-data bytes]} (:send effect)
+                assigned (get-in state [:active-peers address :assigned-piece])]
+            (if (nil? assigned)
+              (recur state rest-effects)
+              (let [result (async/<!! (network/send-message network-port peer-data bytes))]
+                (if (:error result)
+                  (do
+                    (network/close-peer network-port peer-data)
+                    (swap! conn-stats update :failed inc)
+                    (recur (-> state
+                               (requeue-assignment address assigned)
+                               (update :active-peers dissoc address)
+                               (update :blocks-received dissoc address)
+                               (update :expected-blocks dissoc address))
+                           rest-effects))
+                  (recur state rest-effects)))))
 
-        (:write-verified effect)
-        (let [{:keys [piece-idx data]} (:write-verified effect)
-              result (async/<!! (disk/write-piece disk-port piece-idx data))]
-          (if (:error result)
+          (:write-verified effect)
+          (let [{:keys [piece-idx data]} (:write-verified effect)
+                result (async/<!! (disk/write-piece disk-port piece-idx data))]
+            (if (:error result)
             ;; Bytes never landed: return the piece to needed so the
             ;; failed record stays honest and retryable.
-            (let [piece-state (get-in state [:download :piece-state])
-                  requeued (pieces/requeue-piece piece-state piece-idx)]
-              [(assoc-in state [:download :piece-state] (or (:ok requeued) piece-state))
-               {:fatal {:reason :disk-error
-                        :message (str "Failed to write piece " piece-idx
-                                      ": " (:message result))
-                        :failed-piece piece-idx}}])
-            (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
-                  state (if (:ok mark-result)
-                          (assoc-in state [:download :piece-state] (:ok mark-result))
-                          state)]
-              (recur (update state :download
-                             (fn [download]
-                               (update download :stats
-                                       #(update-stats-bytes time-port % (alength ^bytes data)))))
-                     rest-effects))))
+              (let [piece-state (get-in state [:download :piece-state])
+                    requeued (pieces/requeue-piece piece-state piece-idx)]
+                [(assoc-in state [:download :piece-state] (or (:ok requeued) piece-state))
+                 {:fatal {:reason :disk-error
+                          :message (str "Failed to write piece " piece-idx
+                                        ": " (:message result))
+                          :failed-piece piece-idx}}])
+              (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
+                    state (if (:ok mark-result)
+                            (assoc-in state [:download :piece-state] (:ok mark-result))
+                            state)]
+                (recur (update state :download
+                               (fn [download]
+                                 (update download :stats
+                                         #(update-stats-bytes time-port % (alength ^bytes data)))))
+                       rest-effects))))
 
-        :else
-        (recur state rest-effects)))))
+          :else
+          (recur state rest-effects))))))
 
 (defn- format-bytes-rate [bytes]
   (cond
@@ -752,6 +760,18 @@
             pct verified total (count active-peers)
             (format-bytes-rate (or (:rate stats) 0)))
     (flush)))
+
+(defn- fail-no-peers
+  "Fail the download: no usable peers remain."
+  [download conn-stats total-attempted last-detail]
+  (let [{:keys [connected failed]} @conn-stats]
+    (println)
+    (println (str "  No peers available. "
+                  connected "/" total-attempted " connected, "
+                  failed " failed. Last: " last-detail))
+    (assoc download :state :failed
+           :error {:reason :no-peers
+                   :message (str "No peers available (" connected "/" total-attempted " connected)")})))
 
 (defn run-coordinator
   "Drive one download from events-ch to completion or swarm exhaustion.
@@ -794,7 +814,7 @@
 
                 :peer-connected
                 (let [[planned effects] (on-connected state event)
-                      [performed _] (perform-effects! planned effects ports)
+                      [performed _] (perform-effects! planned effects env)
                       download (:download performed)
                       active-peers (:active-peers performed)]
                   (swap! conn-stats update :connected inc)
@@ -804,12 +824,18 @@
 
                 :peer-message
                 (let [[planned effects] (on-message state event message-ctx)
-                      [performed outcome] (perform-effects! planned effects ports)]
+                      [performed outcome] (perform-effects! planned effects env)]
                   (if (= :ok outcome)
-                    (let [wrote? (boolean (some :write-verified effects))]
-                      (when (and show-progress? wrote?)
-                        (print-download-progress (:download performed) (:active-peers performed)))
-                      (recur performed (if (and show-progress? wrote?) now last-progress-time)))
+                    (if (swarm-exhausted? performed)
+                      ;; A send failure dropped the last peer: fail like a
+                      ;; disconnect instead of waiting on a silent channel.
+                      ;; (Message handling otherwise never removes peers,
+                      ;; so this check is inert for all other paths.)
+                      (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
+                      (let [wrote? (boolean (some :write-verified effects))]
+                        (when (and show-progress? wrote?)
+                          (print-download-progress (:download performed) (:active-peers performed)))
+                        (recur performed (if (and show-progress? wrote?) now last-progress-time))))
                     (let [download (:download performed)]
                       (println)
                       (println (str "  Fatal effect error: " (get-in outcome [:fatal :message])))
@@ -818,21 +844,14 @@
                 :peer-disconnected
                 (let [{:keys [reason]} event
                       [planned effects] (on-disconnected state event)
-                      [performed _] (perform-effects! planned effects ports)
+                      [performed _] (perform-effects! planned effects env)
                       download (:download performed)
                       active-peers (:active-peers performed)]
                   (swap! conn-stats update :failed inc)
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (if (swarm-exhausted? performed)
-                    (let [{:keys [connected failed]} @conn-stats]
-                      (println)
-                      (println (str "  No peers available. "
-                                    connected "/" total-attempted " connected, "
-                                    failed " failed. Last: " reason))
-                      (assoc download :state :failed
-                             :error {:reason :no-peers
-                                     :message (str "No peers available (" connected "/" total-attempted " connected)")}))
+                    (fail-no-peers download conn-stats total-attempted reason)
                     (recur performed
                            (if show-progress? now last-progress-time))))
 

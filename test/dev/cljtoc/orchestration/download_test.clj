@@ -764,9 +764,10 @@
                :expected-blocks {}}]
     (doseq [event events]
       (async/>!! events-ch event))
-    (async/close! events-ch)
+    (when (get opts :close? true)
+      (async/close! events-ch))
     (deref (future (download/run-coordinator state events-ch env))
-           15000 :timed-out)))
+           (get opts :timeout 15000) :timed-out)))
 
 (defn- loop-download []
   (assoc (download/initial-download (mock-time/create) (two-piece-torrent) "/out" "loop")
@@ -815,6 +816,25 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
+
+(deftest run-coordinator-send-failure-drops-peer-and-fails-test
+  (testing "a dead last peer ends the download instead of waiting forever"
+    (let [disk (mock-disk/create)
+          net (mock-net/create)
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}]
+          result (scripted-run events (loop-download) disk {:net net
+                                                            :close? false
+                                                            :timeout 3000})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (contains? (get-in result [:piece-state :needed]) 0))
+      (is (empty? (get-in result [:piece-state :verified])))
+      (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
 
 (deftest run-coordinator-send-error-requeues-through-loop-test
   (testing "a failed block send returns the piece to needed, nothing strands"
