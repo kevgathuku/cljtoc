@@ -84,16 +84,16 @@ Always use `:reload` when requiring namespaces to pick up changes.
 
 ## Clojure Parenthesis Repair
 
-The command `clj-paren-repair` is installed on your path.
+When delimiters go unbalanced, in order:
+
+1. First try `clj-paren-repair <files>` (also runs cljfmt).
+2. If the compiler still disagrees, the repair likely closed the wrong scope (symptom: `recur` tail-position errors far from the real gap) — revert the file (`git checkout -- <file>`) and re-apply the edits one at a time.
+3. After each edit, run a paren-depth scan and `clj-kondo --lint <file>`: kondo pinpoints the exact unclosed opener (`Found an opening ( with no matching )`). Counting closers by eye is unreliable — one extra `)` early silently shifts every scope below it.
+4. The compiler is the final arbiter: full `lein test` green means the structure is right.
 
 Examples:
 `clj-paren-repair <files>`
 `clj-paren-repair path/to/file1.clj path/to/file2.clj path/to/file3.clj`
-
-**IMPORTANT:** Do NOT try to manually repair parenthesis errors.
-If you encounter unbalanced delimiters, run `clj-paren-repair` on the file
-instead of attempting to fix them yourself. If the tool doesn't work,
-report to the user that they need to fix the delimiter error manually.
 
 The tool automatically formats files with cljfmt when it processes them.
 
