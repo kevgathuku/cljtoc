@@ -313,15 +313,6 @@
           (async/>!! ch {:error :tracker-error :message (.getMessage e)}))))
     ch))
 
-(defn tracker-scrape
-  "Scrape tracker for torrent statistics.
-   Returns a channel with scrape data or error."
-  [network torrent-metadata]
-  (let [ch (async/chan 1)]
-    (async/go
-      (async/>! ch {:ok {:seeders 0 :leechers 0 :complete 0}}))
-    ch))
-
 (extend-type NetworkPort
   network/INetworkPort
   (connect-peer [this address]
@@ -330,22 +321,14 @@
     (send-message this peer message))
   (receive-message [this peer]
     (receive-message this peer))
+  (receive-handshake [this peer]
+    (receive-handshake this peer))
   (close-peer [this peer]
     (close-peer this peer))
-  (peer-loop [this peer handler]
-    (async/thread
-      (loop []
-        (let [result (async/<!! (receive-message this peer))]
-          (when result
-            (handler result)
-            (when (:ok result)
-              (recur)))))))
 
   network/ITrackerPort
   (announce [this torrent-metadata]
-    (tracker-announce this torrent-metadata))
-  (scrape [this torrent-metadata]
-    (tracker-scrape this torrent-metadata)))
+    (tracker-announce this torrent-metadata)))
 
 (defn create
   "Create a NetworkPort instance."
