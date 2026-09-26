@@ -23,7 +23,7 @@ Main orchestration record. Created when download starts, holds all runtime state
 
 ```
 Download
-├── id : uuid                  (unique identifier)
+├── id : string                (human-readable, derived from torrent path; uuid before issue #7)
 ├── torrent : TorrentMetadata  (immutable torrent info)
 ├── piece-state : PieceState   (from feature 005)
 ├── peers : #{Peer}            (active connections)

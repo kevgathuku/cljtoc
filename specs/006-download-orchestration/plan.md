@@ -205,27 +205,27 @@ ITimePort
 
 ```
 (start-download torrent-path output-dir)
-  → {:ok download-id}
+  → download (map with string :id, :state :downloading)
   | {:error :invalid-torrent :message string}
 
-(pause-download download-id)
-  → {:ok download-state}
+(pause-download download)
+  → {:ok paused-download}
   | {:error :not-running}
 
-(resume-download download-id)
-  → {:ok download-state}
-  | {:error :already-running}
+(resume-download download)
+  → {:ok resumed-download}
+  | {:error :not-paused}
 
-(progress download-id)
-  → {:ok {:percent float
-          :pieces-complete nat-int
-          :pieces-total nat-int
-          :bytes-downloaded nat-int
-          :rate-bytes-per-sec nat-int
-          :peers-connected nat-int}}
+(progress download)
+  → {:percent float
+     :pieces-complete nat-int
+     :pieces-total nat-int
+     :bytes-downloaded nat-int
+     :rate-bytes-per-sec nat-int
+     :peers-connected nat-int}
 
-(stop-download download-id)
-  → {:ok}
+(stop-download download)
+  → stopped-download
 ```
 
 ### Internal Coordination API
@@ -251,46 +251,51 @@ ITimePort
 (require '[dev.cljtoc.orchestration.download :as download])
 
 ;; Start download with real ports
-(def download-id
+(def download
   (download/start-download "/path/to/file.torrent" "/output/dir"))
 
 ;; Check progress
-(download/progress download-id)
-;; => {:ok {:percent 45.2
-;;          :pieces-complete 230
-;;          :pieces-total 512
-;;          :bytes-downloaded 120053248
-;;          :rate-bytes-per-sec 524288
-;;          :peers-connected 12}}
+(download/progress download)
+;; => {:percent 45.2
+;;     :pieces-complete 230
+;;     :pieces-total 512
+;;     :bytes-downloaded 120053248
+;;     :rate-bytes-per-sec 524288
+;;     :peers-connected 12}
 
 ;; Pause
-(download/pause-download download-id)
+(def paused (:ok (download/pause-download download)))
 
 ;; Resume
-(download/resume-download download-id)
+(download/resume-download paused)
 
 ;; Stop
-(download/stop-download download-id)
+(download/stop-download download)
 ```
 
 ### Testing with Test Doubles
 
 ```clojure
-(require '[dev.cljtoc.test-doubles.network :as mock-net]
+(require '[dev.cljtoc.orchestration.download :as download]
+         '[dev.cljtoc.orchestration.manager :as manager]
+         '[dev.cljtoc.test-doubles.network :as mock-net]
          '[dev.cljtoc.test-doubles.disk :as mock-disk]
          '[dev.cljtoc.test-doubles.time :as mock-time])
 
 ;; Create mock ports
-(def network (mock-net/mock-network))
-(def disk (mock-disk/mock-disk))
-(def time (mock-time/mock-time {:now #inst "2026-01-01"}))
+(def network (mock-net/create {:mock-peers ["127.0.0.1:6881"]}))
+(def disk (mock-disk/create))
+(def time (mock-time/create))
+(mock-disk/add-torrent disk "test.torrent"
+                       {:info-hash (byte-array 20)
+                        :info {:pieces ["h1" "h2"]}})
 
 ;; Use in test
 (deftest test-download-progress
-  (let [manager (download/manager disk network time)
-        {:keys [ok error]} (download/start-download manager "test.torrent" "/out")]
-    (is (:ok error))
-    (is (= 0 (:percent (:ok (download/progress manager (:ok error))))))))
+  (let [m (manager/manager network disk time {})
+        started (download/start-download m "test.torrent" "/out")]
+    (is (= :downloading (:state started)))
+    (is (= 0.0 (:percent (download/progress started))))))
 ```
 
 ---
