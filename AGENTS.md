@@ -30,6 +30,12 @@ Clojure 1.11+ (JVM-based): Follow standard conventions
 
 <!-- MANUAL ADDITIONS START -->
 
+## Naming
+
+Prefer human-readable names everywhere. Avoid single-letter variables;
+use full words that say what the value is (`address-str` not `s`,
+`host` / `port-str` not `h` / `p`, `colon-index` not `i`).
+
 ## Project Overview
 
 A BitTorrent client in Clojure implementing crash-only design with OTP-style supervision, pure domain logic, and explicit effect boundaries. Uses core.async for concurrency.

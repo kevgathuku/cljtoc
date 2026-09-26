@@ -4,6 +4,7 @@
    Provides functions for TCP peer connections and tracker communication."
   (:require [clojure.core.async :as async]
             [clojure.string :as str]
+            [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker])
@@ -32,26 +33,21 @@
     (async/thread
       (try
         (println (str "[connect] Attempting to connect to: " address))
-        (let [parts (str/split address #":")
-              _ (println (str "[connect-peer] Split result: " parts))
-              host (first parts)
-              port-str (second parts)
-              _ (println (str "[connect-peer] host=" host " port-str=" port-str))
-              port (if (or (nil? port-str) (empty? port-str))
-                     (do
-                       (println (str "[connect-peer] WARNING: No port in address, using default 6881"))
-                       6881)
-                     (Integer/parseInt port-str))
-              socket (doto (Socket.)
-                       (.connect (InetSocketAddress. host port) 5000)
-                       (.setSoTimeout 10000))
-              peer-data {:id address
-                         :address address
-                         :socket socket
-                         :in (.getInputStream socket)
-                         :out (.getOutputStream socket)}]
-          (swap! (:peer-connections network) assoc address peer-data)
-          (async/>!! ch {:ok peer-data}))
+        (let [parsed (peer-address/parse address)]
+          (if (:error parsed)
+            (async/>!! ch {:error :invalid-address :message (:message parsed)})
+            (let [{:keys [host port]} (:ok parsed)
+                  _ (println (str "[connect-peer] host=" host " port=" port))
+                  socket (doto (Socket.)
+                           (.connect (InetSocketAddress. host port) 5000)
+                           (.setSoTimeout 10000))
+                  peer-data {:id address
+                             :address address
+                             :socket socket
+                             :in (.getInputStream socket)
+                             :out (.getOutputStream socket)}]
+              (swap! (:peer-connections network) assoc address peer-data)
+              (async/>!! ch {:ok peer-data}))))
         (catch Exception e
           (async/>!! ch {:error :connect-failed :message (.getMessage e)}))))
     ch))
@@ -192,6 +188,12 @@
       (.receive socket recv-pkt)
       (java.util.Arrays/copyOf recv-buf (.getLength recv-pkt)))))
 
+(defn- tracker-peer->address
+  "Render a tracker {:ip :port} peer map as a canonical address string.
+   IPv6 hosts are bracketed so the port survives parsing downstream."
+  [{:keys [ip port]}]
+  (peer-address/format-address {:host ip :port port}))
+
 (defn- try-udp-tracker
   "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
   [tracker-url request]
@@ -229,7 +231,7 @@
               (if (:error announce-parsed)
                 {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
                 (let [peers (:peers (:ok announce-parsed))]
-                  {:ok (set (map #(str (:ip %) ":" (:port %)) peers))})))))
+                  {:ok (set (map tracker-peer->address peers))})))))
         (finally (.close socket))))
     (catch Exception e
       {:error :udp-failed :message (str tracker-url ": " (.getMessage e))})))
@@ -251,7 +253,7 @@
               {:error :parse-failed :message (:message parse-result)}
               (let [peers (:peers (:ok parse-result))
                     _ (println (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
-                    addresses (set (map #(str (:ip %) ":" (:port %)) peers))
+                    addresses (set (map tracker-peer->address peers))
                     _ (println (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
                 {:ok addresses}))))))))
 
