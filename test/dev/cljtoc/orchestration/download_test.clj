@@ -829,7 +829,8 @@
         state {:download download
                :active-peers {}
                :blocks-received {}
-               :expected-blocks {}}]
+               :expected-blocks {}
+               :pending-dials (get opts :pending-dials)}]
     (doseq [event events]
       (async/>!! events-ch event))
     (when (get opts :close? true)
@@ -900,6 +901,43 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
+
+;; Issue #11: the first refused dial must not fail the download while
+;; other dials are still in flight; failure waits until every dial has
+;; resolved with zero connections.
+
+(deftest run-coordinator-waits-for-pending-dials-test
+  (testing "the coordinator starts with every dialed address pending"
+    (let [state (download/initial-coordinator-state (loop-download) ["peer-a" "peer-b"])]
+      (is (= #{"peer-a" "peer-b"} (:pending-dials state)))
+      (is (empty? (:active-peers state)))))
+  (testing "first disconnect with dials outstanding keeps waiting, then completes"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-disconnected :address "peer-a" :reason "Connection refused"}
+                  {:type :peer-connected :address "peer-b"
+                   :peer-data {:id "data-b"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-b" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-b"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-b"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk
+                               {:pending-dials #{"peer-a" "peer-b"}})]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 2 (pieces/verified-count (:piece-state result))))))
+  (testing "failure only after all dials resolve with zero connections"
+    (let [disk (mock-disk/create)
+          conn-stats (atom {:connected 0 :failed 0})
+          events [{:type :peer-disconnected :address "peer-a" :reason "refused"}
+                  {:type :peer-disconnected :address "peer-b" :reason "timeout"}]
+          result (scripted-run events (loop-download) disk
+                               {:pending-dials #{"peer-a" "peer-b"}
+                                :conn-stats conn-stats})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (= 2 (:failed @conn-stats))))))
 
 (deftest run-coordinator-send-failure-counts-peer-once-test
   (testing "a dropped peer's late disconnect is not double-counted"
