@@ -121,21 +121,36 @@
   (s/keys :req-un [::path ::file-offset ::data-offset ::length]))
 (s/def ::file-span-list (s/coll-of ::file-span :kind vector?))
 
+(defn- safe-path-component?
+  "True when a torrent-declared path component cannot escape the output
+   directory: a non-empty name with no parent reference or separator."
+  [component]
+  (and (string? component)
+       (not (empty? component))
+       (not= ".." component)
+       (not (re-find #"[/\\]" component))))
+
 (defn piece-file-spans
   "Map one piece to file-layout spans: per overlapped file,
    {:path [name ...] :file-offset n :data-offset m :length k}.
    Single-file info (:length) yields one span; multi-file info (:files)
    splits pieces crossing a file boundary. The final short piece maps
-   only its own bytes. Returns {:ok spans} or {:error ...}."
+   only its own bytes. Path components that could escape the output
+   directory (`..`, empty, or separator-bearing) are an error.
+   Returns {:ok spans} or {:error ...}."
   [info piece-index piece-byte-count]
   (let [nominal (:piece-length info)
-        total (total-size info)]
+        total (total-size info)
+        components (cons (:name info) (mapcat :path (:files info)))]
     (cond
       (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
       (bencode/torrent-error "piece index and byte count must be valid" {})
 
       (or (not (integer? nominal)) (not (pos? nominal)))
       (bencode/torrent-error "info must carry a positive :piece-length" {})
+
+      (not (every? safe-path-component? components))
+      (bencode/torrent-error "info carries a path component that escapes the output directory" {})
 
       :else
       (let [piece-start (* piece-index nominal)]

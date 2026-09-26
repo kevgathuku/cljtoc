@@ -353,7 +353,13 @@
              (torrent/piece-file-spans info 1 4)))))
   (testing "out-of-range piece index is an error"
     (let [info {:name "test.txt" :piece-length 4 :length 8}]
-      (is (:error (torrent/piece-file-spans info 2 4))))))
+      (is (:error (torrent/piece-file-spans info 2 4)))))
+  (testing "path components escaping the output dir are an error"
+    (is (:error (torrent/piece-file-spans {:name ".." :piece-length 4 :length 8} 0 4)))
+    (is (:error (torrent/piece-file-spans {:name "t" :piece-length 4 :length 8
+                                           :files [{:path [".."] :length 8}]} 0 4)))
+    (is (:error (torrent/piece-file-spans {:name "a/b" :piece-length 4 :length 8} 0 4)))
+    (is (:error (torrent/piece-file-spans {:name "" :piece-length 4 :length 8} 0 4)))))
 
 (defspec piece-file-spans-cover-exactly-spec 100
   (prop/for-all
