@@ -388,6 +388,29 @@
                  (:message (torrent/output-file-sizes {:piece-length 4
                                                        :files [{:path ["a"] :length 8}]}))))))
 
+(deftest duplicate-declared-paths-are-rejected-test
+  ;; A torrent may declare the same path twice. output-file-sizes collapses
+  ;; that into one map entry while piece-file-spans still hands out two
+  ;; distinct byte ranges for it, so both land in the same physical file and
+  ;; the download completes having lost the overwritten bytes. Reject it in
+  ;; the shared layout guard so neither derivation reports success.
+  (let [info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
+    (testing "output-file-sizes refuses the collapsed layout"
+      (let [result (torrent/output-file-sizes info)]
+        (is (:error result))
+        (is (re-find #"same output path twice" (:message result)))))
+    (testing "piece-file-spans refuses it too, not just the size map"
+      (let [result (torrent/piece-file-spans info 0 4)]
+        (is (:error result))
+        (is (re-find #"same output path twice" (:message result)))))
+    (testing "each piece of the duplicated range errors, not only the first"
+      (is (:error (torrent/piece-file-spans info 1 4))))))
+(testing "a duplicate full path declared through different nesting is the same clash"
+  (let [info {:name "t" :piece-length 4
+              :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
+    (is (:error (torrent/output-file-sizes info)))))
+
 (defspec piece-file-spans-cover-exactly-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)

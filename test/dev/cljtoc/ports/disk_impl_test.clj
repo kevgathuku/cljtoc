@@ -226,6 +226,61 @@
       (is (= (str "tmp" File/separator "out" File/separator)
              (containment-prefix (str "tmp" File/separator "out" File/separator)))))))
 
+(deftest initialize-output-layout-rejects-duplicate-declared-path-test
+  ;; Two entries for one path: the size map keeps one length, the spans hand
+  ;; out two ranges for it, and both land in the same physical file. The
+  ;; layout must be refused before anything is created.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-dup-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
+    (is (= :invalid-info (:error (<!! (disk/initialize-output-layout port info output-dir)))))
+    (is (= :invalid-info (:error (<!! (disk/write-output-piece port info output-dir 0
+                                                               (byte-array 4))))))
+    (is (not (.exists (io/file output-dir "t"))))))
+
+(deftest initialize-output-layout-creates-no-parent-dir-through-a-symlink-test
+  ;; The nested-symlink test above only passes because the symlinked directory
+  ;; already exists, so mkdirs has nothing to do. When the declared path digs
+  ;; one level deeper, mkdirs follows the link and creates that directory
+  ;; outside the output dir before any containment check runs — the write is
+  ;; then correctly refused, but the directory it created is not.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-init-deep-link-")
+        outside-dir (temp-dir "outside-")]
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath (io/file output-dir "t"))
+     (.toPath (io/file outside-dir))
+     (into-array java.nio.file.attribute.FileAttribute []))
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["sub" "a"] :length 4}]}
+          result (<!! (disk/initialize-output-layout port info output-dir))]
+      (is (= :unsafe-path (:error result)))
+      (is (not (.exists (io/file outside-dir "sub")))))))
+
+(deftest filesystem-root-is-detected-by-shape-not-spelling-test
+  ;; The root policy must not depend on how a platform spells a root.
+  ;; Comparing against File/separator matches the Unix root only: a Windows
+  ;; drive root canonicalizes to "C:\" and would slip through. A root is the
+  ;; one canonical path with no parent. Pinned on the helper because macOS
+  ;; has no drive root to hand declined-output-dir — "C:\" canonicalizes
+  ;; here to an ordinary file under the cwd.
+  (let [root? #'disk-impl/filesystem-root?]
+    (testing "a drive root is a root the way / is"
+      (is (true? (root? "C:\\")))
+      (is (true? (root? File/separator))))
+    (testing "an ordinary canonical directory is not a root, and neither is an unresolvable path"
+      (is (false? (root? (str "tmp" File/separator "out"))))
+      (is (false? (root? (temp-dir "not-a-root-"))))
+      (is (false? (root? nil)))))
+  (testing "the guard still declines the Unix root end to end"
+    (let [port (make-port (temp-dir "disk-state-"))
+          result (<!! (disk/initialize-output-layout port
+                                                     {:name "t" :piece-length 4
+                                                      :files [{:path ["a"] :length 4}]}
+                                                     File/separator))]
+      (is (= :unsafe-output-dir (:error result))))))
+
 (deftest initialize-output-layout-rejects-escaping-component-test
   (testing "layout init refuses the hostile components the piece write refuses"
     (let [port (make-port (temp-dir "disk-state-"))

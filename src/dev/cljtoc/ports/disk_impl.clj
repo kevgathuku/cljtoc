@@ -22,10 +22,19 @@
     canonical-dir
     (str canonical-dir File/separator)))
 
+(defn- filesystem-root?
+  "True when a canonical path is a filesystem root. Detected by shape rather
+   than by spelling: a root is the one path with no parent, which holds for
+   the Unix \"/\" and for a Windows drive root alike. Comparing against
+   File/separator would match only the Unix root and let a drive root through."
+  [canonical-path]
+  (and (some? canonical-path)
+       (nil? (.getParentFile (io/file canonical-path)))))
+
 (defn- declined-output-dir
   "Policy, not a containment check: refuse to assemble a torrent directly in
-   the filesystem root. A caller who passes / almost always means an explicit
-   directory, and scattering declared files across / risks overwriting
+   a filesystem root. A caller who passes / almost always means an explicit
+   directory, and scattering declared files across a root risks overwriting
    unrelated system paths. Containment holds either way — declared path
    components are still validated — so this only makes the mistake loud and
    deterministic instead of a :write-error that depends on whether the
@@ -35,28 +44,36 @@
   (let [canonical (try
                     (.getCanonicalPath (io/file output-dir))
                     (catch Exception _ nil))]
-    (when (= canonical File/separator)
+    (when (filesystem-root? canonical)
       {:error :unsafe-output-dir
        :message (str "Refusing to download into the filesystem root: " output-dir
                      ". Pass an explicit output directory.")})))
 
+(defn- contained?
+  "True when out-file resolves inside the canonical output dir."
+  [canonical-dir out-file]
+  (.startsWith (.getCanonicalPath out-file) (containment-prefix canonical-dir)))
+
 (defn- resolve-contained
   "Resolve relative path components under output-dir for writing.
-   Creates missing parents, then requires the canonical file path to stay
-   under the canonical output dir — a pre-existing symlink component would
-   otherwise redirect the write outside it. Returns {:ok File} or
+   Checks containment, then creates missing parents, then checks again. Both
+   checks are load-bearing: a pre-existing symlink component would redirect
+   the write outside the dir, and checking only after mkdirs would already
+   have created that directory out there. Returns {:ok File} or
    {:error :unsafe-path ...}."
   [output-dir file-path]
   (let [out-file (apply io/file output-dir file-path)
-        parent (.getParentFile out-file)]
-    (when parent
-      (.mkdirs parent))
-    (let [canonical-dir (.getCanonicalPath (io/file output-dir))
-          canonical-file (.getCanonicalPath out-file)]
-      (if (.startsWith canonical-file (containment-prefix canonical-dir))
-        {:ok out-file}
-        {:error :unsafe-path
-         :message (str "Output path escapes " output-dir ": " (pr-str file-path))}))))
+        canonical-dir (.getCanonicalPath (io/file output-dir))
+        escape (fn [] {:error :unsafe-path
+                       :message (str "Output path escapes " output-dir ": " (pr-str file-path))})]
+    (if-not (contained? canonical-dir out-file)
+      (escape)
+      (let [parent (.getParentFile out-file)]
+        (when parent
+          (.mkdirs parent))
+        (if (contained? canonical-dir out-file)
+          {:ok out-file}
+          (escape))))))
 
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Only files this
@@ -161,10 +178,9 @@
           (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
                 sizes-result (torrent/output-file-sizes info)
                 declined (declined-output-dir output-dir)]
-            ;; No sizes-error branch: output-file-sizes errors only when :name
-            ;; is absent, and piece-file-spans already rejects a nil :name as
-            ;; an unsafe path component, so spans-result is always the first
-            ;; to fail.
+            ;; No sizes-error branch: every size error comes from the layout
+            ;; guard piece-file-spans also runs, so spans-result is always
+            ;; the first to fail.
             (cond
               declined
               (async/>! ch declined)

@@ -147,13 +147,19 @@
     (when (:name info)
       [{:path [(:name info)] :length (:length info)}])))
 
-(defn output-file-sizes
-  "Declared output sizes of an info dict: {relative-path-vector length}.
-   Rejects a missing :name and any path component that could escape the
-   output directory, so a caller never receives a path it must not open.
-   Returns {:ok sizes} or {:error ...}."
+(defn- layout-error
+  "The one layout guard shared by output-file-sizes and piece-file-spans: the
+   layout needs a :name, every declared path component must stay inside the
+   output directory, and no two entries may claim the same path. A duplicate
+   is fatal because the two derivations disagree about it — sizes collapse the
+   entries into one map entry while spans keep them as distinct byte ranges,
+   and both ranges then land in the same physical file. Returns the error map,
+   or nil when the layout is usable.
+   ponytail: paths are compared as declared, so a case-insensitive filesystem
+   can still map two differently-spelled paths onto one file."
   [info]
-  (let [components (cons (:name info) (mapcat :path (:files info)))]
+  (let [components (cons (:name info) (mapcat :path (:files info)))
+        layout (file-layout info)]
     (cond
       (nil? (:name info))
       (bencode/torrent-error "info must carry :name for output paths" {})
@@ -161,10 +167,23 @@
       (not (every? safe-path-component? components))
       (bencode/torrent-error "info carries a path component that escapes the output directory" {})
 
+      (not= (count layout) (count (distinct (map :path layout))))
+      (bencode/torrent-error "info declares the same output path twice" {})
+
       :else
-      {:ok (into {} (map (fn [{file-path :path file-length :length}]
-                           [file-path file-length])
-                         (file-layout info)))})))
+      nil)))
+
+(defn output-file-sizes
+  "Declared output sizes of an info dict: {relative-path-vector length}.
+   Rejects a layout that could not be written as declared (see layout-error),
+   so a caller never receives a path it must not open.
+   Returns {:ok sizes} or {:error ...}."
+  [info]
+  (if-let [error (layout-error info)]
+    error
+    {:ok (into {} (map (fn [{file-path :path file-length :length}]
+                         [file-path file-length])
+                       (file-layout info)))}))
 
 (s/fdef output-file-sizes
   :args (s/cat :info ::info)
@@ -175,13 +194,13 @@
    {:path [name ...] :file-offset n :data-offset m :length k}.
    Single-file info (:length) yields one span; multi-file info (:files)
    splits pieces crossing a file boundary. The final short piece maps
-   only its own bytes. Path components that could escape the output
-   directory (`..`, empty, or separator-bearing) are an error.
+   only its own bytes. A layout that could not be written as declared
+   (see layout-error) is an error.
    Returns {:ok spans} or {:error ...}."
   [info piece-index piece-byte-count]
   (let [nominal (:piece-length info)
         total (total-size info)
-        components (cons (:name info) (mapcat :path (:files info)))]
+        bad-layout (layout-error info)]
     (cond
       (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
       (bencode/torrent-error "piece index and byte count must be valid" {})
@@ -189,8 +208,8 @@
       (or (not (integer? nominal)) (not (pos? nominal)))
       (bencode/torrent-error "info must carry a positive :piece-length" {})
 
-      (not (every? safe-path-component? components))
-      (bencode/torrent-error "info carries a path component that escapes the output directory" {})
+      bad-layout
+      bad-layout
 
       :else
       (let [piece-start (* piece-index nominal)]
@@ -198,10 +217,10 @@
           (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
                                  {:piece-index piece-index})
           (let [piece-end (min total (+ piece-start piece-byte-count))
+                ;; layout is non-nil here: layout-error has already rejected
+                ;; the nil or unsafe :name that is the only way file-layout
+                ;; returns nil.
                 layout (file-layout info)]
-            ;; layout is non-nil here: safe-path-component? has already
-            ;; rejected a nil or unsafe :name, which is the only way
-            ;; file-layout returns nil.
             (let [spans (loop [remaining layout
                                file-start 0
                                acc (transient [])]
