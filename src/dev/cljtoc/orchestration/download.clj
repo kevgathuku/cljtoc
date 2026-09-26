@@ -806,11 +806,13 @@
 
     (let [download (:download state)
           {:keys [message-ctx ports conn-stats total-attempted]} env
-          {:keys [time-port]} ports]
+          {:keys [network-port time-port]} ports]
       (if (pieces/complete? (:piece-state download))
         (do
           (println)
           (println "  Download complete!")
+          (doseq [[_ peer-info] (:active-peers state)]
+            (network/close-peer network-port (:peer-data peer-info)))
           (assoc download :state :completed))
 
         (let [event (async/<!! events-ch)]

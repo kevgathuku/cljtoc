@@ -790,6 +790,22 @@
       (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-piece disk 0))))
       (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-piece disk 1)))))))
 
+(deftest run-coordinator-completion-closes-peers-test
+  (testing "a completed download closes every active connection"
+    (let [disk (mock-disk/create)
+          net (mock-net/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk {:net net})]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
+
 (deftest run-coordinator-choke-requeues-through-loop-test
   (testing "choke mid-piece returns the piece to needed"
     (let [disk (mock-disk/create)
