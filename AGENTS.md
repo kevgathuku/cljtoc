@@ -30,3 +30,13 @@ Clojure 1.11+ (JVM-based): Follow standard conventions
 
 <!-- MANUAL ADDITIONS START -->
 <!-- MANUAL ADDITIONS END -->
+
+## Agent skills
+
+### Issue tracker
+
+Issues tracked in GitHub Issues for kevgathuku/cljtoc. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context layout (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
