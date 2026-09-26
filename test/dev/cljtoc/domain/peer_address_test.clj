@@ -32,6 +32,31 @@
   (testing "blank input is an error"
     (is (= :invalid-address (:error (addr/parse ""))))))
 
+(deftest parse-nil-test
+  (testing "nil input is an error, not an exception"
+    (is (= :invalid-address (:error (addr/parse nil))))))
+
+(deftest parse-empty-port-test
+  (testing "a trailing colon with no port defaults to 6881"
+    (is (= {:ok {:host "10.0.0.1" :port 6881}}
+           (addr/parse "10.0.0.1:")))))
+
+(deftest parse-bracket-no-port-test
+  (testing "bracketed IPv6 without a port defaults to 6881"
+    (is (= {:ok {:host "::1" :port 6881}}
+           (addr/parse "[::1]")))))
+
+(deftest parse-malformed-bracket-test
+  (testing "an unclosed bracket is an error"
+    (is (= :invalid-address (:error (addr/parse "[::1"))))))
+
+(deftest parse-port-boundaries-test
+  (testing "port 0 and 65535 are accepted"
+    (is (= 0 (:port (:ok (addr/parse "10.0.0.1:0")))))
+    (is (= 65535 (:port (:ok (addr/parse "10.0.0.1:65535"))))))
+  (testing "negative ports are errors"
+    (is (= :invalid-port (:error (addr/parse "10.0.0.1:-1"))))))
+
 (deftest format-test
   (testing "formats an address value back to host:port"
     (is (= "192.168.1.100:5142"
