@@ -329,3 +329,25 @@
     (is (= 300 (torrent/total-size {:files [{:length 100} {:length 200}]}))))
   (testing "missing sizes total zero"
     (is (= 0 (torrent/total-size {})))))
+
+(deftest piece-file-spans-test
+  (testing "single-file piece maps to one span at the piece offset"
+    (let [info {:name "test.txt" :piece-length 4 :length 8}]
+      (is (= {:ok [{:path ["test.txt"] :file-offset 0 :data-offset 0 :length 4}]}
+             (torrent/piece-file-spans info 0 4)))
+      (is (= {:ok [{:path ["test.txt"] :file-offset 4 :data-offset 0 :length 4}]}
+             (torrent/piece-file-spans info 1 4)))))
+  (testing "multi-file piece spanning a file boundary splits into two spans"
+    (let [info {:name "t" :piece-length 6
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
+      (is (= {:ok [{:path ["t" "a"] :file-offset 0 :data-offset 0 :length 4}
+                   {:path ["t" "b"] :file-offset 0 :data-offset 4 :length 2}]}
+             (torrent/piece-file-spans info 0 6)))))
+  (testing "short final piece maps only its own bytes"
+    (let [info {:name "t" :piece-length 6
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
+      (is (= {:ok [{:path ["t" "b"] :file-offset 2 :data-offset 0 :length 4}]}
+             (torrent/piece-file-spans info 1 4)))))
+  (testing "out-of-range piece index is an error"
+    (let [info {:name "test.txt" :piece-length 4 :length 8}]
+      (is (:error (torrent/piece-file-spans info 2 4))))))

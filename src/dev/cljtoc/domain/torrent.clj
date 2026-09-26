@@ -110,6 +110,77 @@
   (or (:length info)
       (reduce + 0 (map :length (:files info)))))
 
+(s/def ::info map?)
+(s/def ::piece-span-index nat-int?)
+(s/def ::piece-byte-count pos-int?)
+(s/def ::path (s/coll-of string? :kind vector? :min-count 1))
+(s/def ::file-offset nat-int?)
+(s/def ::data-offset nat-int?)
+(s/def ::length pos-int?)
+(s/def ::file-span
+  (s/keys :req-un [::path ::file-offset ::data-offset ::length]))
+(s/def ::file-span-list (s/coll-of ::file-span :kind vector?))
+
+(defn piece-file-spans
+  "Map one piece to file-layout spans: per overlapped file,
+   {:path [name ...] :file-offset n :data-offset m :length k}.
+   Single-file info (:length) yields one span; multi-file info (:files)
+   splits pieces crossing a file boundary. The final short piece maps
+   only its own bytes. Returns {:ok spans} or {:error ...}."
+  [info piece-index piece-byte-count]
+  (let [nominal (:piece-length info)
+        total (total-size info)]
+    (cond
+      (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
+      (bencode/torrent-error "piece index and byte count must be valid" {})
+
+      (or (not (integer? nominal)) (not (pos? nominal)))
+      (bencode/torrent-error "info must carry a positive :piece-length" {})
+
+      :else
+      (let [piece-start (* piece-index nominal)]
+        (if (>= piece-start total)
+          (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
+                                 {:piece-index piece-index})
+          (let [piece-end (min total (+ piece-start piece-byte-count))
+                layout (if (:files info)
+                         (let [root (:name info)]
+                           (if (nil? root)
+                             nil
+                             (mapv (fn [file-entry]
+                                     {:path (into [root] (:path file-entry))
+                                      :length (:length file-entry)})
+                                   (:files info))))
+                         (if (:name info)
+                           [{:path [(:name info)] :length (:length info)}]
+                           nil))]
+            (if (nil? layout)
+              (bencode/torrent-error "info must carry :name for output paths" {})
+              (let [spans (loop [remaining layout
+                                 file-start 0
+                                 acc (transient [])]
+                            (if (empty? remaining)
+                              (persistent! acc)
+                              (let [{file-path :path file-length :length} (first remaining)
+                                    file-end (+ file-start file-length)
+                                    overlap-start (max piece-start file-start)
+                                    overlap-end (min piece-end file-end)]
+                                (recur (rest remaining)
+                                       file-end
+                                       (if (< overlap-start overlap-end)
+                                         (conj! acc {:path file-path
+                                                     :file-offset (- overlap-start file-start)
+                                                     :data-offset (- overlap-start piece-start)
+                                                     :length (- overlap-end overlap-start)})
+                                         acc)))))]
+                {:ok spans}))))))))
+
+(s/fdef piece-file-spans
+  :args (s/cat :info ::info
+               :piece-index ::piece-span-index
+               :piece-byte-count ::piece-byte-count)
+  :ret map?)
+
 ;; ---------------------------------------------------------------------------
 ;; Validation
 ;; ---------------------------------------------------------------------------
