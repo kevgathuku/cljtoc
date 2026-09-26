@@ -495,7 +495,9 @@
 
 (defn- assemble-and-verify
   "Assemble buffered blocks, verify the hash, plan the disk write.
-   Returns [new-state effects] (requeueing with no effects on failure)."
+   Returns [new-state effects verified?]: verified? is false on
+   assembly/verification failure (the piece is requeued with no effects).
+   The caller decides on the follow-up request via the single tail."
   [state address piece-idx addr-blocks ctx]
   (let [{:keys [piece-length total-length total-pieces piece-hashes]} ctx
         piece-len (if (= piece-idx (dec total-pieces))
@@ -503,36 +505,33 @@
                     piece-length)]
     (if-let [assembled (:ok (pieces/assemble-piece addr-blocks piece-len))]
       (if (:ok (pieces/verify-piece piece-idx assembled (nth piece-hashes piece-idx)))
-        (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
-              state (cond-> (-> state
-                                (assoc-in [:active-peers address :assigned-piece] nil)
-                                (update :blocks-received dissoc address))
-                      (:ok mark-result)
-                      (assoc-in [:download :piece-state] (:ok mark-result)))
-              effects [{:write-verified {:piece-idx piece-idx :data assembled}}]
-              download (:download state)]
-          (if (and (peer-state/can-request? (get-in state [:active-peers address :peer-state]))
-                   (not (pieces/complete? (:piece-state download))))
-            (let [[planned send-effects] (maybe-request state address ctx)]
-              [planned (into effects send-effects)])
-            [state effects]))
-        [(requeue-assignment state address piece-idx) []])
-      [(requeue-assignment state address piece-idx) []])))
+        (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)]
+          [(cond-> (-> state
+                       (assoc-in [:active-peers address :assigned-piece] nil)
+                       (update :blocks-received dissoc address))
+             (:ok mark-result)
+             (assoc-in [:download :piece-state] (:ok mark-result)))
+           [{:write-verified {:piece-idx piece-idx :data assembled}}]
+           true])
+        [(requeue-assignment state address piece-idx) [] false])
+      [(requeue-assignment state address piece-idx) [] false])))
 
 (defn- handle-piece-message
   "Accumulate one Piece message; assemble on the final block.
-   Returns [new-state effects]."
+   Returns [new-state effects may-request?]: may-request? is false when
+   the piece just failed (assembly/verify) so the peer idles until its
+   next message instead of hot-looping requests at a corrupt peer."
   [state address message ctx]
   (let [piece-idx (:piece-index message)
         assigned (get-in state [:active-peers address :assigned-piece])]
     (if (not= piece-idx assigned)
-      [state []]
+      [state [] true]
       (let [block {:offset (:begin message) :data (:data message)}
             addr-blocks (conj (get (:blocks-received state) address []) block)
             state (assoc-in state [:blocks-received address] addr-blocks)
             expected (get (:expected-blocks state) address 0)]
         (if (< (count addr-blocks) expected)
-          [state []]
+          [state [] true]
           (assemble-and-verify state address piece-idx addr-blocks ctx))))))
 
 (defn on-message
@@ -541,34 +540,38 @@
    :total-length and :total-pieces from the torrent info.
    Effects are data for the loop edge:
      {:send {:peer-data ... :bytes ...}}
-     {:write-verified {:piece-idx ... :data ...}}"
+     {:write-verified {:piece-idx ... :data ...}}
+   Requests go out through the single maybe-request step at the bottom."
   [state event ctx]
   (let [{:keys [address message]} event
         peer-info (get (:active-peers state) address)]
     (if (nil? peer-info)
       [state []]
       (let [ps (peer-state/apply-message (:peer-state peer-info) message)
-            state (assoc-in state [:active-peers address :peer-state] ps)]
-        (cond
-          (instance? dev.cljtoc.protocol.peer.Unchoke message)
-          (maybe-request state address ctx)
+            state (assoc-in state [:active-peers address :peer-state] ps)
+            assigned (get-in state [:active-peers address :assigned-piece])
+            [updated effects may-request?]
+            (cond
+              (instance? dev.cljtoc.protocol.peer.Choke message)
+              [(if assigned
+                 (requeue-assignment state address assigned)
+                 state)
+               [] false]
 
-          (instance? dev.cljtoc.protocol.peer.Piece message)
-          (handle-piece-message state address message ctx)
+              (instance? dev.cljtoc.protocol.peer.Piece message)
+              (handle-piece-message state address message ctx)
 
-          (instance? dev.cljtoc.protocol.peer.Choke message)
-          (let [assigned (get-in state [:active-peers address :assigned-piece])]
-            [(if assigned
-               (requeue-assignment state address assigned)
-               state)
-             []])
+              (or (instance? dev.cljtoc.protocol.peer.Unchoke message)
+                  (instance? dev.cljtoc.protocol.peer.Have message)
+                  (instance? dev.cljtoc.protocol.peer.Bitfield message))
+              [state [] true]
 
-          (or (instance? dev.cljtoc.protocol.peer.Have message)
-              (instance? dev.cljtoc.protocol.peer.Bitfield message))
-          (maybe-request state address ctx)
-
-          :else
-          [state []])))))
+              :else
+              [state [] false])]
+        (if may-request?
+          (let [[planned send-effects] (maybe-request updated address ctx)]
+            [planned (into effects send-effects)])
+          [updated effects])))))
 
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
