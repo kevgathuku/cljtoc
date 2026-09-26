@@ -529,6 +529,38 @@
       (is (contains? (:active-peers updated) "peer-a"))
       (is (contains? (get-in updated [:download :piece-state :in-flight]) 1)))))
 
+;; swarm-exhausted? (issue #11): pending dials count as a live swarm —
+;; failure only when nothing is active, nothing is dialing, and pieces
+;; are still incomplete.
+
+(deftest swarm-exhausted-pending-dials-test
+  (testing "dials in flight mean the swarm is not exhausted"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{"peer-b"})]
+      (is (false? (download/swarm-exhausted? state)))))
+  (testing "no active peers and no pending dials is exhausted"
+    (let [state (assoc (coordinator-state 1)
+                       :active-peers {}
+                       :pending-dials #{})]
+      (is (true? (download/swarm-exhausted? state)))))
+  (testing "active peers still count, pending or not"
+    (let [state (assoc (coordinator-state 1)
+                       :pending-dials #{"peer-b"})]
+      (is (false? (download/swarm-exhausted? state)))))
+  (testing "a complete download is never exhausted"
+    (let [complete-state (pieces/initial-piece-state 2)
+          complete-state (:ok (pieces/mark-in-flight complete-state 0))
+          complete-state (:ok (pieces/mark-in-flight complete-state 1))
+          complete-state (:ok (pieces/mark-verified complete-state 0))
+          complete-state (:ok (pieces/mark-verified complete-state 1))
+          state {:download {:piece-state complete-state}
+                 :active-peers {}
+                 :pending-dials #{}
+                 :blocks-received {}
+                 :expected-blocks {}}]
+      (is (false? (download/swarm-exhausted? state))))))
+
 ;; on-message takes [state event ctx] and returns [new-state effects].
 ;; Effects are data: {:send {:peer-data ... :bytes ...}} for block requests,
 ;; {:write-verified {:piece-idx ... :data ...}} for verified pieces.

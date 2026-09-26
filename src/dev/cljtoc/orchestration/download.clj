@@ -519,10 +519,14 @@
      []]))
 
 (defn swarm-exhausted?
-  "True when no peers remain and pieces are still incomplete:
-   the caller fails the download (unchanged behavior, see issue #11)."
+  "True when the swarm can no longer make progress: no active peers,
+   no dials still in flight, and pieces still incomplete.
+   :pending-dials is the set of dialed addresses with no resolved
+   :peer-connected/:peer-disconnected yet (issue #11); a missing key
+   counts as none pending. The caller fails the download."
   [state]
   (and (empty? (:active-peers state))
+       (empty? (:pending-dials state))
        (not (pieces/complete? (get-in state [:download :piece-state])))))
 
 (defn on-disconnected
