@@ -680,3 +680,41 @@
                          state
                          {:address "peer-a" :message (peer/->KeepAlive)}
                          ctx))))))
+
+;; End-to-end through the real coordinator loop (issue #2.4): one mock
+;; peer serves bitfield -> unchoke -> both pieces; the download must
+;; reach :completed with both pieces verified and written.
+
+(deftest run-download-completes-with-mock-swarm-test
+  (testing "scripted swarm messages drive run-download to :completed"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          piece-1-bytes (test-utils/to-bytes "efgh")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)
+                                   (bencode/sha1-hash piece-1-bytes)]
+                          :piece-length 4
+                          :length 8}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "swarm")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                               (byte-array [(unchecked-byte 0xC0)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}
+                                          {:ok (peer/->Piece 1 0 piece-1-bytes)}])})
+          disk (mock-disk/create)
+          result (deref (future (download/run-download {:network-port net
+                                                        :disk-port disk
+                                                        :time-port (mock-time/create)
+                                                        :config {}}
+                                                       started))
+                        15000 :timed-out)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 2 (pieces/verified-count (:piece-state result))))
+      (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk 0))))
+      (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk 1)))))))
