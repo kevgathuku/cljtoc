@@ -2,19 +2,15 @@
 ================================================================================
 SYNC IMPACT REPORT
 ================================================================================
-Version change: 0.0.0 → 1.0.0 (initial ratification)
-Modified principles: N/A (initial version)
-Added sections:
-  - Core Principles (5 principles)
-  - Layered Architecture
-  - Development Workflow
-  - Governance
-Removed sections: N/A (initial version)
+Version change: 1.0.0 → 1.1.0 (trust-boundary validation)
+Modified principles: II. Explicit Effect Boundaries (untrusted-input validation duty added)
+Added sections: None
+Removed sections: None
 Templates requiring updates:
-  - .specify/templates/plan-template.md: ✅ Compatible (Constitution Check section exists)
+  - .specify/templates/plan-template.md: ✅ Compatible (Constitution Check gate is generic)
   - .specify/templates/spec-template.md: ✅ Compatible (no updates required)
   - .specify/templates/tasks-template.md: ✅ Compatible (phase structure aligns)
-Follow-up TODOs: None
+Follow-up TODOs: None (pre-existing drifts noted in review — supervisor-less retries/timeouts under III, direct SecureRandom use under II — intentionally left for separate proposals)
 ================================================================================
 -->
 
@@ -51,7 +47,14 @@ Effect ports MUST:
 - Own their failure modes and communicate via channels
 - Live at the edges of the system, never in domain or coordination layers
 
-**Rationale**: Explicit effect boundaries enable testing without actual I/O, deterministic integration tests with simulated time/network/disk, and clear ownership of failure modes.
+Untrusted input (torrent files, tracker responses, peer bytes) MUST be validated
+in pure functions at the trust boundary before crossing an effect port:
+
+- Path and name components MUST be confinement-checked before reaching the filesystem
+- Declared sizes MUST bound what is written, so stale state cannot survive a write
+- Validation failures MUST return `{:error ...}` maps, never throw, per ADR-0007
+
+**Rationale**: Explicit effect boundaries enable testing without actual I/O, deterministic integration tests with simulated time/network/disk, and clear ownership of failure modes. Validating at the trust boundary keeps hostile input from ever reaching an effect, and keeps the check itself pure and unit-testable.
 
 ### III. Crash-Only Supervision
 
@@ -178,4 +181,4 @@ This constitution supersedes all other architectural practices for this project.
 - Architecture violations MUST be flagged and justified or resolved
 - Periodic audits SHOULD verify no drift from constitutional principles
 
-**Version**: 1.0.0 | **Ratified**: 2026-01-26 | **Last Amended**: 2026-01-26
+**Version**: 1.1.0 | **Ratified**: 2026-01-26 | **Last Amended**: 2026-09-26
