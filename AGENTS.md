@@ -153,6 +153,9 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 - Persisted state must decode back to runtime values: byte arrays are stored as tagged `{:cljtoc/bytes hex}` maps (see `dev.cljtoc.ports.disk/encode-state` / `decode-state`) so a resumed download carries real bytes into handshake and verification. Test the decoded value, not the on-disk shape — asserting the encoded form passes while resume is broken
 - Pause/resume must be covered by a cycle test through the real port (temp dirs), not just the mock: mocks drift from the real envelope contract (e.g. `load-state` returning the download instead of `{:ok download}`)
 - Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
+- Co-locate function specs: `(s/fdef NAME ...)` directly after its `defn`, never in a trailing section. Data `s/def` specs must be defined before any fdef referencing them (the spec registry resolves at load time)
+- Edge effects must handle port result envelopes: after planning moved state forward, a failed send/write strands it — unwind (requeue + drop bookkeeping) or fail explicitly, never discard `{:error ...}`
+- Test doubles must mirror the real ports' error envelopes (e.g., `MockDiskPort` `:write-error`) so edge failure paths stay drivable; success-only mocks leave failure handling untestable
 
 ## Common Errors to Avoid
 
@@ -168,6 +171,7 @@ All PRs must verify:
 3. All go blocks have explicit supervisor ownership
 4. No new global state introduced
 5. New code has corresponding tests; domain tests are pure
+6. Changed files are `cljfmt`-clean (`cljfmt fix` before committing, `cljfmt check` after)
 
 ## Memory
 
@@ -184,3 +188,8 @@ Issues tracked in GitHub Issues for kevgathuku/cljtoc. See `docs/agents/issue-tr
 ### Domain docs
 
 Single-context layout (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
+
+### PR review threads
+
+- Reply per thread via `gh api repos/<owner>/<repo>/pulls/<number>/comments --input` with numeric `in_reply_to` JSON; `-f in_reply_to=<id>` sends a string and is rejected.
+- The Copilot reviewer identity doesn't resolve via `--add-reviewer`; pushing the branch retriggers its pass.
