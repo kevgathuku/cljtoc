@@ -356,6 +356,21 @@
 ;; DownloadManager constructor (issue #5): merges default-config,
 ;; validates the result against ::config.
 
+(deftest run-download-fails-fast-with-no-peers-test
+  (testing "zero peers returns :failed instead of blocking on the event channel"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-peers")
+                         :state :downloading
+                         :peers #{})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port (mock-disk/create)
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))))))
+
 (deftest manager-rejects-invalid-config-test
   (let [network (mock-net/create)
         disk (mock-disk/create)

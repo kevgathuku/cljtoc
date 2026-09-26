@@ -458,7 +458,19 @@
    Connects to peers, requests pieces, writes verified pieces.
    Returns the final Download record."
   [manager download]
-  (let [{:keys [network-port disk-port time-port]} manager
+  (cond
+    (pieces/complete? (:piece-state download))
+    (assoc download :state :completed)
+
+    ;; No dial candidates: no workers would spawn and the coordinator
+    ;; would block on the event channel forever.
+    (empty? (:peers download))
+    (assoc download :state :failed
+           :error {:reason :no-peers
+                   :message "No peers available: nothing to connect to"})
+
+    :else
+    (let [{:keys [network-port disk-port time-port]} manager
         config (:config manager)
         torrent (:torrent download)
         info (:info torrent)
@@ -715,7 +727,7 @@
 
                 ;; Unknown event type
                 (recur download active-peers blocks-received expected-blocks
-                       last-progress-time)))))))))
+                       last-progress-time))))))))))
 
 ;; ============================================================================
 ;; Spec Validation
