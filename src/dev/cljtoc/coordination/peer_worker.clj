@@ -7,7 +7,7 @@
 
    Uses async/thread for blocking socket reads."
   (:require [clojure.core.async :as async]
-            [dev.cljtoc.ports.network-impl :as net]
+            [dev.cljtoc.ports.network :as net]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
 

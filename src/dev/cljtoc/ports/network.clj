@@ -21,23 +21,18 @@
   (receive-message [this peer]
     "Receive the next message from a peer.
      Returns a channel that will deliver the message or error.")
-  
+
+  (receive-handshake [this peer]
+    "Read a 68-byte peer handshake from the connection.
+     Returns a channel that will deliver {:ok PeerHandshake} or {:error ...}.")
+
   (close-peer [this peer]
     "Close the connection to a peer gracefully.
-     Returns nil.")
-  
-  (peer-loop [this peer message-handler]
-    "Start a loop that continuously receives messages from a peer
-     and dispatches them to the message-handler function.
-     Returns a supervised worker that can be stopped."))
+     Returns nil."))
 
 (defprotocol ITrackerPort
   "Abstraction for tracker communication operations."
   
   (announce [this torrent-metadata]
     "Announce to the tracker and get a list of peers.
-     Returns a channel that will deliver #{Peer} or error.")
-  
-  (scrape [this torrent-metadata]
-    "Scrape tracker for torrent statistics.
-     Returns a channel with scrape data or error."))
+     Returns a channel that will deliver #{Peer} or error."))

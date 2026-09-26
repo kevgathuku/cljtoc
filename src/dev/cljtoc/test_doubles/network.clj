@@ -34,12 +34,20 @@
       (async/go
         (async/>! ch {:ok {:type :keep-alive}}))
       ch))
-  
+
+  (receive-handshake [this peer]
+    (let [ch (async/chan 1)]
+      (async/go
+        (let [response (:handshake-response config)]
+          (async/>! ch (cond
+                         (fn? response) (response peer)
+                         (some? response) response
+                         :else {:ok {:info-hash (byte-array 20)
+                                     :peer-id (byte-array 20)}}))))
+      ch))
+
   (close-peer [this peer]
     nil)
-  
-  (peer-loop [this peer message-handler]
-    (fn []))
   
   network/ITrackerPort
   (announce [this torrent-metadata]
@@ -48,12 +56,6 @@
         (if-let [announce-error (:announce-error config)]
           (async/>! ch announce-error)
           (async/>! ch {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])})))
-      ch))
-  
-  (scrape [this torrent-metadata]
-    (let [ch (async/chan 1)]
-      (async/go
-        (async/>! ch {:ok {:seeders 10 :leechers 5}}))
       ch)))
 
 (defn create
@@ -62,7 +64,9 @@
    Options:
    - :default-bitfield - set of piece indices this mock peer has (default: #{0 1 2 3 4})
    - :mock-peers - vector of peer addresses to return on announce
-   - :announce-error - error map to return from announce instead of peers"
+   - :announce-error - error map to return from announce instead of peers
+   - :handshake-response - map or (fn [peer]) returning {:ok handshake}
+     or {:error ...} for receive-handshake"
   ([]
    (create {}))
   ([config]
