@@ -114,6 +114,17 @@
     :bitfield nil
     :total-pieces total-pieces}))
 
+(s/fdef initial-peer-state
+  :args (s/cat :total-pieces ::total-pieces)
+  :ret  ::peer-state
+  :fn   #(let [s (:ret %)]
+           (and (true?  (:am-choking s))
+                (false? (:am-interested s))
+                (true?  (:peer-choking s))
+                (false? (:peer-interested s))
+                (nil?   (:bitfield s))
+                (= (-> % :args :total-pieces) (:total-pieces s)))))
+
 ;; ============================================================================
 ;; Bitfield Operations
 ;; ============================================================================
@@ -179,6 +190,13 @@
       false)
     false))
 
+(s/fdef peer-has-piece?
+  :args (s/cat :peer-state ::peer-state :piece-index nat-int?)
+  :ret  boolean?
+  :fn   #(if (nil? (-> % :args :peer-state :bitfield))
+           (false? (:ret %))
+           true))
+
 (defn mark-piece-available
   "Mark a piece as available in peer's bitfield.
 
@@ -202,6 +220,12 @@
       (assoc peer-state :bitfield new-bitfield))
     peer-state))
 
+(s/fdef mark-piece-available
+  :args (s/cat :peer-state ::peer-state :piece-index nat-int?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :peer-state :total-pieces)
+            (-> % :ret :total-pieces)))
+
 (defn update-bitfield
   "Update peer's bitfield from a bitfield message.
    
@@ -218,6 +242,12 @@
     (assoc peer-state :bitfield new-bitfield)
     peer-state))
 
+(s/fdef update-bitfield
+  :args (s/cat :peer-state ::peer-state :bitfield-bytes bytes?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :peer-state :total-pieces)
+            (-> % :ret :total-pieces)))
+
 (defn peer-piece-count
   "Count how many pieces peer has.
    
@@ -231,6 +261,38 @@
   (if-let [bitfield (:bitfield peer-state)]
     (.cardinality ^BitSet bitfield)
     0))
+
+(s/fdef peer-piece-count
+  :args (s/cat :peer-state ::peer-state)
+  :ret  nat-int?
+  :fn   #(if (nil? (-> % :args :peer-state :bitfield))
+           (zero? (:ret %))
+           (<= (:ret %) (-> % :args :peer-state :total-pieces))))
+
+(defn available-pieces
+  "Set of piece indices the peer has available.
+
+   Args:
+     peer-state - Current PeerState
+
+   Returns:
+     #{nat-int} of available piece indices (empty when unknown)"
+  [peer-state]
+  {:pre [(s/valid? ::peer-state peer-state)]}
+  (if-let [bitfield (:bitfield peer-state)]
+    (let [total-pieces (:total-pieces peer-state)]
+      (loop [piece-index (.nextSetBit ^BitSet bitfield 0)
+             acc (transient #{})]
+        (if (or (= piece-index -1) (>= piece-index total-pieces))
+          (persistent! acc)
+          (recur (.nextSetBit ^BitSet bitfield (inc piece-index)) (conj! acc piece-index)))))
+    #{}))
+
+(s/fdef available-pieces
+  :args (s/cat :peer-state ::peer-state)
+  :ret (s/coll-of ::piece-index :kind set?)
+  :fn #(every? (fn [idx] (< idx (-> % :args :peer-state :total-pieces)))
+               (:ret %)))
 
 ;; ============================================================================
 ;; State Transitions
@@ -250,6 +312,11 @@
          (boolean? choking)]}
   (assoc peer-state :peer-choking choking))
 
+(s/fdef set-peer-choking
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :peer-choking)))
+
 (defn set-peer-interested
   "Set peer interested state.
    
@@ -263,6 +330,11 @@
   {:pre [(s/valid? ::peer-state peer-state)
          (boolean? interested)]}
   (assoc peer-state :peer-interested interested))
+
+(s/fdef set-peer-interested
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :peer-interested)))
 
 (defn set-am-choking
   "Set our choking state.
@@ -278,6 +350,11 @@
          (boolean? choking)]}
   (assoc peer-state :am-choking choking))
 
+(s/fdef set-am-choking
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :am-choking)))
+
 (defn set-am-interested
   "Set our interested state.
    
@@ -291,6 +368,11 @@
   {:pre [(s/valid? ::peer-state peer-state)
          (boolean? interested)]}
   (assoc peer-state :am-interested interested))
+
+(s/fdef set-am-interested
+  :args (s/cat :peer-state ::peer-state :v boolean?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :v) (-> % :ret :am-interested)))
 
 ;; ============================================================================
 ;; State Transitions
@@ -345,6 +427,12 @@
     ;; KeepAlive, Request, Piece, Cancel - no state change
     :else peer-state))
 
+(s/fdef apply-message
+  :args (s/cat :peer-state ::peer-state :message any?)
+  :ret  ::peer-state
+  :fn   #(= (-> % :args :peer-state :total-pieces)
+            (-> % :ret :total-pieces)))
+
 ;; ============================================================================
 ;; Query Functions
 ;; ============================================================================
@@ -365,73 +453,6 @@
   {:pre [(s/valid? ::peer-state peer-state)]}
   (and (not (:peer-choking peer-state))
        (:am-interested peer-state)))
-
-;; ============================================================================
-;; Function Specs
-;; ============================================================================
-
-(s/fdef initial-peer-state
-  :args (s/cat :total-pieces ::total-pieces)
-  :ret  ::peer-state
-  :fn   #(let [s (:ret %)]
-           (and (true?  (:am-choking s))
-                (false? (:am-interested s))
-                (true?  (:peer-choking s))
-                (false? (:peer-interested s))
-                (nil?   (:bitfield s))
-                (= (-> % :args :total-pieces) (:total-pieces s)))))
-
-(s/fdef peer-has-piece?
-  :args (s/cat :peer-state ::peer-state :piece-index nat-int?)
-  :ret  boolean?
-  :fn   #(if (nil? (-> % :args :peer-state :bitfield))
-           (false? (:ret %))
-           true))
-
-(s/fdef mark-piece-available
-  :args (s/cat :peer-state ::peer-state :piece-index nat-int?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :peer-state :total-pieces)
-            (-> % :ret :total-pieces)))
-
-(s/fdef update-bitfield
-  :args (s/cat :peer-state ::peer-state :bitfield-bytes bytes?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :peer-state :total-pieces)
-            (-> % :ret :total-pieces)))
-
-(s/fdef peer-piece-count
-  :args (s/cat :peer-state ::peer-state)
-  :ret  nat-int?
-  :fn   #(if (nil? (-> % :args :peer-state :bitfield))
-           (zero? (:ret %))
-           (<= (:ret %) (-> % :args :peer-state :total-pieces))))
-
-(s/fdef set-peer-choking
-  :args (s/cat :peer-state ::peer-state :v boolean?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :v) (-> % :ret :peer-choking)))
-
-(s/fdef set-peer-interested
-  :args (s/cat :peer-state ::peer-state :v boolean?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :v) (-> % :ret :peer-interested)))
-
-(s/fdef set-am-choking
-  :args (s/cat :peer-state ::peer-state :v boolean?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :v) (-> % :ret :am-choking)))
-
-(s/fdef set-am-interested
-  :args (s/cat :peer-state ::peer-state :v boolean?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :v) (-> % :ret :am-interested)))
-
-(s/fdef apply-message
-  :args (s/cat :peer-state ::peer-state :message any?)
-  :ret  ::peer-state
-  :fn   #(= (-> % :args :peer-state :total-pieces)
-            (-> % :ret :total-pieces)))
 
 (s/fdef can-request?
   :args (s/cat :peer-state ::peer-state)

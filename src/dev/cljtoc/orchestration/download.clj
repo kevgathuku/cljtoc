@@ -22,8 +22,7 @@
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.coordination.peer-worker :as peer-worker])
-  (:import [java.util BitSet]
-           [java.security SecureRandom]))
+  (:import [java.security SecureRandom]))
 
 (defrecord Download
            [id
@@ -58,6 +57,68 @@
            [reason
             message
             failed-piece])
+
+;; ============================================================================
+;; Specs
+;; ============================================================================
+
+(s/def ::download-id string?)
+
+(s/def ::state keyword?)
+
+(s/def ::output-dir string?)
+
+(s/def ::bytes-downloaded nat-int?)
+
+(s/def ::pieces-complete nat-int?)
+
+(s/def ::pieces-total nat-int?)
+
+(s/def ::peers-connected nat-int?)
+
+(s/def ::rate-bytes-per-sec nat-int?)
+
+(s/def ::percent number?)
+
+(s/def ::download-state #{:idle :starting :downloading :paused :completed :failed})
+
+(s/def ::progress-response
+  (s/keys :req-un [::percent
+                   ::pieces-complete
+                   ::pieces-total
+                   ::bytes-downloaded
+                   ::rate-bytes-per-sec
+                   ::peers-connected
+                   ::state]))
+
+(s/def ::max-peers pos-int?)
+
+(s/def ::min-peers nat-int?)
+
+(s/def ::request-queue-size nat-int?)
+
+(s/def ::piece-timeout-ms nat-int?)
+
+(s/def ::tracker-announce-interval-ms nat-int?)
+
+(s/def ::config
+  (s/keys :opt-un [::max-peers
+                   ::min-peers
+                   ::request-queue-size
+                   ::piece-timeout-ms
+                   ::tracker-announce-interval-ms
+                   ::output-dir]))
+
+(s/def ::network-port any?)
+
+(s/def ::disk-port any?)
+
+(s/def ::time-port any?)
+
+(s/def ::downloads map?)
+
+(s/def ::download-manager
+  (s/keys :req-un [::network-port ::disk-port ::time-port ::downloads ::config]))
 
 (def valid-states #{:idle :starting :downloading :paused :completed :failed})
 
@@ -105,14 +166,33 @@
                         {}
                         merged))))
 
+(s/fdef manager
+  :args (s/cat :network-port any?
+               :disk-port any?
+               :time-port any?
+               :config (s/? ::config))
+  :ret ::download-manager)
+
 (defn add-download [manager download]
   (update manager :downloads assoc (:id download) download))
+
+(s/fdef add-download
+  :args (s/cat :manager ::download-manager :download map?)
+  :ret ::download-manager)
 
 (defn get-download [manager id]
   (get (:downloads manager) id))
 
+(s/fdef get-download
+  :args (s/cat :manager ::download-manager :id any?)
+  :ret (s/or :download map? :nil nil?))
+
 (defn remove-download [manager id]
   (update manager :downloads dissoc id))
+
+(s/fdef remove-download
+  :args (s/cat :manager ::download-manager :id any?)
+  :ret ::download-manager)
 
 (defn- download-error
   [reason message & [failed-piece]]
@@ -140,6 +220,10 @@
 (defn initial-stats [time-port]
   (let [now (time/now time-port)]
     (->DownloadStats now nil 0 0 now)))
+
+(s/fdef initial-stats
+  :args (s/cat :time-port any?)
+  :ret (s/keys :req-un [::started-at]))
 
 (defn update-stats-bytes [time-port stats bytes-received]
   (let [now (time/now time-port)
@@ -173,6 +257,10 @@
                 output-dir
                 (initial-stats time-port)
                 nil)))
+
+(s/fdef initial-download
+  :args (s/cat :time-port any? :torrent map? :output-dir string? :download-id string?)
+  :ret (s/keys :req-un [::download-id ::state]))
 
 (defn capped-peer-addresses
   "Limit dial candidates to :max-peers, falling back to the
@@ -232,6 +320,10 @@
      :peers-connected (count (:peers download))
      :state (:state download)}))
 
+(s/fdef progress
+  :args (s/cat :time-port any? :download map?)
+  :ret ::progress-response)
+
 (defn pause-download
   "Pause an active download.
    - Closes all peer connections
@@ -249,6 +341,11 @@
              {:ok paused-download}))
          {:ok paused-download}))
      {:error :not-running :message "Download is not running"})))
+
+(s/fdef pause-download
+  :args (s/cat :disk-port (s/? any?) :download map?)
+  :ret (s/or :ok (s/keys :req-un [::state])
+             :error map?))
 
 (defn resume-download
   "Resume a paused download.
@@ -273,6 +370,11 @@
          {:ok (assoc restored :state :downloading)}))
      {:error :not-paused :message "Download is not paused"})))
 
+(s/fdef resume-download
+  :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)
+  :ret (s/or :ok (s/keys :req-un [::state])
+             :error map?))
+
 (defn load-persisted-state
   "Load persisted download state from disk."
   [disk-port download-id]
@@ -289,6 +391,10 @@
 
 (defn stop-download [download]
   (assoc download :state :idle :peers #{}))
+
+(s/fdef stop-download
+  :args (s/cat :download map?)
+  :ret (s/keys :req-un [::state ::peers]))
 
 ;; ============================================================================
 ;; Error Handling (User Story 3)
@@ -380,61 +486,278 @@
 ;; ============================================================================
 ;; Active Download Coordinator
 ;; ============================================================================
+;;
+;; The loop threads one state map:
+;;   {:download ... :active-peers ... :blocks-received ... :expected-blocks ...}
+;; Handlers take that map plus an event and return [new-state effects];
+;; channel I/O (sends, disk writes) happens at the loop edge.
 
-(defn- bitset-to-set
-  "Convert a java.util.BitSet to a Clojure set of piece indices."
-  [^BitSet bs total-pieces]
-  (if (nil? bs)
-    #{}
-    (loop [i (.nextSetBit bs 0)
-           acc (transient #{})]
-      (if (or (= i -1) (>= i total-pieces))
-        (persistent! acc)
-        (recur (.nextSetBit bs (inc i)) (conj! acc i))))))
+(defn requeue-assignment
+  "Requeue address's assigned piece and clear its bookkeeping.
+   Best-effort on the piece state (a piece that already left in-flight
+   stays where it is); the assignment and buffered blocks are always
+   cleared. Returns the updated coordinator state map."
+  [state address piece-idx]
+  (let [download (:download state)
+        requeued (pieces/requeue-piece (:piece-state download) piece-idx)]
+    (-> state
+        (assoc :download (if (:ok requeued)
+                           (assoc download :piece-state (:ok requeued))
+                           download))
+        (assoc-in [:active-peers address :assigned-piece] nil)
+        (update :blocks-received dissoc address))))
+
+(defn on-connected
+  "Record a newly connected peer with no assignment yet.
+   Pure. Returns [updated-state effects] (a connection plans no I/O)."
+  [state event]
+  (let [{:keys [address peer-data peer-state]} event]
+    [(assoc-in state [:active-peers address]
+               {:peer-data peer-data
+                :peer-state peer-state
+                :assigned-piece nil})
+     []]))
+
+(defn swarm-exhausted?
+  "True when no peers remain and pieces are still incomplete:
+   the caller fails the download (unchanged behavior, see issue #11)."
+  [state]
+  (and (empty? (:active-peers state))
+       (not (pieces/complete? (get-in state [:download :piece-state])))))
+
+(defn on-disconnected
+  "Drop a peer, requeueing its assigned piece if any. Pure.
+   Returns [updated-state effects] (a disconnect plans no I/O);
+   the caller checks swarm-exhausted? to decide on failure."
+  [state event]
+  (let [{:keys [address]} event
+        assigned (get-in state [:active-peers address :assigned-piece])
+        state (if assigned
+                (requeue-assignment state address assigned)
+                state)]
+    [(-> state
+         (update :active-peers dissoc address)
+         (update :blocks-received dissoc address)
+         (update :expected-blocks dissoc address))
+     []]))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
   [active-peers]
   (map (fn [[_ peer-info]]
-         (let [ps (:peer-state peer-info)
-               tp (:total-pieces ps)]
-           (bitset-to-set (:bitfield ps) tp)))
+         (peer-state/available-pieces (:peer-state peer-info)))
        active-peers))
 
-(defn- try-request-piece
-  "Try to select and request a piece from a peer. Returns updated state map or nil."
-  [{:keys [download active-peers network-port] :as state} address]
-  (let [peer-info (get active-peers address)
-        ps (:peer-state peer-info)
+(defn- requestable?
+  "True when the peer may be given a piece: unchoked, interested, idle."
+  [state address]
+  (let [peer-info (get (:active-peers state) address)]
+    (and (peer-state/can-request? (:peer-state peer-info))
+         (nil? (:assigned-piece peer-info)))))
+
+(defn- plan-request
+  "Select a piece and plan its block requests without touching the network.
+   ctx carries :piece-length and :total-length from the torrent info.
+   Returns [new-state sends] or nil when nothing can be requested.
+   Each send is {:peer-data ... :bytes ...} for the loop edge to deliver."
+  [state address ctx]
+  (let [download (:download state)
+        active-peers (:active-peers state)
+        peer-info (get active-peers address)
         piece-state (:piece-state download)
-        tp (:total-pieces ps)
-        peer-avail (bitset-to-set (:bitfield ps) tp)
-        all-avails (all-peer-available-sets active-peers)
-        select-result (pieces/select-piece piece-state peer-avail all-avails)]
+        select-result (pieces/select-piece piece-state
+                                           (peer-state/available-pieces (:peer-state peer-info))
+                                           (all-peer-available-sets active-peers))]
     (when-let [piece-idx (:ok select-result)]
       (let [mark-result (pieces/mark-in-flight piece-state piece-idx)]
         (when (:ok mark-result)
-          (let [info (get-in download [:torrent :info])
-                piece-length (:piece-length info)
-                total-length (torrent/total-size info)
-                blocks-result (pieces/piece-blocks piece-idx piece-length total-length)]
+          (let [blocks-result (pieces/piece-blocks piece-idx
+                                                   (:piece-length ctx)
+                                                   (:total-length ctx))]
             (when (:ok blocks-result)
               (let [blocks (:ok blocks-result)
-                    peer-data (:peer-data peer-info)]
-                ;; Send all block requests
-                (doseq [block blocks]
-                  (let [req-msg (peer/->Request (:piece-index block)
-                                                (:offset block)
-                                                (:length block))
-                        req-bytes (:ok (peer/build-message req-msg))]
-                    (when req-bytes
-                      (async/<!! (network/send-message network-port peer-data req-bytes)))))
-                ;; Return updated state
-                {:download (assoc download :piece-state (:ok mark-result))
-                 :active-peers (assoc-in active-peers [address :assigned-piece] piece-idx)
-                 :expected-blocks (assoc-in (:expected-blocks state)
-                                            [address]
-                                            (count blocks))}))))))))
+                    peer-data (:peer-data peer-info)
+                    sends (vec (keep (fn [block]
+                                       (let [req-msg (peer/->Request (:piece-index block)
+                                                                     (:offset block)
+                                                                     (:length block))]
+                                         (when-let [req-bytes (:ok (peer/build-message req-msg))]
+                                           {:address address
+                                            :peer-data peer-data
+                                            :bytes req-bytes})))
+                                     blocks))]
+                [(assoc state
+                        :download (assoc download :piece-state (:ok mark-result))
+                        :active-peers (assoc-in active-peers [address :assigned-piece] piece-idx)
+                        :expected-blocks (assoc (:expected-blocks state) address (count blocks)))
+                 sends]))))))))
+
+(defn- maybe-request
+  "The single 'after state update, maybe request' step: plan a request
+   when the peer is requestable. Returns [new-state send-effects]."
+  [state address ctx]
+  (if (requestable? state address)
+    (if-let [[planned sends] (plan-request state address ctx)]
+      [planned (mapv (fn [send] {:send send}) sends)]
+      [state []])
+    [state []]))
+
+(defn- assemble-and-verify
+  "Assemble buffered blocks and verify the hash, planning the disk write.
+   Marking waits for the write: the piece stays in-flight in the planned
+   state and the edge marks it verified only after the bytes land.
+   Returns [new-state effects verified?]: verified? is false on
+   assembly/verification failure (the piece is requeued with no effects).
+   The caller decides on the follow-up request via the single tail."
+  [state address piece-idx addr-blocks ctx]
+  (let [{:keys [piece-length total-length total-pieces piece-hashes]} ctx
+        piece-len (if (= piece-idx (dec total-pieces))
+                    (- total-length (* piece-idx piece-length))
+                    piece-length)]
+    (if-let [assembled (:ok (pieces/assemble-piece addr-blocks piece-len))]
+      (if (:ok (pieces/verify-piece piece-idx assembled (nth piece-hashes piece-idx)))
+        [(-> state
+             (assoc-in [:active-peers address :assigned-piece] nil)
+             (update :blocks-received dissoc address))
+         [{:write-verified {:piece-idx piece-idx :data assembled}}]
+         true]
+        [(requeue-assignment state address piece-idx) [] false])
+      [(requeue-assignment state address piece-idx) [] false])))
+
+(defn- handle-piece-message
+  "Accumulate one Piece message; assemble on the final block.
+   Returns [new-state effects may-request?]: may-request? is false when
+   the piece just failed (assembly/verify) so the peer idles until its
+   next message instead of hot-looping requests at a corrupt peer."
+  [state address message ctx]
+  (let [piece-idx (:piece-index message)
+        assigned (get-in state [:active-peers address :assigned-piece])]
+    (if (not= piece-idx assigned)
+      [state [] true]
+      (let [block {:offset (:begin message) :data (:data message)}
+            addr-blocks (conj (get (:blocks-received state) address []) block)
+            state (assoc-in state [:blocks-received address] addr-blocks)
+            expected (get (:expected-blocks state) address 0)]
+        (if (< (count addr-blocks) expected)
+          [state [] true]
+          (assemble-and-verify state address piece-idx addr-blocks ctx))))))
+
+(defn on-message
+  "Handle one peer message. Pure planning: takes [state event ctx] and
+   returns [new-state effects]. ctx carries :piece-hashes, :piece-length,
+   :total-length and :total-pieces from the torrent info.
+   Effects are data for the loop edge:
+     {:send {:peer-data ... :bytes ...}}
+     {:write-verified {:piece-idx ... :data ...}}
+   Requests go out through the single maybe-request step at the bottom."
+  [state event ctx]
+  (let [{:keys [address message]} event
+        peer-info (get (:active-peers state) address)]
+    (if (nil? peer-info)
+      [state []]
+      (let [ps (peer-state/apply-message (:peer-state peer-info) message)
+            state (assoc-in state [:active-peers address :peer-state] ps)
+            assigned (get-in state [:active-peers address :assigned-piece])
+            [updated effects may-request?]
+            (cond
+              (instance? dev.cljtoc.protocol.peer.Choke message)
+              [(if assigned
+                 (requeue-assignment state address assigned)
+                 state)
+               [] false]
+
+              (instance? dev.cljtoc.protocol.peer.Piece message)
+              (handle-piece-message state address message ctx)
+
+              (or (instance? dev.cljtoc.protocol.peer.Unchoke message)
+                  (instance? dev.cljtoc.protocol.peer.Have message)
+                  (instance? dev.cljtoc.protocol.peer.Bitfield message))
+              [state [] true]
+
+              :else
+              [state [] false])]
+        (if may-request?
+          (let [[planned send-effects] (maybe-request updated address ctx)]
+            [planned (into effects send-effects)])
+          [updated effects])))))
+
+(defn- perform-effects!
+  "Deliver planned effects at the loop edge: block-request sends go out
+   over the network port, verified pieces go to the disk port with the
+   download stats updated. Returns [state outcome]: :ok, or
+   {:fatal error-info} when a verified write failed and the download
+   cannot honestly continue.
+
+   A failed send treats the peer as disconnected: close its socket,
+   requeue its piece and drop it from every bookkeeping map, so a dead
+   peer never strands assignments or blocks exhaustion. Later sends in
+   the same batch find no assignment and are skipped."
+  [state effects env]
+  (loop [state state
+         [effect & rest-effects] effects]
+    (if (nil? effect)
+      [state :ok]
+      (let [{:keys [ports conn-stats]} env
+            {:keys [network-port disk-port time-port]} ports]
+        (cond
+          (:send effect)
+          (let [{:keys [address peer-data bytes]} (:send effect)
+                assigned (get-in state [:active-peers address :assigned-piece])]
+            (if (nil? assigned)
+              (recur state rest-effects)
+              (let [result (async/<!! (network/send-message network-port peer-data bytes))]
+                (if (:error result)
+                  (do
+                    (network/close-peer network-port peer-data)
+                    (swap! conn-stats (fn [stats]
+                                        (-> stats
+                                            (update :failed inc)
+                                            (update :failed-addresses (fnil conj #{}) address))))
+                    (recur (-> state
+                               (requeue-assignment address assigned)
+                               (update :active-peers dissoc address)
+                               (update :blocks-received dissoc address)
+                               (update :expected-blocks dissoc address))
+                           rest-effects))
+                  (recur state rest-effects)))))
+
+          (:write-verified effect)
+          (let [{:keys [piece-idx data]} (:write-verified effect)
+                result (async/<!! (disk/write-piece disk-port piece-idx data))]
+            (if (:error result)
+            ;; Bytes never landed: unwind the write's piece plus every
+            ;; follow-up assignment this batch planned (their sends never
+            ;; ran), close every connection (a failed download must not
+            ;; leak workers), and fail so the record stays retryable.
+              (let [send-addrs (distinct (keep #(get-in % [:send :address]) effects))
+                    state (reduce (fn [unwound address]
+                                    (if-let [assigned (get-in unwound [:active-peers address :assigned-piece])]
+                                      (requeue-assignment unwound address assigned)
+                                      unwound))
+                                  state send-addrs)
+                    piece-state (get-in state [:download :piece-state])
+                    requeued (pieces/requeue-piece piece-state piece-idx)]
+                (doseq [[_ peer-info] (:active-peers state)]
+                  (network/close-peer network-port (:peer-data peer-info)))
+                [(-> state
+                     (assoc-in [:download :piece-state] (or (:ok requeued) piece-state))
+                     (update :expected-blocks #(apply dissoc % send-addrs)))
+                 {:fatal {:reason :disk-error
+                          :message (str "Failed to write piece " piece-idx
+                                        ": " (:message result))
+                          :failed-piece piece-idx}}])
+              (let [mark-result (pieces/mark-verified (get-in state [:download :piece-state]) piece-idx)
+                    state (if (:ok mark-result)
+                            (assoc-in state [:download :piece-state] (:ok mark-result))
+                            state)]
+                (recur (update state :download
+                               (fn [download]
+                                 (update download :stats
+                                         #(update-stats-bytes time-port % (alength ^bytes data)))))
+                       rest-effects))))
+
+          :else
+          (recur state rest-effects))))))
 
 (defn- format-bytes-rate [bytes]
   (cond
@@ -452,6 +775,111 @@
             pct verified total (count active-peers)
             (format-bytes-rate (or (:rate stats) 0)))
     (flush)))
+
+(defn- fail-no-peers
+  "Fail the download: no usable peers remain."
+  [download conn-stats total-attempted last-detail]
+  (let [{:keys [connected failed]} @conn-stats]
+    (println)
+    (println (str "  No peers available. "
+                  connected "/" total-attempted " connected, "
+                  failed " failed. Last: " last-detail))
+    (assoc download :state :failed
+           :error {:reason :no-peers
+                   :message (str "No peers available (" connected "/" total-attempted " connected)")})))
+
+(defn run-coordinator
+  "Drive one download from events-ch to completion or swarm exhaustion.
+   Handlers plan state transitions, the edge performs effects.
+   Returns the final Download record.
+
+   state — initial coordinator state map
+           {:download ... :active-peers ... :blocks-received ... :expected-blocks ...}
+   events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
+   env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
+          :ports {:network-port ... :disk-port ... :time-port ...}
+          :conn-stats (atom {:connected n :failed n})
+          :total-attempted n}"
+  [state events-ch env]
+  (loop [state state
+         last-progress-time 0]
+
+    (let [download (:download state)
+          {:keys [message-ctx ports conn-stats total-attempted]} env
+          {:keys [network-port time-port]} ports]
+      (if (pieces/complete? (:piece-state download))
+        (do
+          (println)
+          (println "  Download complete!")
+          (doseq [[_ peer-info] (:active-peers state)]
+            (network/close-peer network-port (:peer-data peer-info)))
+          (assoc download :state :completed))
+
+        (let [event (async/<!! events-ch)]
+          (if (nil? event)
+            ;; Channel closed, all peers gone
+            (do
+              (println)
+              (println "  All peers disconnected.")
+              (assoc download :state :failed
+                     :error {:reason :no-peers :message "All peers disconnected"}))
+
+            (let [now (time/now time-port)
+                  show-progress? (> (- now last-progress-time) 2000)]
+
+              (case (:type event)
+
+                :peer-connected
+                (let [[planned effects] (on-connected state event)
+                      [performed _] (perform-effects! planned effects env)
+                      download (:download performed)
+                      active-peers (:active-peers performed)]
+                  (swap! conn-stats update :connected inc)
+                  (when show-progress?
+                    (print-download-progress download active-peers))
+                  (recur performed (if show-progress? now last-progress-time)))
+
+                :peer-message
+                (let [[planned effects] (on-message state event message-ctx)
+                      [performed outcome] (perform-effects! planned effects env)]
+                  (if (= :ok outcome)
+                    (if (swarm-exhausted? performed)
+                      ;; A send failure dropped the last peer: fail like a
+                      ;; disconnect instead of waiting on a silent channel.
+                      ;; (Message handling otherwise never removes peers,
+                      ;; so this check is inert for all other paths.)
+                      (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
+                      (let [wrote? (boolean (some :write-verified effects))]
+                        (when (and show-progress? wrote?)
+                          (print-download-progress (:download performed) (:active-peers performed)))
+                        (recur performed (if (and show-progress? wrote?) now last-progress-time))))
+                    (let [download (:download performed)]
+                      (println)
+                      (println (str "  Fatal effect error: " (get-in outcome [:fatal :message])))
+                      (assoc download :state :failed :error (:fatal outcome)))))
+
+                :peer-disconnected
+                (let [{:keys [address reason]} event
+                      [planned effects] (on-disconnected state event)
+                      [performed _] (perform-effects! planned effects env)
+                      download (:download performed)
+                      active-peers (:active-peers performed)]
+                  ;; Count each address once: a send-failure drop already
+                  ;; counted its address, so its late duplicate event skips.
+                  (when-not (contains? (:failed-addresses @conn-stats) address)
+                    (swap! conn-stats (fn [stats]
+                                        (-> stats
+                                            (update :failed inc)
+                                            (update :failed-addresses (fnil conj #{}) address)))))
+                  (when show-progress?
+                    (print-download-progress download active-peers))
+                  (if (swarm-exhausted? performed)
+                    (fail-no-peers download conn-stats total-attempted reason)
+                    (recur performed
+                           (if show-progress? now last-progress-time))))
+
+                ;; Unknown event type
+                (recur state last-progress-time)))))))))
 
 (defn run-download
   "Run the download to completion. Blocking call.
@@ -471,353 +899,41 @@
 
     :else
     (let [{:keys [network-port disk-port time-port]} manager
-        config (:config manager)
-        torrent (:torrent download)
-        info (:info torrent)
-        info-hash (:info-hash torrent)
-        total-pieces (count (:pieces info))
-        piece-hashes (:pieces info)
-        piece-length (:piece-length info)
-        total-length (torrent/total-size info)
-        peer-id (let [b (byte-array 20)]
-                  (.nextBytes (SecureRandom.) b)
-                  b)
-        peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
-        events-ch (async/chan 256)
-        total-attempted (count peer-addresses)
-        conn-stats (atom {:connected 0 :failed 0})]
+          config (:config manager)
+          torrent (:torrent download)
+          info (:info torrent)
+          info-hash (:info-hash torrent)
+          total-pieces (count (:pieces info))
+          piece-hashes (:pieces info)
+          piece-length (:piece-length info)
+          total-length (torrent/total-size info)
+          peer-id (let [b (byte-array 20)]
+                    (.nextBytes (SecureRandom.) b)
+                    b)
+          peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
+          events-ch (async/chan 256)
+          total-attempted (count peer-addresses)
+          conn-stats (atom {:connected 0 :failed 0})]
 
-    (println (str "  Connecting to " total-attempted " peers..."))
-    (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+      (println (str "  Connecting to " total-attempted " peers..."))
+      (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
-    ;; Spawn peer workers
-    (doseq [addr peer-addresses]
-      (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
+      ;; Spawn peer workers
+      (doseq [addr peer-addresses]
+        (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
 
-    ;; Coordinator loop
-    (loop [download download
-           active-peers {}     ;; {address -> {:peer-data ... :peer-state PeerState :assigned-piece idx}}
-           blocks-received {}  ;; {address -> [{:offset n :data bytes} ...]}
-           expected-blocks {}  ;; {address -> int count of expected blocks}
-           last-progress-time 0]
-
-      (if (pieces/complete? (:piece-state download))
-        (do
-          (println)
-          (println "  Download complete!")
-          (assoc download :state :completed))
-
-        (let [event (async/<!! events-ch)]
-          (if (nil? event)
-            ;; Channel closed, all peers gone
-            (do
-              (println)
-              (println "  All peers disconnected.")
-              (assoc download :state :failed
-                     :error {:reason :no-peers :message "All peers disconnected"}))
-
-            (let [now (time/now time-port)
-                  show-progress? (> (- now last-progress-time) 2000)]
-
-              (case (:type event)
-
-                :peer-connected
-                (let [{:keys [address peer-data peer-state]} event
-                      active-peers (assoc active-peers address
-                                          {:peer-data peer-data
-                                           :peer-state peer-state
-                                           :assigned-piece nil})]
-                  (swap! conn-stats update :connected inc)
-                  (when show-progress?
-                    (print-download-progress download active-peers))
-                  (recur download active-peers blocks-received expected-blocks
-                         (if show-progress? now last-progress-time)))
-
-                :peer-message
-                (let [{:keys [address message]} event
-                      peer-info (get active-peers address)]
-                  (if (nil? peer-info)
-                    ;; Unknown peer, skip
-                    (recur download active-peers blocks-received expected-blocks last-progress-time)
-
-                    (let [ps (peer-state/apply-message (:peer-state peer-info) message)
-                          active-peers (assoc-in active-peers [address :peer-state] ps)]
-                      (cond
-                        ;; Unchoke — try to request a piece if we can
-                        (instance? dev.cljtoc.protocol.peer.Unchoke message)
-                        (if (and (peer-state/can-request? ps)
-                                 (nil? (:assigned-piece (get active-peers address))))
-                          (let [request-state (try-request-piece
-                                               {:download download
-                                                :active-peers active-peers
-                                                :network-port network-port
-                                                :expected-blocks expected-blocks}
-                                               address)]
-                            (if request-state
-                              (recur (:download request-state)
-                                     (:active-peers request-state)
-                                     blocks-received
-                                     (:expected-blocks request-state)
-                                     last-progress-time)
-                              (recur download active-peers blocks-received expected-blocks
-                                     last-progress-time)))
-                          (recur download active-peers blocks-received expected-blocks
-                                 last-progress-time))
-
-                        ;; Piece data — accumulate blocks
-                        (instance? dev.cljtoc.protocol.peer.Piece message)
-                        (let [piece-idx (:piece-index message)
-                              assigned (:assigned-piece (get active-peers address))]
-                          (if (not= piece-idx assigned)
-                            ;; Not the piece we're expecting, skip
-                            (recur download active-peers blocks-received expected-blocks
-                                   last-progress-time)
-                            (let [block {:offset (:begin message) :data (:data message)}
-                                  addr-blocks (conj (get blocks-received address []) block)
-                                  blocks-received (assoc blocks-received address addr-blocks)
-                                  expected (get expected-blocks address 0)]
-                              (if (< (count addr-blocks) expected)
-                                ;; Still waiting for more blocks
-                                (recur download active-peers blocks-received expected-blocks
-                                       last-progress-time)
-                                ;; All blocks received — assemble, verify, write
-                                (let [piece-len (if (= piece-idx (dec total-pieces))
-                                                  (- total-length (* piece-idx piece-length))
-                                                  piece-length)
-                                      assemble-result (pieces/assemble-piece addr-blocks piece-len)]
-                                  (if (:error assemble-result)
-                                    ;; Assembly failed — requeue piece
-                                    (let [requeue-result (pieces/requeue-piece
-                                                          (:piece-state download) piece-idx)
-                                          download (if (:ok requeue-result)
-                                                     (assoc download :piece-state (:ok requeue-result))
-                                                     download)
-                                          active-peers (assoc-in active-peers [address :assigned-piece] nil)
-                                          blocks-received (dissoc blocks-received address)]
-                                      (recur download active-peers blocks-received expected-blocks
-                                             last-progress-time))
-
-                                    ;; Verify SHA-1
-                                    (let [assembled (:ok assemble-result)
-                                          expected-hash (nth piece-hashes piece-idx)
-                                          verify-result (pieces/verify-piece piece-idx assembled expected-hash)]
-                                      (if (:error verify-result)
-                                        ;; Verification failed — requeue
-                                        (let [requeue-result (pieces/requeue-piece
-                                                              (:piece-state download) piece-idx)
-                                              download (if (:ok requeue-result)
-                                                         (assoc download :piece-state (:ok requeue-result))
-                                                         download)
-                                              active-peers (assoc-in active-peers [address :assigned-piece] nil)
-                                              blocks-received (dissoc blocks-received address)]
-                                          (println (str "\n  Piece " piece-idx " failed verification, requeuing"))
-                                          (recur download active-peers blocks-received expected-blocks
-                                                 last-progress-time))
-
-                                        ;; Verified! Write to disk and mark verified
-                                        (do
-                                          (async/<!! (disk/write-piece disk-port piece-idx assembled))
-                                          (let [mark-result (pieces/mark-verified
-                                                             (:piece-state download) piece-idx)
-                                                download (if (:ok mark-result)
-                                                            (-> download
-                                                                (assoc :piece-state (:ok mark-result))
-                                                                (update :stats #(update-stats-bytes time-port % (alength assembled))))
-                                                           download)
-                                                active-peers (assoc-in active-peers [address :assigned-piece] nil)
-                                                blocks-received (dissoc blocks-received address)]
-
-                                            (when show-progress?
-                                              (print-download-progress download active-peers))
-
-                                            ;; Request next piece from this peer
-                                            (if (and (peer-state/can-request? ps)
-                                                     (not (pieces/complete? (:piece-state download))))
-                                              (let [request-state (try-request-piece
-                                                                   {:download download
-                                                                    :active-peers active-peers
-                                                                    :network-port network-port
-                                                                    :expected-blocks expected-blocks}
-                                                                   address)]
-                                                (if request-state
-                                                  (recur (:download request-state)
-                                                         (:active-peers request-state)
-                                                         blocks-received
-                                                         (:expected-blocks request-state)
-                                                         (if show-progress? now last-progress-time))
-                                                  (recur download active-peers blocks-received expected-blocks
-                                                         (if show-progress? now last-progress-time))))
-                                              (recur download active-peers blocks-received expected-blocks
-                                                     (if show-progress? now last-progress-time)))))))))))))
-
-                        ;; Choke — clear assigned piece for this peer
-                        (instance? dev.cljtoc.protocol.peer.Choke message)
-                        (let [assigned (:assigned-piece (get active-peers address))]
-                          (if assigned
-                            ;; Requeue the piece this peer was working on
-                            (let [requeue-result (pieces/requeue-piece
-                                                  (:piece-state download) assigned)
-                                  download (if (:ok requeue-result)
-                                             (assoc download :piece-state (:ok requeue-result))
-                                             download)
-                                  active-peers (assoc-in active-peers [address :assigned-piece] nil)
-                                  blocks-received (dissoc blocks-received address)]
-                              (recur download active-peers blocks-received expected-blocks
-                                     last-progress-time))
-                            (recur download active-peers blocks-received expected-blocks
-                                   last-progress-time)))
-
-                        ;; Have/Bitfield — state already updated via apply-message above
-                        (or (instance? dev.cljtoc.protocol.peer.Have message)
-                            (instance? dev.cljtoc.protocol.peer.Bitfield message))
-                        ;; If this peer is unchoked and unassigned, try requesting
-                        (if (and (peer-state/can-request? ps)
-                                 (nil? (:assigned-piece (get active-peers address))))
-                          (let [request-state (try-request-piece
-                                               {:download download
-                                                :active-peers active-peers
-                                                :network-port network-port
-                                                :expected-blocks expected-blocks}
-                                               address)]
-                            (if request-state
-                              (recur (:download request-state)
-                                     (:active-peers request-state)
-                                     blocks-received
-                                     (:expected-blocks request-state)
-                                     last-progress-time)
-                              (recur download active-peers blocks-received expected-blocks
-                                     last-progress-time)))
-                          (recur download active-peers blocks-received expected-blocks
-                                 last-progress-time))
-
-                        ;; KeepAlive and other messages — no-op
-                        :else
-                        (recur download active-peers blocks-received expected-blocks
-                               last-progress-time)))))
-
-                :peer-disconnected
-                (let [{:keys [address reason]} event
-                      peer-info (get active-peers address)
-                      assigned (when peer-info (:assigned-piece peer-info))
-                      ;; Requeue assigned piece if any
-                      download (if assigned
-                                 (let [rq (pieces/requeue-piece (:piece-state download) assigned)]
-                                   (if (:ok rq)
-                                     (assoc download :piece-state (:ok rq))
-                                     download))
-                                 download)
-                      active-peers (dissoc active-peers address)
-                      blocks-received (dissoc blocks-received address)
-                      expected-blocks (dissoc expected-blocks address)]
-                  (swap! conn-stats update :failed inc)
-                  (when show-progress?
-                    (print-download-progress download active-peers))
-                  (if (and (empty? active-peers)
-                           (not (pieces/complete? (:piece-state download))))
-                    (let [{:keys [connected failed]} @conn-stats]
-                      (println)
-                      (println (str "  No peers available. "
-                                    connected "/" total-attempted " connected, "
-                                    failed " failed. Last: " reason))
-                      (assoc download :state :failed
-                             :error {:reason :no-peers
-                                     :message (str "No peers available (" connected "/" total-attempted " connected)")}))
-                    (recur download active-peers blocks-received expected-blocks
-                           (if show-progress? now last-progress-time))))
-
-                ;; Unknown event type
-                (recur download active-peers blocks-received expected-blocks
-                       last-progress-time))))))))))
-
-;; ============================================================================
-;; Spec Validation
-;; ============================================================================
-
-(s/def ::download-id string?)
-(s/def ::state keyword?)
-(s/def ::output-dir string?)
-(s/def ::bytes-downloaded nat-int?)
-(s/def ::pieces-complete nat-int?)
-(s/def ::pieces-total nat-int?)
-(s/def ::peers-connected nat-int?)
-(s/def ::rate-bytes-per-sec nat-int?)
-(s/def ::percent number?)
-
-(s/def ::download-state #{:idle :starting :downloading :paused :completed :failed})
-
-(s/def ::progress-response
-  (s/keys :req-un [::percent
-                   ::pieces-complete
-                   ::pieces-total
-                   ::bytes-downloaded
-                   ::rate-bytes-per-sec
-                   ::peers-connected
-                   ::state]))
-
-(s/fdef initial-stats
-  :args (s/cat :time-port any?)
-  :ret (s/keys :req-un [::started-at]))
-
-(s/fdef initial-download
-  :args (s/cat :time-port any? :torrent map? :output-dir string? :download-id string?)
-  :ret (s/keys :req-un [::download-id ::state]))
-
-(s/fdef progress
-  :args (s/cat :time-port any? :download map?)
-  :ret ::progress-response)
-
-(s/fdef pause-download
-  :args (s/cat :disk-port (s/? any?) :download map?)
-  :ret (s/or :ok (s/keys :req-un [::state])
-             :error map?))
-
-(s/fdef resume-download
-  :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)
-  :ret (s/or :ok (s/keys :req-un [::state])
-             :error map?))
-
-(s/fdef stop-download
-  :args (s/cat :download map?)
-  :ret (s/keys :req-un [::state ::peers]))
-
-(s/def ::max-peers pos-int?)
-(s/def ::min-peers nat-int?)
-(s/def ::request-queue-size nat-int?)
-(s/def ::piece-timeout-ms nat-int?)
-(s/def ::tracker-announce-interval-ms nat-int?)
-
-(s/def ::config
-  (s/keys :opt-un [::max-peers
-                   ::min-peers
-                   ::request-queue-size
-                   ::piece-timeout-ms
-                   ::tracker-announce-interval-ms
-                   ::output-dir]))
-
-(s/def ::network-port any?)
-(s/def ::disk-port any?)
-(s/def ::time-port any?)
-(s/def ::downloads map?)
-
-(s/def ::download-manager
-  (s/keys :req-un [::network-port ::disk-port ::time-port ::downloads ::config]))
-
-(s/fdef manager
-  :args (s/cat :network-port any?
-               :disk-port any?
-               :time-port any?
-               :config (s/? ::config))
-  :ret ::download-manager)
-
-(s/fdef add-download
-  :args (s/cat :manager ::download-manager :download map?)
-  :ret ::download-manager)
-
-(s/fdef get-download
-  :args (s/cat :manager ::download-manager :id any?)
-  :ret (s/or :download map? :nil nil?))
-
-(s/fdef remove-download
-  :args (s/cat :manager ::download-manager :id any?)
-  :ret ::download-manager)
-
+      ;; Hand the event channel to the coordinator loop
+      (run-coordinator {:download download
+                        :active-peers {}
+                        :blocks-received {}
+                        :expected-blocks {}}
+                       events-ch
+                       {:message-ctx {:piece-hashes piece-hashes
+                                      :piece-length piece-length
+                                      :total-length total-length
+                                      :total-pieces total-pieces}
+                        :ports {:network-port network-port
+                                :disk-port disk-port
+                                :time-port time-port}
+                        :conn-stats conn-stats
+                        :total-attempted total-attempted}))))

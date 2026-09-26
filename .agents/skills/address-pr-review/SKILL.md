@@ -11,8 +11,9 @@ Work every finding on a pull request to done: validated, fixed with tests where 
 
 - Overview: `gh pr view <number> --json reviews,comments`.
 - Inline threads with reply IDs: `gh api repos/<owner>/<repo>/pulls/<number>/comments` (keep each comment's `id`, `path`, `line` — replies need `in_reply_to`).
+- Only work unresolved threads: check `isResolved` via the GraphQL `reviewThreads` field and skip resolved ones entirely.
 
-Done when every open thread is listed with its location.
+Done when every unresolved thread is listed with its location.
 
 ## 2. Validate each finding
 
@@ -20,7 +21,7 @@ For every finding, open the cited file:line and reproduce the claim. One verdict
 
 ## 3. Fix confirmed findings with TDD
 
-One finding, one vertical slice: red test first, minimal green, then the next finding. Full suite (`lein test`) and lint (`clj-kondo --lint src test`, touched files clean) before moving on. Two cautions earned the hard way:
+One finding, one vertical slice: red test first, minimal green, then the next finding. Full suite (`lein test`) and lint (`clj-kondo --lint src test`, touched files clean) before moving on. Before committing, run `cljfmt fix` on the changed files and re-verify with `cljfmt check`. Two cautions earned the hard way:
 
 - Hang-shaped bugs (deadlocks, blocked channels): run the red test under `timeout`, or the loop never returns.
 - Delimiter repair tools can vandalize the file (closing the wrong scope while "balancing"). If the compiler disagrees with a repair, revert the file, re-apply the edit cleanly, and trust the compiler.

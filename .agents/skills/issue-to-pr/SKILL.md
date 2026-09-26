@@ -22,18 +22,23 @@ Search the palace (wing `torrent_client_clj`, room `decisions`) for verdicts tou
 
 Follow the `tdd` skill: confirm the seams under test before writing anything, then red → green in vertical slices (one seam, one test, one minimal implementation per cycle). Run single test namespaces during the loop and the full suite (`lein test`) once at the end; it must be green before proceeding.
 
+Commit after each todo is done and validated: one commit per vertical slice, only once its tests are green. Never commit a red test or mix slices in one commit.
+
 ## 5. Test and lint gate
 
 Both gates must pass before proceeding; fix what they report, don't work around it:
 
 - `lein test` — full suite green, zero failures and zero errors.
 - `clj-kondo --lint src test` — no findings in files this change touched. Pre-existing findings elsewhere are out of scope: leave them, never fix unrelated files to satisfy the gate.
+- `cljfmt fix` on the changed files before committing, then `cljfmt check` clean.
 
 Re-run each gate after its fixes until clean.
 
 ## 6. Self-review with /code-review
 
 Run the `code-review` skill against the branch (fixed point `main`) before opening the PR: Standards (repo conventions) and Spec (the issue as written). Address what it finds — fix, then re-run the gates in step 5 — and note deliberate deviations for the PR body and the palace entry.
+
+As part of the review, judge whether the touched code could benefit from clojure.spec tests (fdef arg/ret contracts, generative checks on pure seams); where it would, add them, then re-run the gates in step 5.
 
 ## 7. Update docs and specs
 

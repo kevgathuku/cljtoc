@@ -84,16 +84,16 @@ Always use `:reload` when requiring namespaces to pick up changes.
 
 ## Clojure Parenthesis Repair
 
-The command `clj-paren-repair` is installed on your path.
+When delimiters go unbalanced, in order:
+
+1. First try `clj-paren-repair <files>` (also runs cljfmt).
+2. If the compiler still disagrees, the repair likely closed the wrong scope (symptom: `recur` tail-position errors far from the real gap) — revert the file (`git checkout -- <file>`) and re-apply the edits one at a time.
+3. After each edit, run a paren-depth scan and `clj-kondo --lint <file>`: kondo pinpoints the exact unclosed opener (`Found an opening ( with no matching )`). Counting closers by eye is unreliable — one extra `)` early silently shifts every scope below it.
+4. The compiler is the final arbiter: full `lein test` green means the structure is right.
 
 Examples:
 `clj-paren-repair <files>`
 `clj-paren-repair path/to/file1.clj path/to/file2.clj path/to/file3.clj`
-
-**IMPORTANT:** Do NOT try to manually repair parenthesis errors.
-If you encounter unbalanced delimiters, run `clj-paren-repair` on the file
-instead of attempting to fix them yourself. If the tool doesn't work,
-report to the user that they need to fix the delimiter error manually.
 
 The tool automatically formats files with cljfmt when it processes them.
 
@@ -153,6 +153,9 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 - Persisted state must decode back to runtime values: byte arrays are stored as tagged `{:cljtoc/bytes hex}` maps (see `dev.cljtoc.ports.disk/encode-state` / `decode-state`) so a resumed download carries real bytes into handshake and verification. Test the decoded value, not the on-disk shape — asserting the encoded form passes while resume is broken
 - Pause/resume must be covered by a cycle test through the real port (temp dirs), not just the mock: mocks drift from the real envelope contract (e.g. `load-state` returning the download instead of `{:ok download}`)
 - Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
+- Co-locate function specs: `(s/fdef NAME ...)` directly after its `defn`, never in a trailing section. Data `s/def` specs must be defined before any fdef referencing them (the spec registry resolves at load time)
+- Edge effects must handle port result envelopes: after planning moved state forward, a failed send/write strands it — unwind (requeue + drop bookkeeping) or fail explicitly, never discard `{:error ...}`
+- Test doubles must mirror the real ports' error envelopes (e.g., `MockDiskPort` `:write-error`) so edge failure paths stay drivable; success-only mocks leave failure handling untestable
 
 ## Common Errors to Avoid
 
@@ -168,6 +171,7 @@ All PRs must verify:
 3. All go blocks have explicit supervisor ownership
 4. No new global state introduced
 5. New code has corresponding tests; domain tests are pure
+6. Changed files are `cljfmt`-clean (`cljfmt fix` before committing, `cljfmt check` after)
 
 ## Memory
 
@@ -184,3 +188,8 @@ Issues tracked in GitHub Issues for kevgathuku/cljtoc. See `docs/agents/issue-tr
 ### Domain docs
 
 Single-context layout (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.
+
+### PR review threads
+
+- Reply per thread via `gh api repos/<owner>/<repo>/pulls/<number>/comments --input` with numeric `in_reply_to` JSON; `-f in_reply_to=<id>` sends a string and is rejected.
+- The Copilot reviewer identity doesn't resolve via `--add-reviewer`; pushing the branch retriggers its pass.
