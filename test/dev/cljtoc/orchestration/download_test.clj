@@ -486,8 +486,7 @@
              (get-in updated [:active-peers "peer-a"])))))
   (testing "a resolving dial leaves the pending set"
     (let [peer-state-value (peer-state/initial-peer-state 2)
-          state {:download {} :active-peers {} :blocks-received {} :expected-blocks {}
-                 :pending-dials #{"peer-a" "peer-b"}}
+          state (download/initial-coordinator-state {} ["peer-a" "peer-b"])
           [updated effects] (download/on-connected state {:address "peer-a"
                                                           :peer-data {:id "data-a"}
                                                           :peer-state peer-state-value})]

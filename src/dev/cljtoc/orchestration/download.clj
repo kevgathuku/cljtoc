@@ -521,6 +521,13 @@
         (assoc-in [:active-peers address :assigned-piece] nil)
         (update :blocks-received dissoc address))))
 
+(defn- resolve-dial
+  "Drop address from :pending-dials: its dial resolved, whether by
+   connecting or by failing. Idempotent — repeats and unknown
+   addresses are no-ops, matching attempted-minus-resolved exactly."
+  [state address]
+  (update state :pending-dials (fnil disj #{}) address))
+
 (defn on-connected
   "Record a newly connected peer with no assignment yet.
     The address resolves its dial, so it leaves :pending-dials too.
@@ -532,7 +539,7 @@
                    {:peer-data peer-data
                     :peer-state peer-state
                     :assigned-piece nil})
-         (update :pending-dials (fnil disj #{}) address))
+         (resolve-dial address))
      []]))
 
 (defn swarm-exhausted?
@@ -548,24 +555,22 @@
 
 (defn on-disconnected
   "Drop a peer, requeueing its assigned piece if any. Pure.
-    A disconnect for an address that never connected resolves its dial,
-    so it leaves :pending-dials; a connected peer already resolved its
-    dial at connect time and leaves pending alone. Either way a repeat
-    event for the same address is a no-op on the pending set.
+    Any resolved address leaves :pending-dials (attempted minus
+    resolved): a refused dial was still pending, a connected peer
+    resolved at connect time, and a repeat event is a no-op.
     Returns [updated-state effects] (a disconnect plans no I/O);
     the caller checks swarm-exhausted? to decide on failure."
   [state event]
   (let [{:keys [address]} event
-        was-active? (contains? (:active-peers state) address)
         assigned (get-in state [:active-peers address :assigned-piece])
         state (if assigned
                 (requeue-assignment state address assigned)
                 state)]
-    [(cond-> (-> state
-                 (update :active-peers dissoc address)
-                 (update :blocks-received dissoc address)
-                 (update :expected-blocks dissoc address))
-       (not was-active?) (update :pending-dials (fnil disj #{}) address))
+    [(-> state
+         (update :active-peers dissoc address)
+         (update :blocks-received dissoc address)
+         (update :expected-blocks dissoc address)
+         (resolve-dial address))
      []]))
 
 (defn- all-peer-available-sets
