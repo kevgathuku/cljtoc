@@ -30,6 +30,7 @@ Both gates must pass before proceeding; fix what they report, don't work around 
 
 - `lein test` — full suite green, zero failures and zero errors.
 - `clj-kondo --lint src test` — no findings in files this change touched. Pre-existing findings elsewhere are out of scope: leave them, never fix unrelated files to satisfy the gate.
+- `cljfmt fix` on the changed files before committing, then `cljfmt check` clean.
 
 Re-run each gate after its fixes until clean.
 
