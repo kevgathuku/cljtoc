@@ -651,7 +651,15 @@
     (let [info {:name "t" :piece-length 4 :files 42}]
       (is (:error (torrent/compile-output-layout info)))
       (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4))))))
+      (is (:error (torrent/piece-file-spans info 0 4)))))
+  (testing "non-sequential entry paths are error envelopes, never a throw"
+    ;; mapcat seqs each :path below, so a number (or keyword) there throws
+    ;; before any guard can answer (PR #36 r4115143509).
+    (doseq [bad-path [42 :kw true]]
+      (let [info {:name "t" :piece-length 4 :files [{:path bad-path :length 4}]}]
+        (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-path)))
+        (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-path)))
+        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-path)))))))
 
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"

@@ -288,11 +288,25 @@
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
-  ;; Checked before the layout is derived below: map/mapcat seq :files,
-  ;; so a non-collection there throws instead of answering. info is
-  ;; torrent-controlled, and the namespace contract is errors as data.
-  (if (and (some? (:files info)) (not (sequential? (:files info))))
+  ;; Checked before the layout is derived below: map/mapcat seq :files
+  ;; and every entry :path, so a non-collection there throws instead of
+  ;; answering. info is torrent-controlled, and the namespace contract
+  ;; is errors as data. Strings stay permissible here: they seq without
+  ;; throwing and the component guard below refuses them as hostile.
+  (cond
+    (and (some? (:files info)) (not (sequential? (:files info))))
     (bencode/torrent-error "info :files must be a collection of file entries" {})
+
+    (and (sequential? (:files info))
+         (some (fn [entry]
+                 (let [entry-path (:path entry)]
+                   (and (some? entry-path)
+                        (not (string? entry-path))
+                        (not (sequential? entry-path)))))
+               (:files info)))
+    (bencode/torrent-error "info file entries must carry sequential paths" {})
+
+    :else
     (let [components (cons (:name info) (mapcat :path (:files info)))
           ;; Top-level :length is legitimately absent on multi-file infos;
           ;; file entries always carry theirs, so only the top slot tolerates
