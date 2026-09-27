@@ -3,7 +3,12 @@
   
    This protocol defines the contract for all network I/O operations
    needed by the download orchestration layer. Implementations can be
-   swapped for testing (test doubles) or different network backends."
+   swapped for testing (test doubles) or different network backends.
+
+   Every method returns its result directly, by return value. The port is
+   the effect boundary; whether a caller overlaps calls, and on which
+   pool, is the coordination layer's decision above this seam, not
+   something the contract encodes."
   (:require [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker]))
 
@@ -12,19 +17,19 @@
 
   (connect-peer [this address]
     "Open TCP connection to a peer at the given address.
-     Returns a channel that will deliver the peer connection or error.")
+     Returns {:ok peer-data} or {:error reason :message msg}.")
 
   (send-message [this peer message]
     "Send a peer wire message to the connected peer.
-     Returns a channel that will deliver the response or error.")
+     Returns {:ok :sent} or {:error reason :message msg}.")
 
   (receive-message [this peer]
     "Receive the next message from a peer.
-     Returns a channel that will deliver the message or error.")
+     Returns {:ok peer-message} or {:error reason :message msg}.")
 
   (receive-handshake [this peer]
     "Read a 68-byte peer handshake from the connection.
-     Returns a channel that will deliver {:ok PeerHandshake} or {:error ...}.")
+     Returns {:ok peer-handshake} or {:error reason :message msg}.")
 
   (close-peer [this peer]
     "Close the connection to a peer gracefully.
@@ -35,4 +40,4 @@
 
   (announce [this torrent-metadata]
     "Announce to the tracker and get a list of peers.
-     Returns a channel that will deliver #{Peer} or error."))
+     Returns {:ok #{peer-address}} or {:error reason :message msg}."))

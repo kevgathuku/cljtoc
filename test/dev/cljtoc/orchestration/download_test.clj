@@ -923,8 +923,7 @@
   (testing "non-byte-array input yields the :write-error envelope like the real port, never a throw"
     ;; DiskPortImpl wraps its whole write body in try/catch, so a bad bytes
     ;; argument comes back as {:error :write-error}. The mock must mirror
-    ;; that envelope or tests cannot drive the orchestration error path —
-    ;; an uncaught throw inside go closes the channel and <!! answers nil.
+    ;; that envelope or tests cannot drive the orchestration error path.
     (let [info {:name "t" :piece-length 4 :length 4}
           layout (:ok (torrent/compile-output-layout info))
           disk (mock-disk/create)

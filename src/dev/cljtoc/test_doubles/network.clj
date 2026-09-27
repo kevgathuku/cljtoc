@@ -2,8 +2,7 @@
   "Mock network port for testing download orchestration.
    
    Provides predictable responses for testing without actual network I/O."
-  (:require [dev.cljtoc.ports.network :as network]
-            [clojure.core.async :as async])
+  (:require [dev.cljtoc.ports.network :as network])
   (:import [java.util UUID]))
 
 (defrecord MockNetworkPort
@@ -15,40 +14,26 @@
 
   network/INetworkPort
   (connect-peer [_ address]
-    (let [ch (async/chan 1)
-          peer-id (str address "/" (UUID/randomUUID))]
-      (async/go
-        (async/>! ch {:ok {:id peer-id
-                           :address address
-                           :bitfield (:default-bitfield config)}}))
-      ch))
+    {:ok {:id (str address "/" (UUID/randomUUID))
+          :address address
+          :bitfield (:default-bitfield config)}})
 
   (send-message [_ peer message]
-    (let [ch (async/chan 1)]
-      (async/go
-        (let [response (get-in @responses [(:id peer) (:type message)] {:ok :mock-response})]
-          (async/>! ch response)))
-      ch))
+    (get-in @responses [(:id peer) (:type message)] {:ok :mock-response}))
 
   (receive-message [_ _]
-    (let [ch (async/chan 1)]
-      (async/go
-        (let [queued (when-let [receive-queue (:receive-responses config)]
-                       (let [[queued-responses _] (swap-vals! receive-queue rest)]
-                         (first queued-responses)))]
-          (async/>! ch (or queued {:ok {:type :keep-alive}}))))
-      ch))
+    (or (when-let [receive-queue (:receive-responses config)]
+          (let [[queued-responses _] (swap-vals! receive-queue rest)]
+            (first queued-responses)))
+        {:ok {:type :keep-alive}}))
 
   (receive-handshake [_ peer]
-    (let [ch (async/chan 1)]
-      (async/go
-        (let [response (:handshake-response config)]
-          (async/>! ch (cond
-                         (fn? response) (response peer)
-                         (some? response) response
-                         :else {:ok {:info-hash (byte-array 20)
-                                     :peer-id (byte-array 20)}}))))
-      ch))
+    (let [response (:handshake-response config)]
+      (cond
+        (fn? response) (response peer)
+        (some? response) response
+        :else {:ok {:info-hash (byte-array 20)
+                    :peer-id (byte-array 20)}})))
 
   (close-peer [_ peer]
     (swap! closed-peers conj peer)
@@ -56,12 +41,9 @@
 
   network/ITrackerPort
   (announce [_ _]
-    (let [ch (async/chan 1)]
-      (async/go
-        (if-let [announce-error (:announce-error config)]
-          (async/>! ch announce-error)
-          (async/>! ch {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])})))
-      ch)))
+    (if-let [announce-error (:announce-error config)]
+      announce-error
+      {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])})))
 
 (defn create
   "Create a mock network port for testing.

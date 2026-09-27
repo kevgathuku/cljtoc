@@ -2,8 +2,7 @@
   "Real network I/O implementation for download orchestration.
 
    Provides functions for TCP peer connections and tracker communication."
-  (:require [clojure.core.async :as async]
-            [clojure.string :as str]
+  (:require [clojure.string :as str]
             [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.network :as network]
@@ -28,45 +27,39 @@
 
 (defn connect-peer
   "Open TCP connection to a peer at the given address.
-   Returns a channel that will deliver the peer connection or error."
+   Returns {:ok peer-data} or {:error reason :message msg}."
   [network address]
-  (let [ch (async/chan 1)]
-    (async/thread
-      (try
-        (println (str "[connect] Attempting to connect to: " address))
-        (let [parsed (peer-address/parse address)]
-          (if (:error parsed)
-            (async/>!! ch {:error :invalid-address :message (:message parsed)})
-            (let [{:keys [host port]} (:ok parsed)
-                  _ (println (str "[connect-peer] host=" host " port=" port))
-                  socket (doto (Socket.)
-                           (.connect (InetSocketAddress. host port) 5000)
-                           (.setSoTimeout 10000))
-                  peer-data {:id address
-                             :address address
-                             :socket socket
-                             :in (.getInputStream socket)
-                             :out (.getOutputStream socket)}]
-              (swap! (:peer-connections network) assoc address peer-data)
-              (async/>!! ch {:ok peer-data}))))
-        (catch Exception e
-          (async/>!! ch {:error :connect-failed :message (.getMessage e)}))))
-    ch))
+  (try
+    (println (str "[connect] Attempting to connect to: " address))
+    (let [parsed (peer-address/parse address)]
+      (if (:error parsed)
+        {:error :invalid-address :message (:message parsed)}
+        (let [{:keys [host port]} (:ok parsed)
+              _ (println (str "[connect-peer] host=" host " port=" port))
+              socket (doto (Socket.)
+                       (.connect (InetSocketAddress. host port) 5000)
+                       (.setSoTimeout 10000))
+              peer-data {:id address
+                         :address address
+                         :socket socket
+                         :in (.getInputStream socket)
+                         :out (.getOutputStream socket)}]
+          (swap! (:peer-connections network) assoc address peer-data)
+          {:ok peer-data})))
+    (catch Exception e
+      {:error :connect-failed :message (.getMessage e)})))
 
 (defn send-message
   "Send a peer wire message to the connected peer.
-   Returns a channel that will deliver the response or error."
+   Returns {:ok :sent} or {:error reason :message msg}."
   [network peer message]
-  (let [ch (async/chan 1)]
-    (async/go
-      (try
-        (let [out (:out peer)]
-          (.write out message)
-          (.flush out)
-          (async/>! ch {:ok :sent}))
-        (catch Exception e
-          (async/>! ch {:error :send-failed :message (.getMessage e)}))))
-    ch))
+  (try
+    (let [out (:out peer)]
+      (.write out message)
+      (.flush out)
+      {:ok :sent})
+    (catch Exception e
+      {:error :send-failed :message (.getMessage e)})))
 
 (defn- read-fully
   "Read exactly n bytes from an InputStream. Returns byte array or throws on EOF."
@@ -82,45 +75,37 @@
 
 (defn receive-handshake
   "Read a 68-byte peer handshake from the connection.
-   Returns a channel that will deliver {:ok PeerHandshake} or {:error ...}."
+   Returns {:ok peer-handshake} or {:error reason :message msg}."
   [network peer]
-  (let [ch (async/chan 1)]
-    (async/thread
-      (try
-        (let [in (:in peer)
-              handshake-bytes (read-fully in 68)
-              result (peer/parse-handshake handshake-bytes)]
-          (async/>!! ch result))
-        (catch java.net.SocketTimeoutException _
-          (async/>!! ch {:error :timeout :message "Handshake read timed out"}))
-        (catch java.io.EOFException _
-          (async/>!! ch {:error :disconnected :message "Peer disconnected during handshake"}))
-        (catch Exception e
-          (async/>!! ch {:error :receive-failed :message (.getMessage e)}))))
-    ch))
+  (try
+    (let [in (:in peer)
+          handshake-bytes (read-fully in 68)]
+      (peer/parse-handshake handshake-bytes))
+    (catch java.net.SocketTimeoutException _
+      {:error :timeout :message "Handshake read timed out"})
+    (catch java.io.EOFException _
+      {:error :disconnected :message "Peer disconnected during handshake"})
+    (catch Exception e
+      {:error :receive-failed :message (.getMessage e)})))
 
 (defn receive-message
   "Receive the next peer wire protocol message from a peer.
    Reads 4-byte length prefix, then length bytes of payload.
-   Returns a channel that will deliver {:ok PeerMessage} or {:error ...}."
+   Returns {:ok peer-message} or {:error reason :message msg}."
   [network peer]
-  (let [ch (async/chan 1)]
-    (async/thread
-      (try
-        (let [in (:in peer)
-              len-bytes (read-fully in 4)
-              msg-len (peer/bytes-to-int32 len-bytes)]
-          (if (zero? msg-len)
-            (async/>!! ch {:ok (peer/->KeepAlive)})
-            (let [payload (read-fully in msg-len)
-                  full-msg (peer/concat-bytes len-bytes payload)
-                  result (peer/parse-message full-msg)]
-              (async/>!! ch result))))
-        (catch java.io.EOFException _
-          (async/>!! ch {:error :disconnected :message "Peer disconnected"}))
-        (catch Exception e
-          (async/>!! ch {:error :receive-failed :message (.getMessage e)}))))
-    ch))
+  (try
+    (let [in (:in peer)
+          len-bytes (read-fully in 4)
+          msg-len (peer/bytes-to-int32 len-bytes)]
+      (if (zero? msg-len)
+        {:ok (peer/->KeepAlive)}
+        (let [payload (read-fully in msg-len)
+              full-msg (peer/concat-bytes len-bytes payload)]
+          (peer/parse-message full-msg))))
+    (catch java.io.EOFException _
+      {:error :disconnected :message "Peer disconnected"})
+    (catch Exception e
+      {:error :receive-failed :message (.getMessage e)})))
 
 (defn close-peer
   "Close the connection to a peer gracefully."
@@ -268,50 +253,47 @@
 (defn tracker-announce
   "Announce to trackers and get a list of peers.
    Queries ALL tracker URLs and combines peers for maximum coverage.
-   Returns a channel that will deliver #{peer-addresses} or error."
+   Returns {:ok #{peer-address}} or {:error reason :message msg}."
   [network torrent-metadata]
-  (let [ch (async/chan 1)]
-    (async/thread
-      (try
-        (let [tracker-urls (collect-tracker-urls torrent-metadata)]
-          (if (empty? tracker-urls)
-            (async/>!! ch {:error :no-tracker :message "No tracker URL available"})
-            (let [info (:info torrent-metadata)
-                  total-size (torrent/total-size info)
-                  request {:info-hash (:info-hash torrent-metadata)
-                           :peer-id (generate-peer-id)
-                           :port 6881
-                           :uploaded 0
-                           :downloaded 0
-                           :left total-size
-                           :event :started
-                           :compact true
-                           :num-want 200}]
-              ;; Query all trackers and combine peers
-              (loop [urls tracker-urls
-                     all-peers #{}
-                     last-error nil]
-                (if (empty? urls)
-                  (if (empty? all-peers)
-                    (async/>!! ch (or last-error
-                                      {:error :all-trackers-failed
-                                       :message "All trackers failed"}))
-                    (do
-                      (println (str "  Collected " (count all-peers) " unique peers from trackers"))
-                      (async/>!! ch {:ok all-peers})))
-                  (let [url (first urls)
-                        _ (println (str "  Trying tracker: " url))
-                        result (try-single-tracker url request)]
-                    (if (:ok result)
-                      (do
-                        (println (str "    Got " (count (:ok result)) " peers"))
-                        (recur (rest urls) (into all-peers (:ok result)) last-error))
-                      (do
-                        (println (str "    Failed: " (:message result)))
-                        (recur (rest urls) all-peers result)))))))))
-        (catch Exception e
-          (async/>!! ch {:error :tracker-error :message (.getMessage e)}))))
-    ch))
+  (try
+    (let [tracker-urls (collect-tracker-urls torrent-metadata)]
+      (if (empty? tracker-urls)
+        {:error :no-tracker :message "No tracker URL available"}
+        (let [info (:info torrent-metadata)
+              total-size (torrent/total-size info)
+              request {:info-hash (:info-hash torrent-metadata)
+                       :peer-id (generate-peer-id)
+                       :port 6881
+                       :uploaded 0
+                       :downloaded 0
+                       :left total-size
+                       :event :started
+                       :compact true
+                       :num-want 200}]
+          ;; Query all trackers and combine peers
+          (loop [urls tracker-urls
+                 all-peers #{}
+                 last-error nil]
+            (if (empty? urls)
+              (if (empty? all-peers)
+                (or last-error
+                    {:error :all-trackers-failed
+                     :message "All trackers failed"})
+                (do
+                  (println (str "  Collected " (count all-peers) " unique peers from trackers"))
+                  {:ok all-peers}))
+              (let [url (first urls)
+                    _ (println (str "  Trying tracker: " url))
+                    result (try-single-tracker url request)]
+                (if (:ok result)
+                  (do
+                    (println (str "    Got " (count (:ok result)) " peers"))
+                    (recur (rest urls) (into all-peers (:ok result)) last-error))
+                  (do
+                    (println (str "    Failed: " (:message result)))
+                    (recur (rest urls) all-peers result)))))))))
+    (catch Exception e
+      {:error :tracker-error :message (.getMessage e)})))
 
 (extend-type NetworkPort
   network/INetworkPort

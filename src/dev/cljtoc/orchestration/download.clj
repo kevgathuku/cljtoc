@@ -205,13 +205,10 @@
       {:ok (:ok result)})))
 
 (defn- announce-to-tracker [network-port torrent]
-  (let [ch (async/chan 1)]
-    (async/go
-      (let [result (async/<! (network/announce network-port torrent))]
-        (if (:error result)
-          (async/>! ch (download-error :tracker-error (:message result)))
-          (async/>! ch {:ok (:ok result)}))))
-    ch))
+  (let [result (network/announce network-port torrent)]
+    (if (:error result)
+      (download-error :tracker-error (:message result))
+      {:ok (:ok result)})))
 
 (defn initial-stats [time-port]
   (let [now (time/now time-port)]
@@ -299,7 +296,7 @@
       parse-result
       (let [torrent (:ok parse-result)
             download (initial-download time-port torrent output-dir (disk/id-from-path torrent-path))
-            announce-result (async/<!! (announce-to-tracker network-port torrent))]
+            announce-result (announce-to-tracker network-port torrent)]
         (if (:error announce-result)
           (assoc download :state :failed
                  :error (:error announce-result)
@@ -373,7 +370,7 @@
                     (:ok (disk/load-state disk-port (:id download))))
            restored (or stored download)]
        (if network-port
-         (let [announce-result (async/<!! (announce-to-tracker network-port (:torrent restored)))]
+         (let [announce-result (announce-to-tracker network-port (:torrent restored))]
            (if (:error announce-result)
              announce-result
              {:ok (assoc restored
@@ -850,7 +847,7 @@
                 assigned (get-in state [:active-peers address :assigned-piece])]
             (if (nil? assigned)
               (recur state rest-effects)
-              (let [result (async/<!! (network/send-message network-port peer-data bytes))]
+              (let [result (network/send-message network-port peer-data bytes)]
                 (if (:error result)
                   (do
                     (network/close-peer network-port peer-data)
