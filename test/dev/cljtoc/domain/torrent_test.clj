@@ -672,7 +672,15 @@
   (testing "a layout without a positive piece length is an error"
     (let [layout (assoc (:ok (torrent/compile-output-layout {:name "t" :piece-length 4 :length 8}))
                         :piece-length nil)]
-      (is (re-find #"positive :piece-length" (:message (torrent/layout-spans layout 0 4)))))))
+      (is (re-find #"positive :piece-length" (:message (torrent/layout-spans layout 0 4))))))
+  (testing "a hand-built malformed layout is an error, never a throw"
+    ;; The per-piece guards are O(1), so entries that slip past them
+    ;; must still fail closed instead of throwing mid-search.
+    (is (:error (torrent/layout-spans {} 0 4)))
+    (is (:error (torrent/layout-spans {:files [] :total 0 :piece-length 4} 0 4)))
+    (is (:error (torrent/layout-spans {:files [{}] :total 4 :piece-length 4} 0 4)))
+    (is (:error (torrent/layout-spans {:files [42] :total 4 :piece-length 4} 0 4)))
+    (is (:error (torrent/layout-spans {:files [{:path ["a"]}] :total 4 :piece-length 4} 0 4)))))
 
 (defspec layout-spans-agrees-with-piece-file-spans-spec 100
   (prop/for-all

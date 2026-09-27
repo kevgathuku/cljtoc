@@ -369,27 +369,6 @@
                (and (= (count (:files layout)) (count (:sizes layout)))
                     (= (:total layout) (reduce + 0 (vals (:sizes layout)))))))))
 
-(defn- layout-usable?
-  "True when layout has the compiled shape layout-spans computes over:
-   a non-empty entry vector of shaped starts and lengths, a natural
-   total, and an integer piece length the caller has already checked
-   for positivity. A predicate (not s/keys) so arbitrary maps fail
-   closed with an error envelope instead of throwing mid-search."
-  [layout]
-  (and (map? layout)
-       (let [{files :files total :total} layout]
-         (and (vector? files)
-              (seq files)
-              (every? (fn [entry]
-                        (and (map? entry)
-                             (vector? (:path entry))
-                             (seq (:path entry))
-                             (every? string? (:path entry))
-                             (nat-int? (:length entry))
-                             (nat-int? (:start entry))))
-                      files)
-              (nat-int? total)))))
-
 (defn- first-overlap-index
   "Index of the first file a piece starting at piece-start can overlap:
    one past the last entry starting at or before it. Binary search over
@@ -421,7 +400,15 @@
       (or (not (integer? nominal)) (not (pos? nominal)))
       (bencode/torrent-error "info must carry a positive :piece-length" {})
 
-      (not (layout-usable? layout))
+      ;; O(1) shape guards only: entry shapes were validated where the
+      ;; layout was compiled, and scanning them here would put the O(files)
+      ;; this refactor removes right back on the per-piece path. A
+      ;; hand-built layout that passes the guards but carries malformed
+      ;; entries fails closed in the catch below, never a throw.
+      (not (and (map? layout)
+                (vector? (:files layout))
+                (seq (:files layout))
+                (nat-int? (:total layout))))
       (bencode/torrent-error "layout must be a compiled output layout" {})
 
       :else
@@ -454,7 +441,9 @@
                                       acc)))))))})))
         (catch ArithmeticException _
           (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
-                                 {:piece-index piece-index}))))))
+                                 {:piece-index piece-index}))
+        (catch Exception _
+          (bencode/torrent-error "layout must be a compiled output layout" {}))))))
 
 (s/fdef layout-spans
   :args (s/cat :layout map?
