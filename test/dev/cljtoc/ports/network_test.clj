@@ -57,10 +57,8 @@
               (str "mock " method " returned neither :ok nor :error: " (pr-str result))))))))
 
 (deftest the-mock-agrees-with-the-real-port-on-the-sent-value-test
-  (testing "send-message's documented success value is {:ok :sent}. The mock
-            answered {:ok :mock-response}, so a test asserting on the
-            documented result would pass against the double and fail against
-            the real port -- the same drift the read-piece mock had."
+  (testing "send-message's documented success value is {:ok :sent}; the real
+            port and mock should agree so this contract cannot drift."
     (let [peer-data {:id "p" :out (ByteArrayOutputStream.)}]
       (is (= {:ok :sent}
              (network/send-message (network-impl/create) peer-data valid-handshake-bytes)))
