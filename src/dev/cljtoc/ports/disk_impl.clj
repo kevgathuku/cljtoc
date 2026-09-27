@@ -7,6 +7,7 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
+            [clojure.spec.alpha :as s]
             [clojure.core.async :as async])
   (:import [java.io File FileInputStream FileOutputStream RandomAccessFile]
            [java.nio.file Files Paths]
@@ -283,6 +284,10 @@
                    (io/file piece-cache-dir)
                    config)))
 
+(s/fdef create
+  :args (s/cat :opts (s/? map?))
+  :ret any?)
+
 (defn available-space
   "Get available disk space in bytes for the given path."
   [path]
@@ -292,6 +297,10 @@
     (catch Exception _
       nil)))
 
+(s/fdef available-space
+  :args (s/cat :path any?)
+  :ret (s/nilable nat-int?))
+
 (defn ensure-directory
   "Ensure a directory exists, creating it if necessary."
   [path]
@@ -299,6 +308,10 @@
     (when-not (.exists file)
       (.mkdirs file))
     file))
+
+(s/fdef ensure-directory
+  :args (s/cat :path any?)
+  :ret any?)
 
 (defn check-disk-space
   "Check if there's enough disk space for the torrent.
@@ -312,7 +325,15 @@
                         required-bytes available)}
       {:ok true})))
 
+(s/fdef check-disk-space
+  :args (s/cat :path any? :required-bytes nat-int?)
+  :ret map?)
+
 (defn get-torrent-size
   "Get total size of torrent from metadata."
   [torrent-metadata]
   (torrent/total-size torrent-metadata))
+
+(s/fdef get-torrent-size
+  :args (s/cat :torrent-metadata map?)
+  :ret nat-int?)

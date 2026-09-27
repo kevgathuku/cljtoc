@@ -237,6 +237,10 @@
         (assoc :last-update now)
         (assoc :rate rate))))
 
+(s/fdef update-stats-bytes
+  :args (s/cat :time-port any? :stats map? :bytes-received nat-int?)
+  :ret map?)
+
 (defn calculate-rate [time-port stats]
   (let [now (time/now time-port)
         elapsed-seconds (/ (- now (:last-update stats)) 1000.0)
@@ -244,6 +248,10 @@
     (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
       (long (/ bytes-downloaded elapsed-seconds))
       0)))
+
+(s/fdef calculate-rate
+  :args (s/cat :time-port any? :stats map?)
+  :ret nat-int?)
 
 (defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
@@ -268,6 +276,10 @@
   [peer-addresses config]
   (let [max-peers (or (:max-peers config) (:max-peers default-config))]
     (take max-peers peer-addresses)))
+
+(s/fdef capped-peer-addresses
+  :args (s/cat :peer-addresses coll? :config map?)
+  :ret seq?)
 
 (defn- build-peers
   "Build Peer records from announced address strings, skipping invalid ones."
@@ -301,6 +313,10 @@
             (assoc download
                    :state :downloading
                    :peers (set (capped-peer-addresses (build-peers peers) config)))))))))
+
+(s/fdef start-download
+  :args (s/cat :manager ::download-manager :torrent-path string? :output-dir string?)
+  :ret map?)
 
 (defn progress [time-port download]
   (let [piece-state (:piece-state download)
@@ -382,12 +398,20 @@
     (async/<!! (disk/load-state disk-port download-id))
     nil))
 
+(s/fdef load-persisted-state
+  :args (s/cat :disk-port any? :download-id any?)
+  :ret any?)
+
 (defn persist-download-state
   "Persist current download state to disk for recovery."
   [disk-port download]
   (if disk-port
     (async/<!! (disk/save-state disk-port download))
     {:ok :no-disk-port}))
+
+(s/fdef persist-download-state
+  :args (s/cat :disk-port any? :download map?)
+  :ret any?)
 
 (defn stop-download [download]
   (assoc download :state :idle :peers #{}))
@@ -410,11 +434,19 @@
       download
       (assoc download :piece-state (:ok result)))))
 
+(s/fdef requeue-piece
+  :args (s/cat :download map? :piece-index nat-int?)
+  :ret map?)
+
 (defn handle-piece-verification-failure
   "Handle piece verification failure by re-queuing the piece.
    Returns updated download with piece back in needed state."
   [download piece-index]
   (requeue-piece download piece-index))
+
+(s/fdef handle-piece-verification-failure
+  :args (s/cat :download map? :piece-index nat-int?)
+  :ret map?)
 
 (defn handle-peer-disconnect
   "Handle peer disconnection by removing peer and re-queueing in-flight pieces.
@@ -425,11 +457,19 @@
         download (update download :peers disj peer)]
     (reduce requeue-piece download in-flight-pieces)))
 
+(s/fdef handle-peer-disconnect
+  :args (s/cat :download map? :peer-id any?)
+  :ret map?)
+
 (defn add-peer
   "Add a new peer to the download.
    Returns updated download."
   [download peer]
   (update download :peers conj peer))
+
+(s/fdef add-peer
+  :args (s/cat :download map? :peer map?)
+  :ret map?)
 
 (defn remove-peer
   "Remove a peer from the download by ID.
@@ -440,17 +480,29 @@
       (update download :peers disj peer)
       download)))
 
+(s/fdef remove-peer
+  :args (s/cat :download map? :peer-id any?)
+  :ret map?)
+
 (defn transition-to-failed
   "Transition download to failed state with error information.
    Returns updated download."
   [download error-info]
   (assoc download :state :failed :error error-info))
 
+(s/fdef transition-to-failed
+  :args (s/cat :download map? :error-info map?)
+  :ret map?)
+
 (defn can-retry?
   "Check if download can be retried (hasn't exceeded retry limit)."
   [download]
   (let [retry-count (or (get-in download [:error :retry-count]) 0)]
     (< retry-count 3)))
+
+(s/fdef can-retry?
+  :args (s/cat :download map?)
+  :ret boolean?)
 
 (defn retry-download
   "Retry a failed download by resetting state and clearing error."
@@ -462,15 +514,27 @@
       download)
     {:error :max-retries-exceeded :message "Download has exceeded maximum retry attempts"}))
 
+(s/fdef retry-download
+  :args (s/cat :download map?)
+  :ret map?)
+
 (defn get-failed-piece
   "Get the piece index that failed, if any."
   [download]
   (get-in download [:error :failed-piece]))
 
+(s/fdef get-failed-piece
+  :args (s/cat :download map?)
+  :ret any?)
+
 (defn has-active-peers?
   "Check if download has any active peer connections."
   [download]
   (pos? (count (:peers download))))
+
+(s/fdef has-active-peers?
+  :args (s/cat :download map?)
+  :ret boolean?)
 
 (defn handle-no-peers
   "Handle the case when all peers disconnect.
@@ -482,6 +546,10 @@
                           {:reason :no-peers
                            :message "No peers available for download"
                            :failed-piece nil})))
+
+(s/fdef handle-no-peers
+  :args (s/cat :download map?)
+  :ret map?)
 
 ;; ============================================================================
 ;; Active Download Coordinator
@@ -506,6 +574,10 @@
    :expected-blocks {}
    :pending-dials (set peer-addresses)})
 
+(s/fdef initial-coordinator-state
+  :args (s/cat :download map? :peer-addresses coll?)
+  :ret map?)
+
 (defn requeue-assignment
   "Requeue address's assigned piece and clear its bookkeeping.
    Best-effort on the piece state (a piece that already left in-flight
@@ -520,6 +592,10 @@
                            download))
         (assoc-in [:active-peers address :assigned-piece] nil)
         (update :blocks-received dissoc address))))
+
+(s/fdef requeue-assignment
+  :args (s/cat :state map? :address any? :piece-idx nat-int?)
+  :ret map?)
 
 (defn- resolve-dial
   "Drop address from :pending-dials: its dial resolved, whether by
@@ -542,6 +618,10 @@
          (resolve-dial address))
      []]))
 
+(s/fdef on-connected
+  :args (s/cat :state map? :event map?)
+  :ret vector?)
+
 (defn swarm-exhausted?
   "True when the swarm can no longer make progress: no active peers,
    no dials still in flight, and pieces still incomplete.
@@ -552,6 +632,10 @@
   (and (empty? (:active-peers state))
        (empty? (:pending-dials state))
        (not (pieces/complete? (get-in state [:download :piece-state])))))
+
+(s/fdef swarm-exhausted?
+  :args (s/cat :state map?)
+  :ret boolean?)
 
 (defn on-disconnected
   "Drop a peer, requeueing its assigned piece if any. Pure.
@@ -572,6 +656,10 @@
          (update :expected-blocks dissoc address)
          (resolve-dial address))
      []]))
+
+(s/fdef on-disconnected
+  :args (s/cat :state map? :event map?)
+  :ret vector?)
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
@@ -712,6 +800,10 @@
           (let [[planned send-effects] (maybe-request updated address ctx)]
             [planned (into effects send-effects)])
           [updated effects])))))
+
+(s/fdef on-message
+  :args (s/cat :state map? :event map? :ctx map?)
+  :ret vector?)
 
 (defn- fail-verified-write
   "Unwind a failed verified-piece write: requeue the write's piece plus
@@ -929,6 +1021,10 @@
                 ;; Unknown event type
                 (recur state last-progress-time)))))))))
 
+(s/fdef run-coordinator
+  :args (s/cat :state map? :events-ch any? :env map?)
+  :ret map?)
+
 (defn run-download
   "Run the download to completion. Blocking call.
    Connects to peers, requests pieces, writes verified pieces.
@@ -993,3 +1089,7 @@
                                   :time-port time-port}
                           :conn-stats conn-stats
                           :total-attempted total-attempted})))))
+
+(s/fdef run-download
+  :args (s/cat :manager ::download-manager :download map?)
+  :ret map?)

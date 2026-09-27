@@ -69,6 +69,10 @@
    :announce-list (when-let [al (get decoded-dict "announce-list")]
                     (mapv (fn [tier] (mapv bytes->str tier)) al))})
 
+(s/fdef extract-announce-urls
+  :args (s/cat :decoded-dict map?)
+  :ret map?)
+
 ;; ---------------------------------------------------------------------------
 ;; Piece parsing
 ;; ---------------------------------------------------------------------------
@@ -121,12 +125,23 @@
            files (assoc :files (mapv parse-file-entry files))
            (some? private) (assoc :private (= 1 private)))}))
 
+(s/fdef parse-info-dict
+  :args (s/cat :info-map map?)
+  :ret map?
+  :fn #(map? (-> % :ret :ok)))
+
 (defn total-size
   "Total content bytes described by an info dict: :length for single-file
    torrents, the sum of contained file lengths for multi-file ones."
   [info]
   (or (:length info)
       (reduce + 0 (map :length (:files info)))))
+
+;; map?, not ::info: this defn sits above the data-spec block, and a spec
+;; must be defined before any fdef referencing it.
+(s/fdef total-size
+  :args (s/cat :info map?)
+  :ret nat-int?)
 
 (s/def ::info map?)
 (s/def ::piece-span-index nat-int?)

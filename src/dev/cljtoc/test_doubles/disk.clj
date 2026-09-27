@@ -3,6 +3,7 @@
    
    Provides predictable responses for testing without actual disk I/O."
   (:require [dev.cljtoc.ports.disk :as disk]
+            [clojure.spec.alpha :as s]
             [clojure.core.async :as async]))
 
 (defrecord MockDiskPort
@@ -104,14 +105,34 @@
                    (atom {})
                    (atom #{}))))
 
+(s/fdef create
+  :args (s/cat :config (s/? map?))
+  :ret any?)
+
 (defn add-torrent [mock-disk path torrent-metadata]
   (swap! (:torrent-data mock-disk) assoc path torrent-metadata))
+
+(s/fdef add-torrent
+  :args (s/cat :mock-disk any? :path string? :torrent-metadata any?)
+  :ret map?)
 
 (defn get-piece [mock-disk piece-index]
   (get @(:piece-cache mock-disk) piece-index))
 
+(s/fdef get-piece
+  :args (s/cat :mock-disk any? :piece-index nat-int?)
+  :ret any?)
+
 (defn get-output-piece [mock-disk piece-index]
   (get @(:output-pieces mock-disk) piece-index))
 
+(s/fdef get-output-piece
+  :args (s/cat :mock-disk any? :piece-index nat-int?)
+  :ret any?)
+
 (defn get-state [mock-disk id]
   (get @(:state-files mock-disk) id))
+
+(s/fdef get-state
+  :args (s/cat :mock-disk any? :id any?)
+  :ret any?)
