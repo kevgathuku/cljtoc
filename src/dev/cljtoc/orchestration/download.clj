@@ -356,28 +356,66 @@
   :ret (s/or :ok (s/keys :req-un [::state])
              :error map?))
 
+(def ^:private resumable-states
+  "States a saved record can be revived from.
+
+   :failed joins :paused because a record that died with the swarm
+   exhausted is exactly the case with work left to do. :downloading is not
+   one of them -- a record in that state is either this process's own run
+   or a crash with no peers to reconcile -- and :completed has nothing
+   left to fetch."
+  #{:paused :failed})
+
+(defn- requeue-stranded-pieces
+  "Return piece-state with every in-flight piece back in :needed.
+
+   A run that died mid-piece left that piece in flight: no peer is
+   requesting it and nothing will verify it, so a resumed swarm would skip
+   it forever and the download could never complete. Returns the updated
+   piece state, leaving a piece that already moved alone."
+  [piece-state]
+  (reduce (fn [state piece-index]
+            (let [requeued (pieces/requeue-piece state piece-index)]
+              (if (:ok requeued) (:ok requeued) state)))
+          piece-state
+          (:in-flight piece-state)))
+
 (defn resume-download
-  "Resume a paused download.
-   - Loads persisted state from disk
-   - Re-announces to the tracker when a network port is given, since
-     pause clears :peers and run-download derives every worker from them
-   - Returns download in :downloading state"
+  "Resume a paused or failed download.
+
+   - Loads persisted state from disk when a disk port is given
+   - Re-announces to the tracker when a network port is given: the saved
+     peer set is the one that just failed (pause clears it outright), and
+     run-download derives every worker from :peers
+   - Requeues pieces the dead run left in flight
+   - Returns the download in :downloading state"
   ([download]
    (resume-download nil nil download))
   ([disk-port network-port download]
-   (if (= :paused (:state download))
+   (if (contains? resumable-states (:state download))
      (let [stored (when disk-port
                     (:ok (disk/load-state disk-port (:id download))))
-           restored (or stored download)]
+           restored (or stored download)
+           revived (assoc restored
+                          :state :downloading
+                          ;; Starts empty whatever the record carried. The
+                          ;; announce below fills it in; without a network
+                          ;; port it stays empty, so run-download refuses
+                          ;; instead of redialing peers already known dead.
+                          :peers #{})
+           revived (assoc revived
+                          :error nil
+                          :piece-state (requeue-stranded-pieces
+                                        (:piece-state revived)))]
        (if network-port
-         (let [announce-result (announce-to-tracker network-port (:torrent restored))]
+         (let [announce-result (announce-to-tracker network-port (:torrent revived))]
            (if (:error announce-result)
              announce-result
-             {:ok (assoc restored
-                         :state :downloading
-                         :peers (build-peers (:ok announce-result)))}))
-         {:ok (assoc restored :state :downloading)}))
-     {:error :not-paused :message "Download is not paused"})))
+             {:ok (assoc revived :peers (build-peers (:ok announce-result)))}))
+         {:ok revived}))
+     {:error :not-paused
+      :message (str "Download is not resumable from state "
+                    (:state download))})))
 
 (s/fdef resume-download
   :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)

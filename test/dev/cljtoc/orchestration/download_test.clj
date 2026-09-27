@@ -1473,3 +1473,93 @@
       (is (= :completed (:state result)))
       (is (= (seq content) (seq (test-utils/to-bytes on-disk)))
           "the completed file carries the verified content, not its length"))))
+
+;; ============================================================================
+;; Resume: letting a failed download back in (issue #30)
+;; ============================================================================
+
+(defn- stranded-download
+  "The live run in issue #30: 57 of 2180 pieces verified, one piece left
+   in-flight by the run that died, the swarm exhausted, :error set."
+  [total-pieces verified in-flight]
+  (let [piece-hashes (mapv #(bencode/sha1-hash (test-utils/to-bytes (str "piece-" %)))
+                           (range total-pieces))
+        piece-length 4
+        torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :info {:pieces piece-hashes
+                        :piece-length piece-length
+                        :name "stranded.bin"
+                        :length (* total-pieces piece-length)}}
+        piece-state (reduce (fn [state piece-index]
+                              (if (contains? verified piece-index)
+                                (-> state
+                                    (#(:ok (pieces/mark-in-flight % piece-index)))
+                                    (#(:ok (pieces/mark-verified % piece-index))))
+                                (if (contains? in-flight piece-index)
+                                  (:ok (pieces/mark-in-flight state piece-index))
+                                  state)))
+                            (pieces/initial-piece-state total-pieces)
+                            (range total-pieces))]
+    (assoc (download/initial-download (mock-time/create) torrent "/out" "stranded")
+           :state :failed
+           :piece-state piece-state
+           :peers #{{:address "10.0.0.9:6881" :port 6881}}
+           :error {:reason :no-peers :message "All peers disconnected"})))
+
+(deftest resume-download-accepts-a-failed-download-test
+  (testing "a download that failed with the swarm exhausted is resumable, so
+            the record on disk is not a dead end"
+    (let [failed (stranded-download 4 #{0 1} #{})
+          result (download/resume-download nil nil failed)]
+      (is (= :downloading (get-in result [:ok :state]))))))
+
+(deftest resume-download-keeps-the-verified-pieces-test
+  (testing "resuming does not re-request what already verified -- those bytes
+            are in the cache and run-download materializes them"
+    (let [failed (stranded-download 4 #{0 1 2} #{})
+          piece-state (get-in (download/resume-download nil nil failed)
+                              [:ok :piece-state])]
+      (is (= #{0 1 2} (:verified piece-state)))
+      (is (= #{3} (:needed piece-state))))))
+
+(deftest resume-download-requeues-pieces-the-dead-run-left-in-flight-test
+  (testing "a piece the previous run had in flight is requested nowhere and
+            verified by nobody, so complete? could never reach it. It goes
+            back to :needed or the resumed swarm skips it forever"
+    (let [failed (stranded-download 4 #{0 1} #{2})
+          piece-state (get-in (download/resume-download nil nil failed)
+                              [:ok :piece-state])]
+      (is (= #{} (:in-flight piece-state)))
+      (is (= #{2 3} (:needed piece-state)))
+      (is (= 2 (pieces/verified-count piece-state))))))
+
+(deftest resume-download-never-reuses-the-exhausted-peer-set-test
+  (testing "the peers on a failed record are the ones that just failed. With
+            no network port to re-announce there is nothing fresh to dial, so
+            the set is dropped and run-download fails fast on :no-peers
+            instead of redialing known-dead addresses"
+    (let [failed (stranded-download 4 #{0} #{})
+          result (download/resume-download nil nil failed)]
+      (is (= #{} (get-in result [:ok :peers]))))))
+
+(deftest resume-download-clears-the-failed-error-test
+  (testing "the record leaves :error behind: it is resuming, not failed, and a
+            stale :no-peers would be saved over the new run"
+    (let [failed (stranded-download 4 #{0} #{})
+          result (download/resume-download nil nil failed)]
+      (is (nil? (get-in result [:ok :error]))))))
+
+(deftest resume-download-rejects-a-completed-download-test
+  (testing "a finished download has nothing to resume"
+    (let [done (assoc (stranded-download 4 #{0 1 2 3} #{}) :state :completed)]
+      (is (= :not-paused (:error (download/resume-download nil nil done)))))))
+
+(deftest resume-download-re-announces-for-failed-downloads-test
+  (testing "a failed download gets a fresh peer list from the tracker, never
+            the exhausted one it was saved with"
+    (let [failed (stranded-download 4 #{0 1} #{})
+          net (mock-net/create {:mock-peers ["10.9.9.1:6881"]})
+          result (download/resume-download nil net failed)]
+      (is (= :downloading (get-in result [:ok :state])))
+      (is (= #{["10.9.9.1:6881" 6881]}
+             (set (map (juxt :address :port) (get-in result [:ok :peers]))))))))
