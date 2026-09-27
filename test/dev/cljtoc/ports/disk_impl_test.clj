@@ -318,6 +318,17 @@
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
+(deftest initialize-output-layout-rejects-layout-without-lengths-test
+  ;; A layout with neither :length nor :files must be refused as
+  ;; :invalid-info before anything is created — not attempted until
+  ;; setLength explodes on nil and reports :write-error.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-no-length-")
+        info {:name "t" :piece-length 4}
+        result (<!! (disk/initialize-output-layout port info output-dir))]
+    (is (= :invalid-info (:error result)))
+    (is (not (.exists (io/file output-dir "t"))))))
+
 (deftest filesystem-root-is-detected-by-shape-not-spelling-test
   ;; The root policy must not depend on how a platform spells a root.
   ;; Comparing against File/separator matches the Unix root only: a Windows

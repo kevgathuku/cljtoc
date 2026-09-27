@@ -433,6 +433,27 @@
     (is (:error (torrent/output-file-sizes {:name "t" :piece-length 4
                                             :length 4 :files []})))))
 
+(deftest missing-length-fields-are-rejected-test
+  ;; The guard claims exactly one of :length/:files but only refused both
+  ;; present. With neither, output-file-sizes returns a size map containing
+  ;; nil and init-layout! dies later in setLength instead of refusing the
+  ;; malformed layout as :invalid-info. Same one level down: a file entry
+  ;; without :length poisons the same map.
+  (testing "an info with neither :length nor :files is an error in both derivations"
+    (let [info {:name "t" :piece-length 4}
+          sizes-result (torrent/output-file-sizes info)
+          spans-result (torrent/piece-file-spans info 0 4)]
+      (is (:error sizes-result))
+      (is (re-find #"either :length or :files" (:message sizes-result)))
+      (is (:error spans-result))))
+  (testing "a file entry without :length is an error in both derivations"
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"]}]}
+          sizes-result (torrent/output-file-sizes info)
+          spans-result (torrent/piece-file-spans info 0 4)]
+      (is (:error sizes-result))
+      (is (:error spans-result)))))
+
 (deftest non-integer-lengths-are-rejected-test
   ;; Lengths the derivations cannot honestly process: a string :length
   ;; crashes piece-file-spans in (>= piece-start total) instead of erroring,

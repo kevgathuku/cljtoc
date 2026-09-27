@@ -271,13 +271,20 @@
    can still map two differently-spelled paths onto one file."
   [info]
   (let [components (cons (:name info) (mapcat :path (:files info)))
-        lengths (cons (:length info) (map :length (:files info)))
+        ;; Top-level :length is legitimately absent on multi-file infos;
+        ;; file entries always carry theirs, so only the top slot tolerates
+        ;; nil. (Single-file infos without :length are caught by the
+        ;; no-layout branch above, before this runs.)
         layout (file-layout info)]
     (cond
       (and (some? (:length info)) (some? (:files info)))
       (bencode/torrent-error "info must not carry both :length and :files" {})
 
-      (not (every? #(or (nil? %) (nat-int? %)) lengths))
+      (and (nil? (:length info)) (nil? (:files info)))
+      (bencode/torrent-error "info must carry either :length or :files" {})
+
+      (not (and (or (nil? (:length info)) (nat-int? (:length info)))
+                (every? nat-int? (map :length (:files info)))))
       (bencode/torrent-error "info carries a file length that is not a natural integer" {})
 
       (nil? (:name info))
