@@ -718,8 +718,30 @@
     ;; (PR #36 r4115264208).
     (is (:error (torrent/layout-spans {:files [{:path ["a"] :length 0 :start 0}]
                                        :total 1 :piece-length 4}
-                                      0 1)))))
+                                      0 1))))
+  (testing "an all-zero-length layout compiles to no searchable files and refuses every piece"
+    ;; The generators can roll all-zero file lengths, where both span
+    ;; properties quantify over zero pieces and pass without exercising
+    ;; anything. Pin the case deterministically: sizes keep the zero-length
+    ;; paths so layout init still creates the empty files, :files is empty
+    ;; so no piece can ever claim a span, and every lookup is an error —
+    ;; never {:ok []}, which the port would record as :written.
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 0}
+                        {:path ["b"] :length 0}]}
+          compiled (torrent/compile-output-layout info)]
+      (is (= {:ok {:files []
+                   :sizes {["t" "a"] 0 ["t" "b"] 0}
+                   :total 0 :piece-length 4}}
+             compiled))
+      (is (:error (torrent/layout-spans (:ok compiled) 0 4)))
+      (is (= (torrent/piece-file-spans info 0 4)
+             (torrent/layout-spans (:ok compiled) 0 4))))))
 
+;; Issue #31 acceptance mandates this agreement property. piece-file-spans
+;; is now a thin wrapper over layout-spans, so the comparison is ceremonial
+;; by construction — layout-spans-match-independent-oracle-spec below is
+;; the discriminating proof. Kept because the spec asks for it by name.
 (defspec layout-spans-agrees-with-piece-file-spans-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)

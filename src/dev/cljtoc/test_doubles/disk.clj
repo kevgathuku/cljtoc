@@ -3,6 +3,7 @@
    
    Provides predictable responses for testing without actual disk I/O."
   (:require [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.domain.torrent :as torrent]
             [clojure.spec.alpha :as s]
             [clojure.core.async :as async]))
 
@@ -44,19 +45,33 @@
   (write-output-piece [_ layout _output-dir piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
-        ;; Mirrors the real port's refusal: raw info (or any uncompiled
-        ;; shape) is an :invalid-info, never silently accepted. Deep check
-        ;; here (tests are small): orchestration always inits first, and
-        ;; init enforces the same invariants, so visible behavior matches.
-        (if-let [err (or (:output-write-error config) (:write-error config)
-                         (when-not (disk/consistent-output-layout? layout)
-                           {:error :invalid-info
-                            :message "Invalid output layout: not a compiled output layout"}))]
+        ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
+        ;; the O(1) shape gate, then touched-path membership. The full
+        ;; invariant check (consistent-output-layout?) runs once at init on
+        ;; both ports, so tests drive exactly the refusal paths the real
+        ;; port produces — no stricter, no looser.
+        (if-let [err (or (:output-write-error config) (:write-error config))]
           (async/>! ch err)
-          (do
-            (swap! output-layouts conj layout)
-            (swap! output-pieces assoc piece-index bytes)
-            (async/>! ch {:ok :written}))))
+          (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
+            (if-let [err (cond
+                           (:error spans-result)
+                           {:error :invalid-info
+                            :message (str "Cannot map piece " piece-index ": "
+                                          (:message spans-result))}
+
+                           (not (disk/valid-output-layout? layout))
+                           disk/invalid-output-layout-error
+
+                           (not (every? #(contains? (:sizes layout) (:path %))
+                                        (:ok spans-result)))
+                           disk/invalid-output-layout-error
+
+                           :else nil)]
+              (async/>! ch err)
+              (do
+                (swap! output-layouts conj layout)
+                (swap! output-pieces assoc piece-index bytes)
+                (async/>! ch {:ok :written}))))))
       ch))
 
   (initialize-output-layout [_ layout output-dir]
@@ -64,8 +79,7 @@
       (async/go
         (if-let [err (or (:output-init-error config)
                          (when-not (disk/consistent-output-layout? layout)
-                           {:error :invalid-info
-                            :message "Invalid output layout: not a compiled output layout"}))]
+                           disk/invalid-output-layout-error))]
           (async/>! ch err)
           (do
             (swap! layouts-initialized conj {:layout layout :output-dir output-dir})

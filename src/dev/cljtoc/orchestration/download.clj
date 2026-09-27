@@ -1091,7 +1091,9 @@
                 total-pieces (count (:pieces info))
                 piece-hashes (:pieces info)
                 piece-length (:piece-length info)
-                total-length (torrent/total-size info)
+                ;; The compiled layout already carries the content length:
+                ;; one derivation, no second walk of the declared files.
+                total-length (:total layout)
                 peer-id (let [b (byte-array 20)]
                           (.nextBytes (SecureRandom.) b)
                           b)

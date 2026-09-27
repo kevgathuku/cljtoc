@@ -860,7 +860,11 @@
                                         started)]
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
-      (is (re-find #"output layout" (get-in result [:error :message])))
+      ;; The compile branch's prefix, not just "output layout": the pre-compile
+      ;; path also produced :failed/:disk-error with "Failed to initialize
+      ;; output layout: Invalid output layout..." and an empty init record, so
+      ;; only the prefix discriminates compile-before-port from port-refusal.
+      (is (re-find #"^Failed to compile output layout" (get-in result [:error :message])))
       (is (empty? @(:layouts-initialized disk))))))
 
 (deftest run-download-passes-compiled-layout-to-port-test
@@ -914,6 +918,29 @@
       (is (= :invalid-info (:error result)))
       (is (empty? (mock-disk/get-output-layouts disk)))
       (is (nil? (mock-disk/get-output-piece disk 0))))))
+
+(deftest mock-write-mirrors-real-gate-test
+  (testing "mock write gates mirror the real port: span derivation, O(1) shape, touched-path membership"
+    ;; A shape-valid layout whose starts do not chain fails
+    ;; consistent-output-layout?, but the real port's per-piece write
+    ;; accepts it — full invariants are enforced once at init, not per
+    ;; write. The mock must accept what the real port accepts, or tests
+    ;; drive refusal paths the real port never produces (and vice versa).
+    (let [layout {:sizes {["t" "a"] 4 ["t" "b"] 4}
+                  :files [{:path ["t" "a"] :length 4 :start 0}
+                          {:path ["t" "b"] :length 4 :start 8}]
+                  :total 12 :piece-length 4}
+          disk (mock-disk/create)]
+      (is (false? (disk/consistent-output-layout? layout)))
+      (let [result (async/<!! (disk/write-output-piece disk layout "/out" 0
+                                                       (test-utils/to-bytes "abcd")))]
+        (is (= {:ok :written} result))
+        (is (= [layout] (mock-disk/get-output-layouts disk))))
+      (testing "a piece falling in the gap between entries is refused like the real port"
+        (let [result (async/<!! (disk/write-output-piece disk layout "/out" 1
+                                                         (test-utils/to-bytes "efgh")))]
+          (is (= :invalid-info (:error result)))
+          (is (nil? (mock-disk/get-output-piece disk 1))))))))
 
 ;; Scripted events-ch through the extracted loop (issue #2.4): feed
 ;; run-coordinator a pre-loaded channel and assert piece-state

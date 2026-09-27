@@ -4,8 +4,7 @@
    This protocol defines the contract for all disk I/O operations
    needed by the download orchestration layer: reading .torrent files,
    writing piece data, and persisting download state."
-  (:require [dev.cljtoc.domain.torrent :as torrent]
-            [dev.cljtoc.domain.bencode :as bencode]
+  (:require [dev.cljtoc.domain.bencode :as bencode]
             [clojure.walk :as walk]
             [clojure.java.io :as io]
             [clojure.spec.alpha :as s]))
@@ -143,6 +142,13 @@
 (s/fdef consistent-output-layout?
   :args (s/cat :layout any?)
   :ret boolean?)
+
+(def invalid-output-layout-error
+  "The :invalid-info envelope both disk ports return when handed something
+   that is not a compiled output layout. One shared literal so DiskPortImpl
+   and MockDiskPort cannot drift apart on the message."
+  {:error :invalid-info
+   :message "Invalid output layout: not a compiled output layout"})
 
 ;; ---------------------------------------------------------------------------
 ;; Shared state encoding — the single persistence seam.
