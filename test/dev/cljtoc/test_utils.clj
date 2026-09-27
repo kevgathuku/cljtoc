@@ -15,7 +15,7 @@
   "True when x is a result envelope: a map carrying exactly one of :ok or
    :error, the shape every port method returns directly."
   [x]
-  (and (map? x) (or (contains? x :ok) (contains? x :error))))
+  (and (map? x) (not= (contains? x :ok) (contains? x :error))))
 
 (defn to-bytes
   "Convert string to UTF-8 byte array."

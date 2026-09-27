@@ -19,7 +19,7 @@
           :bitfield (:default-bitfield config)}})
 
   (send-message [_ peer message]
-    (get-in @responses [(:id peer) (:type message)] {:ok :mock-response}))
+    (get-in @responses [(:id peer) (:type message)] {:ok :sent}))
 
   (receive-message [_ _]
     (or (when-let [receive-queue (:receive-responses config)]
