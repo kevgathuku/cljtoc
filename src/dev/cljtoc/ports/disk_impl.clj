@@ -263,6 +263,10 @@
               (async/>! ch {:error :invalid-info
                             :message "Invalid output layout: not a compiled output layout"})
 
+              (not (every? #(contains? sizes (:path %)) (:ok spans-result)))
+              (async/>! ch {:error :invalid-info
+                            :message "Invalid output layout: not a compiled output layout"})
+
               :else
               (async/>! ch (write-layout! output-dir
                                           sizes
@@ -282,7 +286,7 @@
               declined
               (async/>! ch declined)
 
-              (not (disk/valid-output-layout? layout))
+              (not (disk/consistent-output-layout? layout))
               (async/>! ch {:error :invalid-info
                             :message "Invalid output layout: not a compiled output layout"})
 

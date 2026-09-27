@@ -53,3 +53,30 @@
                                     {:clojure.spec.test.check/opts {:num-tests 50}})]
       (is (nil? (-> check-result first :failure))
           "Function should pass all generative tests"))))
+
+(deftest consistent-output-layout-test
+  (testing "compiled shapes pass, inconsistent hand-built ones fail"
+    (is (true? (disk/consistent-output-layout?
+                {:files [{:path ["t" "a"] :length 4 :start 0}]
+                 :sizes {["t" "a"] 4} :total 4 :piece-length 4})))
+    (is (true? (disk/consistent-output-layout?
+                {:files [] :sizes {["e"] 0} :total 0 :piece-length 4})))
+    (is (false? (disk/consistent-output-layout?
+                 {:sizes {} :files [{:path ["t" "a"] :length 4 :start 0}]
+                  :total 4 :piece-length 4})))
+    (is (false? (disk/consistent-output-layout?
+                 {:sizes {["t" "a"] 4}
+                  :files [{:path ["t" "a"] :length 4 :start 4}]
+                  :total 8 :piece-length 4})))
+    (is (false? (disk/consistent-output-layout?
+                 {:sizes {["t" "a"] 5}
+                  :files [{:path ["t" "a"] :length 4 :start 0}]
+                  :total 4 :piece-length 4})))
+    (is (false? (disk/consistent-output-layout? nil)))))
+
+(deftest consistent-output-layout-fdef-check-test
+  (testing "consistent-output-layout? conforms to fdef spec over any input"
+    (let [check-result (stest/check 'dev.cljtoc.ports.disk/consistent-output-layout?
+                                    {:clojure.spec.test.check/opts {:num-tests 50}})]
+      (is (nil? (-> check-result first :failure))
+          "Function should pass all generative tests"))))

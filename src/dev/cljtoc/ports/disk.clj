@@ -100,6 +100,50 @@
   :args (s/cat :layout any?)
   :ret boolean?)
 
+(defn consistent-output-layout?
+  "True when layout carries the full compiled-layout invariants: shaped
+   entries and sizes, every searched file declared in sizes at an equal
+   length, the total equal to the declared sizes, and file starts
+   chaining contiguously from zero to the total. O(files): enforced once
+   at initialization, never per piece — per-piece writes check the O(1)
+   gate above plus touched-path membership instead, so the hot path
+   stays flat in file count while both entries agree on validity."
+  [layout]
+  (and (valid-output-layout? layout)
+       (let [{files :files sizes :sizes total :total} layout]
+         (and (every? (fn [entry]
+                        (and (map? entry)
+                             (vector? (:path entry))
+                             (seq (:path entry))
+                             (every? string? (:path entry))
+                             (nat-int? (:length entry))
+                             (nat-int? (:start entry))))
+                      files)
+              (every? (fn [[declared-path declared-length]]
+                        (and (vector? declared-path)
+                             (seq declared-path)
+                             (every? string? declared-path)
+                             (nat-int? declared-length)))
+                      sizes)
+              (every? (fn [{file-path :path file-length :length}]
+                        (= file-length (get sizes file-path ::missing)))
+                      files)
+              (= total (reduce +' 0 (vals sizes)))
+              (or (empty? files)
+                  (let [ordered (sort-by :start files)
+                        ends (map (fn [entry] (+ (:start entry) (:length entry)))
+                                  ordered)]
+                    ;; vec on both sides: butlast answers nil where map
+                    ;; answers (), and sequential = tells them apart.
+                    (and (= 0 (:start (first ordered)))
+                         (= (vec (map :start (rest ordered)))
+                            (vec (butlast ends)))
+                         (= total (last ends)))))))))
+
+(s/fdef consistent-output-layout?
+  :args (s/cat :layout any?)
+  :ret boolean?)
+
 ;; ---------------------------------------------------------------------------
 ;; Shared state encoding — the single persistence seam.
 ;; Both the async DiskPortImpl and the sync cli-state adapter persist

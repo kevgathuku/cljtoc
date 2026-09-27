@@ -114,7 +114,13 @@ Disk effect abstraction.
 derived once per download by `run-download` — which fails `:disk-error`
 on a compile failure before dialing — and threaded through to every
 port call, so the per-piece path pays O(log files) span lookup instead
-of re-deriving the layout per piece.
+of re-deriving the layout per piece. Both port methods agree on what a
+valid layout is (`ports.disk/consistent-output-layout?`: shaped entries
+and sizes, every searched file declared at an equal length, the total
+equal to the declared sizes, starts chaining contiguously from zero):
+initialization enforces the full invariants once, while piece writes
+check the O(1) shape gate plus touched-path membership per piece, so the
+hot path stays flat in file count.
 
 #### Result semantics
 

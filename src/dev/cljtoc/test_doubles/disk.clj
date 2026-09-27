@@ -45,9 +45,11 @@
     (let [ch (async/chan 1)]
       (async/go
         ;; Mirrors the real port's refusal: raw info (or any uncompiled
-        ;; shape) is an :invalid-info, never silently accepted.
+        ;; shape) is an :invalid-info, never silently accepted. Deep check
+        ;; here (tests are small): orchestration always inits first, and
+        ;; init enforces the same invariants, so visible behavior matches.
         (if-let [err (or (:output-write-error config) (:write-error config)
-                         (when-not (disk/valid-output-layout? layout)
+                         (when-not (disk/consistent-output-layout? layout)
                            {:error :invalid-info
                             :message "Invalid output layout: not a compiled output layout"}))]
           (async/>! ch err)
@@ -61,7 +63,7 @@
     (let [ch (async/chan 1)]
       (async/go
         (if-let [err (or (:output-init-error config)
-                         (when-not (disk/valid-output-layout? layout)
+                         (when-not (disk/consistent-output-layout? layout)
                            {:error :invalid-info
                             :message "Invalid output layout: not a compiled output layout"}))]
           (async/>! ch err)

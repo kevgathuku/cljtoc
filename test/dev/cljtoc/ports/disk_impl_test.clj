@@ -540,6 +540,33 @@
       (is (= :invalid-info (:error result)))
       (is (string? (:message result))))))
 
+(deftest initialize-output-layout-rejects-inconsistent-layout-test
+  (testing "a layout whose files are not declared in sizes is refused before creating anything"
+    ;; Every entry point must agree on what a valid layout is: these shapes
+    ;; span fine but have no sizes to truncate to, or starts no compile
+    ;; could emit (PR #36 round 6).
+    (let [port (make-port (temp-dir "disk-state-"))]
+      (doseq [layout [{:sizes {}
+                       :files [{:path ["t" "a"] :length 4 :start 0}]
+                       :total 4 :piece-length 4}
+                      {:sizes {["t" "a"] 4}
+                       :files [{:path ["t" "a"] :length 4 :start 4}]
+                       :total 8 :piece-length 4}]]
+        (let [output-dir (temp-dir "output-inconsistent-")
+              result (<!! (disk/initialize-output-layout port layout output-dir))]
+          (is (= :invalid-info (:error result)) (str "init " (pr-str layout)))
+          (is (not (.exists (io/file output-dir "t")))))))))
+
+(deftest write-output-piece-rejects-inconsistent-layout-test
+  (testing "the same shape is refused on the write path, not a :write-error"
+    (let [port (make-port (temp-dir "disk-state-"))
+          output-dir (temp-dir "output-inconsistent-write-")
+          layout {:sizes {}
+                  :files [{:path ["t" "a"] :length 4 :start 0}]
+                  :total 4 :piece-length 4}
+          result (<!! (disk/write-output-piece port layout output-dir 0 (byte-array [1 2 3 4])))]
+      (is (= :invalid-info (:error result))))))
+
 (deftest write-output-piece-leaves-untouched-files-alone-test
   (testing "writing one piece does not re-truncate a file it does not touch"
     (let [port (make-port (temp-dir "disk-state-"))

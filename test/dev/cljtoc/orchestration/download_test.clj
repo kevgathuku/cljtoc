@@ -884,7 +884,10 @@
     (let [disk (mock-disk/create)]
       (doseq [bad [nil
                    {:pieces [] :piece-length 4 :length 8 :name "raw.bin"}
-                   {:sizes {} :files []}]]
+                   {:sizes {} :files []}
+                   {:sizes {}
+                    :files [{:path ["t" "a"] :length 4 :start 0}]
+                    :total 4 :piece-length 4}]]
         (let [result (async/<!! (disk/initialize-output-layout disk bad "/out"))]
           (is (= :invalid-info (:error result)) (str "init " (pr-str bad)))))
       (is (empty? @(:layouts-initialized disk))))))
