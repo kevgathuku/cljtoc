@@ -1,7 +1,21 @@
 (ns dev.cljtoc.test-utils
   "Shared test utilities and helper functions."
   (:require [clojure.spec.test.alpha :as stest]
+            [clojure.core.async.impl.protocols :as chan]
             [dev.cljtoc.domain.torrent :as torrent]))
+
+(defn channel?
+  "True when x is something a blocking take could read from. A port method
+   that returns one of these has wrapped a plain function in a channel, so
+   the caller has to know about core.async to learn the result."
+  [x]
+  (satisfies? chan/ReadPort x))
+
+(defn an-envelope?
+  "True when x is a result envelope: a map carrying exactly one of :ok or
+   :error, the shape every port method returns directly."
+  [x]
+  (and (map? x) (not= (contains? x :ok) (contains? x :error))))
 
 (defn to-bytes
   "Convert string to UTF-8 byte array."

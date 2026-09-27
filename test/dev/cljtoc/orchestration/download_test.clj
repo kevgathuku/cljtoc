@@ -892,7 +892,7 @@
                    {:sizes {}
                     :files [{:path ["t" "a"] :length 4 :start 0}]
                     :total 4 :piece-length 4}]]
-        (let [result (async/<!! (disk/initialize-output-layout disk bad "/out"))]
+        (let [result (disk/initialize-output-layout disk bad "/out")]
           (is (= :invalid-info (:error result)) (str "init " (pr-str bad)))))
       (is (empty? @(:layouts-initialized disk))))))
 
@@ -902,8 +902,8 @@
           layout (:ok (torrent/compile-output-layout info))
           disk (mock-disk/create {:write-error {:error :write-error
                                                 :message "disk full"}})
-          result (async/<!! (disk/write-output-piece disk layout "/out" 0
-                                                     (test-utils/to-bytes "abcd")))]
+          result (disk/write-output-piece disk layout "/out" 0
+                                          (test-utils/to-bytes "abcd"))]
       (is (= :write-error (:error result)))
       (is (empty? (mock-disk/get-output-layouts disk))))))
 
@@ -913,8 +913,8 @@
           bad {:sizes {}
                :files [{:path ["t" "a"] :length 4 :start 0}]
                :total 4 :piece-length 4}
-          result (async/<!! (disk/write-output-piece disk bad "/out" 0
-                                                     (test-utils/to-bytes "abcd")))]
+          result (disk/write-output-piece disk bad "/out" 0
+                                          (test-utils/to-bytes "abcd"))]
       (is (= :invalid-info (:error result)))
       (is (empty? (mock-disk/get-output-layouts disk)))
       (is (nil? (mock-disk/get-output-piece disk 0))))))
@@ -923,12 +923,11 @@
   (testing "non-byte-array input yields the :write-error envelope like the real port, never a throw"
     ;; DiskPortImpl wraps its whole write body in try/catch, so a bad bytes
     ;; argument comes back as {:error :write-error}. The mock must mirror
-    ;; that envelope or tests cannot drive the orchestration error path —
-    ;; an uncaught throw inside go closes the channel and <!! answers nil.
+    ;; that envelope or tests cannot drive the orchestration error path.
     (let [info {:name "t" :piece-length 4 :length 4}
           layout (:ok (torrent/compile-output-layout info))
           disk (mock-disk/create)
-          result (async/<!! (disk/write-output-piece disk layout "/out" 0 "not-bytes"))]
+          result (disk/write-output-piece disk layout "/out" 0 "not-bytes")]
       (is (= :write-error (:error result)))
       (is (empty? (mock-disk/get-output-layouts disk))))))
 
@@ -945,13 +944,13 @@
                   :total 12 :piece-length 4}
           disk (mock-disk/create)]
       (is (false? (disk/consistent-output-layout? layout)))
-      (let [result (async/<!! (disk/write-output-piece disk layout "/out" 0
-                                                       (test-utils/to-bytes "abcd")))]
+      (let [result (disk/write-output-piece disk layout "/out" 0
+                                            (test-utils/to-bytes "abcd"))]
         (is (= {:ok :written} result))
         (is (= [layout] (mock-disk/get-output-layouts disk))))
       (testing "a piece falling in the gap between entries is refused like the real port"
-        (let [result (async/<!! (disk/write-output-piece disk layout "/out" 1
-                                                         (test-utils/to-bytes "efgh")))]
+        (let [result (disk/write-output-piece disk layout "/out" 1
+                                              (test-utils/to-bytes "efgh"))]
           (is (= :invalid-info (:error result)))
           (is (nil? (mock-disk/get-output-piece disk 1))))))))
 

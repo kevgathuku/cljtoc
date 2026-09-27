@@ -199,23 +199,16 @@
   {:error reason :message message :failed-piece failed-piece})
 
 (defn- parse-torrent [disk-port torrent-path]
-  (let [ch (async/chan 1)]
-    (async/go
-      (let [result-chan (disk/read-torrent-file disk-port torrent-path)
-            result (async/<! result-chan)]
-        (if (:error result)
-          (async/>! ch (download-error :invalid-torrent (:message result)))
-          (async/>! ch {:ok (:ok result)}))))
-    ch))
+  (let [result (disk/read-torrent-file disk-port torrent-path)]
+    (if (:error result)
+      (download-error :invalid-torrent (:message result))
+      {:ok (:ok result)})))
 
 (defn- announce-to-tracker [network-port torrent]
-  (let [ch (async/chan 1)]
-    (async/go
-      (let [result (async/<! (network/announce network-port torrent))]
-        (if (:error result)
-          (async/>! ch (download-error :tracker-error (:message result)))
-          (async/>! ch {:ok (:ok result)}))))
-    ch))
+  (let [result (network/announce network-port torrent)]
+    (if (:error result)
+      (download-error :tracker-error (:message result))
+      {:ok (:ok result)})))
 
 (defn initial-stats [time-port]
   (let [now (time/now time-port)]
@@ -298,12 +291,12 @@
 
 (defn start-download [manager torrent-path output-dir]
   (let [{:keys [network-port disk-port time-port config]} manager
-        parse-result (async/<!! (parse-torrent disk-port torrent-path))]
+        parse-result (parse-torrent disk-port torrent-path)]
     (if (:error parse-result)
       parse-result
       (let [torrent (:ok parse-result)
             download (initial-download time-port torrent output-dir (disk/id-from-path torrent-path))
-            announce-result (async/<!! (announce-to-tracker network-port torrent))]
+            announce-result (announce-to-tracker network-port torrent)]
         (if (:error announce-result)
           (assoc download :state :failed
                  :error (:error announce-result)
@@ -351,7 +344,7 @@
    (if (= :downloading (:state download))
      (let [paused-download (assoc download :state :paused :peers #{})]
        (if disk-port
-         (let [save-result (async/<!! (disk/save-state disk-port paused-download))]
+         (let [save-result (disk/save-state disk-port paused-download)]
            (if (:error save-result)
              {:error (:error save-result) :message "Failed to persist state"}
              {:ok paused-download}))
@@ -374,10 +367,10 @@
   ([disk-port network-port download]
    (if (= :paused (:state download))
      (let [stored (when disk-port
-                    (:ok (async/<!! (disk/load-state disk-port (:id download)))))
+                    (:ok (disk/load-state disk-port (:id download))))
            restored (or stored download)]
        (if network-port
-         (let [announce-result (async/<!! (announce-to-tracker network-port (:torrent restored)))]
+         (let [announce-result (announce-to-tracker network-port (:torrent restored))]
            (if (:error announce-result)
              announce-result
              {:ok (assoc restored
@@ -395,7 +388,7 @@
   "Load persisted download state from disk."
   [disk-port download-id]
   (if disk-port
-    (async/<!! (disk/load-state disk-port download-id))
+    (disk/load-state disk-port download-id)
     nil))
 
 (s/fdef load-persisted-state
@@ -406,7 +399,7 @@
   "Persist current download state to disk for recovery."
   [disk-port download]
   (if disk-port
-    (async/<!! (disk/save-state disk-port download))
+    (disk/save-state disk-port download)
     {:ok :no-disk-port}))
 
 (s/fdef persist-download-state
@@ -854,7 +847,7 @@
                 assigned (get-in state [:active-peers address :assigned-piece])]
             (if (nil? assigned)
               (recur state rest-effects)
-              (let [result (async/<!! (network/send-message network-port peer-data bytes))]
+              (let [result (network/send-message network-port peer-data bytes)]
                 (if (:error result)
                   (do
                     (network/close-peer network-port peer-data)
@@ -873,15 +866,15 @@
           (:write-verified effect)
           (let [{:keys [piece-idx data]} (:write-verified effect)
                 download (:download state)
-                result (async/<!! (disk/write-piece disk-port piece-idx data))]
+                result (disk/write-piece disk-port piece-idx data)]
             (if (:error result)
               ;; Bytes never landed in the cache: unwind and fail.
               (fail-verified-write state effects piece-idx (:message result) network-port)
-              (let [output-result (async/<!! (disk/write-output-piece
-                                              disk-port
-                                              output-layout
-                                              (:output-dir download)
-                                              piece-idx data))]
+              (let [output-result (disk/write-output-piece
+                                   disk-port
+                                   output-layout
+                                   (:output-dir download)
+                                   piece-idx data)]
                 (if (:error output-result)
                   ;; Cache holds bytes the layout lacks: unwind and fail
                   ;; rather than verify air on resume.
@@ -1059,10 +1052,10 @@
                      :message (str "Failed to compile output layout: "
                                    (:message compiled))})
       (let [layout (:ok compiled)
-            init-result (async/<!! (disk/initialize-output-layout
-                                    disk-port
-                                    layout
-                                    (:output-dir download)))
+            init-result (disk/initialize-output-layout
+                         disk-port
+                         layout
+                         (:output-dir download))
             ;; Dial candidates capped exactly as the spawn below reads them,
             ;; so the empty guard and the worker spawn cannot drift apart.
             peer-addresses (capped-peer-addresses (map :address (:peers download)) config)]

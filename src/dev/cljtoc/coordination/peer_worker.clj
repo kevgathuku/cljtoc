@@ -29,7 +29,7 @@
   (async/thread
     (try
       ;; 1. Connect
-      (let [connect-result (async/<!! (net/connect-peer network-port address))]
+      (let [connect-result (net/connect-peer network-port address)]
         (if (:error connect-result)
           (async/>!! events-ch {:type :peer-disconnected
                                 :address address
@@ -39,10 +39,10 @@
             (try
               ;; 2. Send our handshake
               (let [handshake-bytes (:ok (peer/build-handshake info-hash our-peer-id))]
-                (async/<!! (net/send-message network-port peer-data handshake-bytes))
+                (net/send-message network-port peer-data handshake-bytes)
 
                 ;; 3. Read peer handshake
-                (let [hs-result (async/<!! (net/receive-handshake network-port peer-data))]
+                (let [hs-result (net/receive-handshake network-port peer-data)]
                   (if (:error hs-result)
                     (do
                       (net/close-peer network-port peer-data)
@@ -63,7 +63,7 @@
                         (do
                           ;; 5. Send Interested
                           (let [interested-bytes (:ok (peer/build-message (peer/->Interested)))]
-                            (async/<!! (net/send-message network-port peer-data interested-bytes)))
+                            (net/send-message network-port peer-data interested-bytes))
 
                           ;; 6. Notify coordinator of successful connection
                           (let [ps (-> (peer-state/initial-peer-state total-pieces)
@@ -75,7 +75,7 @@
 
                           ;; 7. Enter read loop
                           (loop []
-                            (let [msg-result (async/<!! (net/receive-message network-port peer-data))]
+                            (let [msg-result (net/receive-message network-port peer-data)]
                               (if (or (nil? msg-result) (:error msg-result))
                                 (do
                                   (net/close-peer network-port peer-data)
