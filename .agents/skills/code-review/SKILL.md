@@ -67,7 +67,7 @@ Each smell reads *what it is* → *how to fix*; match it against the diff:
 
 - The diff command and commit list.
 - The path or fetched contents of the spec.
-- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong. Quote the spec line for each finding. Under 400 words."
+- The brief: "Report: (a) requirements the spec asked for that are missing or partial; (b) behaviour in the diff that wasn't asked for (scope creep); (c) requirements that look implemented but where the implementation looks wrong; (d) new behaviour tests that fail to discriminate the new mechanism. Quote the spec line for each finding. Under 400 words. For (d), run a discrimination probe on every new behaviour test: mentally delete the new production code and re-run the test in your head — if it still passes via a fallback path, a mock, or the old branch, flag it as vacuous and name the path that would decide it instead (PR #35: an acceptance test enqueued disconnect events, so swarm-exhausted? decided it with the watcher deleted). Check adversarial coverage too: generative checks must generate hostile inputs (empty collections, zero bounds, closed channels), and each new branch needs an off-happy-path test whose timeout race fails rather than hangs."
 
 If the spec is missing, skip the Spec sub-agent and note this in the final report.
 
