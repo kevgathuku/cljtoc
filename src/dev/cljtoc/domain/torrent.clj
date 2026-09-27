@@ -271,8 +271,8 @@
 
 (defn- layout-error
   "The one layout guard shared by output-file-sizes and piece-file-spans: the
-   layout needs a :name, carries exactly one of :length (single-file) or
-   :files (multi-file), every declared path component must stay inside the
+   layout needs a :name, a positive :piece-length, carries exactly one of
+   :length (single-file) or :files (multi-file), every declared path component must stay inside the
    output directory, every present length must be a natural integer, and no
    two entries may claim the same path. A duplicate is fatal because the two
    derivations disagree about it — sizes collapse the entries into one map
@@ -283,42 +283,230 @@
    length: spans crash comparing against it while sizes hand the string
    downstream to explode later, far from the lie. So is a nested pair: a
    path inside another cannot be both the file one entry claims and the
-   directory the other needs, in any declaration order. Returns the error
+   directory the other needs, in any declaration order. So is a pathless
+   entry: a missing or empty :path collapses to [name] and silently writes
+   the torrent root instead of failing. Returns the error
    map, or nil when the layout is usable.
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
-  (let [components (cons (:name info) (mapcat :path (:files info)))
-        ;; Top-level :length is legitimately absent on multi-file infos;
-        ;; file entries always carry theirs, so only the top slot tolerates
-        ;; nil. (Single-file infos without :length are caught by the
-        ;; no-layout branch above, before this runs.)
-        layout (file-layout info)]
+  ;; Checked before the layout is derived below: map/mapcat seq :files
+  ;; and every entry :path, so a non-collection there throws instead of
+  ;; answering, and a missing or empty :path collapses to [name] and
+  ;; silently writes the torrent root. info is torrent-controlled, and
+  ;; the namespace contract is errors as data. Non-empty strings stay
+  ;; permissible here: they seq without throwing and the component guard
+  ;; below refuses them as hostile.
+  (cond
+    (and (some? (:files info)) (not (sequential? (:files info))))
+    (bencode/torrent-error "info :files must be a collection of file entries" {})
+
+    (and (sequential? (:files info))
+         (some (fn [entry]
+                 (or (not (map? entry))
+                     (let [entry-path (:path entry)]
+                       (not (or (and (string? entry-path) (seq entry-path))
+                                (and (sequential? entry-path) (seq entry-path)))))))
+               (:files info)))
+    (bencode/torrent-error "info file entries must be maps with a non-empty path" {})
+
+    ;; A compiled layout without a positive piece length is consumable by
+    ;; nothing: layout-spans and the port contract refuse it while sizes
+    ;; alone would report success. Refuse it here so compile cannot hand
+    ;; out layouts the port cannot accept.
+    (let [nominal (:piece-length info)]
+      (or (not (integer? nominal)) (not (pos? nominal))))
+    (bencode/torrent-error "info must carry a positive :piece-length" {})
+
+    :else
+    (let [components (cons (:name info) (mapcat :path (:files info)))
+          ;; Top-level :length is legitimately absent on multi-file infos;
+          ;; file entries always carry theirs, so only the top slot tolerates
+          ;; nil. (Single-file infos without :length are caught by the
+          ;; no-layout branch above, before this runs.)
+          layout (file-layout info)]
+      (cond
+        (and (some? (:length info)) (some? (:files info)))
+        (bencode/torrent-error "info must not carry both :length and :files" {})
+
+        (and (nil? (:length info)) (nil? (:files info)))
+        (bencode/torrent-error "info must carry either :length or :files" {})
+
+        (not (and (or (nil? (:length info)) (nat-int? (:length info)))
+                  (every? nat-int? (map :length (:files info)))))
+        (bencode/torrent-error "info carries a file length that is not a natural integer" {})
+
+        (nil? (:name info))
+        (bencode/torrent-error "info must carry :name for output paths" {})
+
+        (not (every? safe-path-component? components))
+        (bencode/torrent-error "info carries a path component that escapes the output directory" {})
+
+        (not= (count layout) (count (distinct (map :path layout))))
+        (bencode/torrent-error "info declares the same output path twice" {})
+
+        (prefix-collision? (map :path layout))
+        (bencode/torrent-error "info declares an output path inside another" {})
+
+        :else
+        nil))))
+
+(defn compile-output-layout
+  "Derive the output layout of an info dict once per download: every
+   declared entry with its cumulative byte :start, the sizes map
+   output-file-sizes returns, the content :total, and the :piece-length
+   passed through for span math. :files holds only positive-length
+   entries — a zero-length file overlaps no piece, so excluding it keeps
+   the per-piece walk to exactly the overlapped files — while :sizes
+   still lists every declared path so layout init creates the empties.
+   A layout that could not be written as declared (see layout-error)
+   is an error.
+   Returns {:ok layout} or {:error ...}."
+  [info]
+  (if-let [error (layout-error info)]
+    error
+    (try
+      (let [entries (file-layout info)
+            files (loop [remaining entries
+                         file-start 0
+                         acc (transient [])]
+                    (if (empty? remaining)
+                      (persistent! acc)
+                      (let [{file-path :path file-length :length} (first remaining)]
+                        (recur (rest remaining)
+                               (+ file-start file-length)
+                               (if (pos? file-length)
+                                 (conj! acc {:path file-path
+                                             :length file-length
+                                             :start file-start})
+                                 acc)))))
+            total (reduce + 0 (map :length entries))]
+        {:ok {:files files
+              :sizes (into {} (map (fn [{file-path :path file-length :length}]
+                                     [file-path file-length])
+                                   entries))
+              :total total
+              :piece-length (:piece-length info)}})
+      (catch ArithmeticException _
+        (bencode/torrent-error "output layout arithmetic overflowed" {})))))
+
+(s/fdef compile-output-layout
+  :args (s/cat :info ::info)
+  :ret map?
+  ;; The single derivation output-file-sizes and piece-file-spans share:
+  ;; every searched entry is a declared size, and the sizes sum to the total.
+  :fn #(let [ret (:ret %)]
+         (or (:error ret)
+             (let [layout (:ok ret)]
+               (and (every? (fn [{file-path :path file-length :length}]
+                              (= file-length (get (:sizes layout) file-path)))
+                            (:files layout))
+                    (= (:total layout) (reduce + 0 (vals (:sizes layout)))))))))
+
+(defn- first-overlap-index
+  "Index of the first file a piece starting at piece-start can overlap:
+   one past the last entry starting at or before it. Binary search over
+   the compiled :starts, O(log files) instead of the O(files) linear
+   walk piece-file-spans used to pay on every piece."
+  [files piece-start]
+  (loop [low-idx 0 high-idx (count files)]
+    (if (= low-idx high-idx)
+      (max 0 (dec low-idx))
+      (let [mid-idx (quot (+ low-idx high-idx) 2)]
+        (if (<= (:start (nth files mid-idx)) piece-start)
+          (recur (inc mid-idx) high-idx)
+          (recur low-idx mid-idx))))))
+
+(defn layout-spans
+  "Map one piece to file-layout spans from a compiled output layout
+   (see compile-output-layout): per overlapped file,
+   {:path [name ...] :file-offset n :data-offset m :length k}.
+   The first overlapped file is found by binary search over the
+   compiled :starts and only overlapped files are walked, so per-piece
+   cost is O(log files) instead of O(files).
+   Returns {:ok spans} or {:error ...}."
+  [layout piece-index piece-byte-count]
+  (let [nominal (:piece-length layout)]
     (cond
-      (and (some? (:length info)) (some? (:files info)))
-      (bencode/torrent-error "info must not carry both :length and :files" {})
+      (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
+      (bencode/torrent-error "piece index and byte count must be valid" {})
 
-      (and (nil? (:length info)) (nil? (:files info)))
-      (bencode/torrent-error "info must carry either :length or :files" {})
+      (or (not (integer? nominal)) (not (pos? nominal)))
+      (bencode/torrent-error "info must carry a positive :piece-length" {})
 
-      (not (and (or (nil? (:length info)) (nat-int? (:length info)))
-                (every? nat-int? (map :length (:files info)))))
-      (bencode/torrent-error "info carries a file length that is not a natural integer" {})
-
-      (nil? (:name info))
-      (bencode/torrent-error "info must carry :name for output paths" {})
-
-      (not (every? safe-path-component? components))
-      (bencode/torrent-error "info carries a path component that escapes the output directory" {})
-
-      (not= (count layout) (count (distinct (map :path layout))))
-      (bencode/torrent-error "info declares the same output path twice" {})
-
-      (prefix-collision? (map :path layout))
-      (bencode/torrent-error "info declares an output path inside another" {})
+      ;; O(1) shape guards only: entry shapes were validated where the
+      ;; layout was compiled, and scanning them here would put the O(files)
+      ;; this refactor removes right back on the per-piece path. A
+      ;; hand-built layout that passes the guards but carries malformed
+      ;; entries fails closed in the catch below, never a throw.
+      ;; ponytail: trusts compiled entry shapes for speed; the catch is
+      ;; the backstop, and direct callers with garbage get an error envelope.
+      (not (and (map? layout)
+                (vector? (:files layout))
+                (nat-int? (:total layout))))
+      (bencode/torrent-error "layout must be a compiled output layout" {})
 
       :else
-      nil)))
+      ;; See piece-file-spans: huge indices overflow long arithmetic, and
+      ;; the contract is errors as data — never a throw.
+      (try
+        (let [total (:total layout)
+              piece-start (* piece-index nominal)
+              files (:files layout)]
+          (cond
+            ;; No searchable entries yet bytes declared: not a layout
+            ;; compile-output-layout can produce. (Empty with zero total
+            ;; falls through to the past-total error, matching
+            ;; piece-file-spans on an all-empty layout.)
+            (and (empty? files) (pos? total))
+            (bencode/torrent-error "layout must be a compiled output layout" {})
+
+            (>= piece-start total)
+            (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
+                                   {:piece-index piece-index})
+
+            :else
+            (let [piece-end (min total (+ piece-start piece-byte-count))
+                  spans (loop [idx (first-overlap-index files piece-start)
+                               acc (transient [])]
+                          (if (>= idx (count files))
+                            (persistent! acc)
+                            (let [{file-path :path file-length :length file-start :start} (nth files idx)]
+                              (if (>= file-start piece-end)
+                                (persistent! acc)
+                                (let [file-end (+ file-start file-length)
+                                      overlap-start (max piece-start file-start)
+                                      overlap-end (min piece-end file-end)]
+                                  (recur (inc idx)
+                                         (if (< overlap-start overlap-end)
+                                           (conj! acc {:path file-path
+                                                       :file-offset (- overlap-start file-start)
+                                                       :data-offset (- overlap-start piece-start)
+                                                       :length (- overlap-end overlap-start)})
+                                           acc)))))))]
+              ;; A piece starting before :total always overlaps a byte of a
+              ;; well-formed layout, so empty spans mean a malformed one
+              ;; (e.g. zero-length-only entries) — and the port would
+              ;; report :written while dropping the bytes. Error, not :ok.
+              (if (empty? spans)
+                (bencode/torrent-error "layout must be a compiled output layout" {})
+                {:ok spans}))))
+        (catch ArithmeticException _
+          (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
+                                 {:piece-index piece-index}))
+        (catch Exception _
+          (bencode/torrent-error "layout must be a compiled output layout" {}))))))
+
+(s/fdef layout-spans
+  :args (s/cat :layout map?
+               :piece-index ::piece-span-index
+               :piece-byte-count ::piece-byte-count)
+  :ret map?
+  ;; Same span shape as piece-file-spans: the two entry points agree by
+  ;; construction, and the agreement property pins it per generated layout.
+  :fn #(let [ret (:ret %)]
+         (or (:error ret)
+             (s/valid? ::file-span-list (:ok ret)))))
 
 (defn output-file-sizes
   "Declared output sizes of an info dict: {relative-path-vector length}.
@@ -326,11 +514,10 @@
    so a caller never receives a path it must not open.
    Returns {:ok sizes} or {:error ...}."
   [info]
-  (if-let [error (layout-error info)]
-    error
-    {:ok (into {} (map (fn [{file-path :path file-length :length}]
-                         [file-path file-length])
-                       (file-layout info)))}))
+  (let [compiled (compile-output-layout info)]
+    (if (:error compiled)
+      compiled
+      {:ok (:sizes (:ok compiled))})))
 
 (s/fdef output-file-sizes
   :args (s/cat :info ::info)
@@ -364,42 +551,14 @@
       bad-layout
 
       :else
-      ;; Legit lengths can still overflow long arithmetic (a huge nominal
-      ;; times a huge index), and the contract is errors as data — never a
-      ;; throw — so overflow reports like any other unmappable piece. total
-      ;; is computed here, past the guard, for the same reason: summing
-      ;; unvalidated lengths can throw before the guard gets its say.
-      (try
-        (let [total (total-size info)
-              piece-start (* piece-index nominal)]
-          (if (>= piece-start total)
-            (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
-                                   {:piece-index piece-index})
-            (let [piece-end (min total (+ piece-start piece-byte-count))
-                  ;; layout is non-nil here: layout-error has already rejected
-                  ;; the nil or unsafe :name that is the only way file-layout
-                  ;; returns nil.
-                  layout (file-layout info)]
-              {:ok (loop [remaining layout
-                          file-start 0
-                          acc (transient [])]
-                     (if (empty? remaining)
-                       (persistent! acc)
-                       (let [{file-path :path file-length :length} (first remaining)
-                             file-end (+ file-start file-length)
-                             overlap-start (max piece-start file-start)
-                             overlap-end (min piece-end file-end)]
-                         (recur (rest remaining)
-                                file-end
-                                (if (< overlap-start overlap-end)
-                                  (conj! acc {:path file-path
-                                              :file-offset (- overlap-start file-start)
-                                              :data-offset (- overlap-start piece-start)
-                                              :length (- overlap-end overlap-start)})
-                                  acc)))))})))
-        (catch ArithmeticException _
-          (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
-                                 {:piece-index piece-index}))))))
+      ;; Thin wrapper over the compiled layout: the span loop lives in
+      ;; layout-spans now, so the two derivations cannot drift apart.
+      ;; Legit lengths can still overflow long arithmetic in the compile,
+      ;; and the contract is errors as data — never a throw.
+      (let [compiled (compile-output-layout info)]
+        (if (:error compiled)
+          compiled
+          (layout-spans (:ok compiled) piece-index piece-byte-count))))))
 
 (s/fdef piece-file-spans
   :args (s/cat :info ::info

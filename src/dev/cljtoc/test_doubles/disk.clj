@@ -3,6 +3,7 @@
    
    Provides predictable responses for testing without actual disk I/O."
   (:require [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.domain.torrent :as torrent]
             [clojure.spec.alpha :as s]
             [clojure.core.async :as async]))
 
@@ -11,6 +12,7 @@
             torrent-data
             piece-cache
             output-pieces
+            output-layouts
             layouts-initialized
             state-files
             directories-created]
@@ -40,23 +42,52 @@
             (async/>! ch {:ok :written}))))
       ch))
 
-  (write-output-piece [_ _info _output-dir piece-index bytes]
+  (write-output-piece [_ layout _output-dir piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
-        (if-let [err (or (:output-write-error config) (:write-error config))]
-          (async/>! ch err)
-          (do
-            (swap! output-pieces assoc piece-index bytes)
-            (async/>! ch {:ok :written}))))
+        ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
+        ;; the O(1) shape gate, then touched-path membership. The full
+        ;; invariant check (consistent-output-layout?) runs once at init on
+        ;; both ports, so tests drive exactly the refusal paths the real
+        ;; port produces — no stricter, no looser. The try/catch mirrors
+        ;; the real port too: a bad bytes argument (alength throws) comes
+        ;; back as {:error :write-error}, never an uncaught throw in go.
+        (try
+          (if-let [err (or (:output-write-error config) (:write-error config))]
+            (async/>! ch err)
+            (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
+              (if-let [err (cond
+                             (:error spans-result)
+                             {:error :invalid-info
+                              :message (str "Cannot map piece " piece-index ": "
+                                            (:message spans-result))}
+
+                             (not (disk/valid-output-layout? layout))
+                             disk/invalid-output-layout-error
+
+                             (not (every? #(contains? (:sizes layout) (:path %))
+                                          (:ok spans-result)))
+                             disk/invalid-output-layout-error
+
+                             :else nil)]
+                (async/>! ch err)
+                (do
+                  (swap! output-layouts conj layout)
+                  (swap! output-pieces assoc piece-index bytes)
+                  (async/>! ch {:ok :written})))))
+          (catch Exception error
+            (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))
 
-  (initialize-output-layout [_ info output-dir]
+  (initialize-output-layout [_ layout output-dir]
     (let [ch (async/chan 1)]
       (async/go
-        (if-let [err (:output-init-error config)]
+        (if-let [err (or (:output-init-error config)
+                         (when-not (disk/consistent-output-layout? layout)
+                           disk/invalid-output-layout-error))]
           (async/>! ch err)
           (do
-            (swap! layouts-initialized conj {:info info :output-dir output-dir})
+            (swap! layouts-initialized conj {:layout layout :output-dir output-dir})
             (async/>! ch {:ok :initialized}))))
       ch))
 
@@ -102,6 +133,7 @@
                    (atom {})
                    (atom {})
                    (atom [])
+                   (atom [])
                    (atom {})
                    (atom #{}))))
 
@@ -129,6 +161,13 @@
 (s/fdef get-output-piece
   :args (s/cat :mock-disk any? :piece-index nat-int?)
   :ret any?)
+
+(defn get-output-layouts [mock-disk]
+  @(:output-layouts mock-disk))
+
+(s/fdef get-output-layouts
+  :args (s/cat :mock-disk any?)
+  :ret vector?)
 
 (defn get-state [mock-disk id]
   (get @(:state-files mock-disk) id))

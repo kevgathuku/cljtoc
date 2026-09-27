@@ -5,6 +5,8 @@
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
+            [dev.cljtoc.domain.torrent :as torrent]
+            [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.test-utils :as test-utils]
@@ -364,7 +366,7 @@
 (deftest run-download-fails-fast-with-no-peers-test
   (testing "zero peers returns :failed instead of blocking on the event channel"
     (let [torrent {:info-hash (byte-array 20)
-                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288}}
+                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288 :name "no-peers.bin"}}
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-peers")
                          :state :downloading
                          :peers #{})
@@ -379,7 +381,7 @@
 (deftest run-download-guard-reads-capped-addresses-test
   (testing "a cap that dials nothing fails fast with the no-peers guard (issue #32)"
     (let [torrent {:info-hash (byte-array 20)
-                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288}}
+                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288 :name "capped.bin"}}
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "capped-empty")
                          :state :downloading
                          :peers #{{:address "10.0.0.1:6881"}})
@@ -785,6 +787,7 @@
                    :info {:pieces [(bencode/sha1-hash piece-0-bytes)
                                    (bencode/sha1-hash piece-1-bytes)]
                           :piece-length 4
+                          :name "swarm.bin"
                           :length 8}}
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "swarm")
                          :state :downloading
@@ -843,6 +846,115 @@
       (is (= :completed (:state result)))
       (is (= 1 (count @(:layouts-initialized disk)))))))
 
+(deftest run-download-fails-on-uncompilable-layout-test
+  (testing "info that cannot compile fails before the port is reached"
+    (let [info {:pieces [] :piece-length 4 :length 8}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-name")
+                         :state :downloading)
+          disk (mock-disk/create)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      ;; The compile branch's prefix, not just "output layout": the pre-compile
+      ;; path also produced :failed/:disk-error with "Failed to initialize
+      ;; output layout: Invalid output layout..." and an empty init record, so
+      ;; only the prefix discriminates compile-before-port from port-refusal.
+      (is (re-find #"^Failed to compile output layout" (get-in result [:error :message])))
+      (is (empty? @(:layouts-initialized disk))))))
+
+(deftest run-download-passes-compiled-layout-to-port-test
+  (testing "the port receives the layout compiled once, not raw info"
+    (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "empty-layout")
+                         :state :downloading)
+          disk (mock-disk/create)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :completed (:state result)))
+      (is (= [(:ok (torrent/compile-output-layout info))]
+             (mapv :layout @(:layouts-initialized disk)))))))
+
+(deftest mock-init-refuses-uncompiled-layout-test
+  (testing "the mock mirrors the real port: raw info or nil is :invalid-info, unrecorded"
+    (let [disk (mock-disk/create)]
+      (doseq [bad [nil
+                   {:pieces [] :piece-length 4 :length 8 :name "raw.bin"}
+                   {:sizes {} :files []}
+                   {:sizes {}
+                    :files [{:path ["t" "a"] :length 4 :start 0}]
+                    :total 4 :piece-length 4}]]
+        (let [result (async/<!! (disk/initialize-output-layout disk bad "/out"))]
+          (is (= :invalid-info (:error result)) (str "init " (pr-str bad)))))
+      (is (empty? @(:layouts-initialized disk))))))
+
+(deftest mock-write-surfaces-configured-write-error-test
+  (testing "the :write-error fallback reaches output writes, not just cache writes"
+    (let [info {:name "t" :piece-length 4 :length 4}
+          layout (:ok (torrent/compile-output-layout info))
+          disk (mock-disk/create {:write-error {:error :write-error
+                                                :message "disk full"}})
+          result (async/<!! (disk/write-output-piece disk layout "/out" 0
+                                                     (test-utils/to-bytes "abcd")))]
+      (is (= :write-error (:error result)))
+      (is (empty? (mock-disk/get-output-layouts disk))))))
+
+(deftest mock-write-refuses-uncompiled-layout-test
+  (testing "mock writes refuse uncompiled shapes like the real port"
+    (let [disk (mock-disk/create)
+          bad {:sizes {}
+               :files [{:path ["t" "a"] :length 4 :start 0}]
+               :total 4 :piece-length 4}
+          result (async/<!! (disk/write-output-piece disk bad "/out" 0
+                                                     (test-utils/to-bytes "abcd")))]
+      (is (= :invalid-info (:error result)))
+      (is (empty? (mock-disk/get-output-layouts disk)))
+      (is (nil? (mock-disk/get-output-piece disk 0))))))
+
+(deftest mock-write-returns-write-error-on-non-bytes-test
+  (testing "non-byte-array input yields the :write-error envelope like the real port, never a throw"
+    ;; DiskPortImpl wraps its whole write body in try/catch, so a bad bytes
+    ;; argument comes back as {:error :write-error}. The mock must mirror
+    ;; that envelope or tests cannot drive the orchestration error path —
+    ;; an uncaught throw inside go closes the channel and <!! answers nil.
+    (let [info {:name "t" :piece-length 4 :length 4}
+          layout (:ok (torrent/compile-output-layout info))
+          disk (mock-disk/create)
+          result (async/<!! (disk/write-output-piece disk layout "/out" 0 "not-bytes"))]
+      (is (= :write-error (:error result)))
+      (is (empty? (mock-disk/get-output-layouts disk))))))
+
+(deftest mock-write-mirrors-real-gate-test
+  (testing "mock write gates mirror the real port: span derivation, O(1) shape, touched-path membership"
+    ;; A shape-valid layout whose starts do not chain fails
+    ;; consistent-output-layout?, but the real port's per-piece write
+    ;; accepts it — full invariants are enforced once at init, not per
+    ;; write. The mock must accept what the real port accepts, or tests
+    ;; drive refusal paths the real port never produces (and vice versa).
+    (let [layout {:sizes {["t" "a"] 4 ["t" "b"] 4}
+                  :files [{:path ["t" "a"] :length 4 :start 0}
+                          {:path ["t" "b"] :length 4 :start 8}]
+                  :total 12 :piece-length 4}
+          disk (mock-disk/create)]
+      (is (false? (disk/consistent-output-layout? layout)))
+      (let [result (async/<!! (disk/write-output-piece disk layout "/out" 0
+                                                       (test-utils/to-bytes "abcd")))]
+        (is (= {:ok :written} result))
+        (is (= [layout] (mock-disk/get-output-layouts disk))))
+      (testing "a piece falling in the gap between entries is refused like the real port"
+        (let [result (async/<!! (disk/write-output-piece disk layout "/out" 1
+                                                         (test-utils/to-bytes "efgh")))]
+          (is (= :invalid-info (:error result)))
+          (is (nil? (mock-disk/get-output-piece disk 1))))))))
+
 ;; Scripted events-ch through the extracted loop (issue #2.4): feed
 ;; run-coordinator a pre-loaded channel and assert piece-state
 ;; transitions, including requeue on choke and disconnect.
@@ -852,6 +964,7 @@
    :info {:pieces [(bencode/sha1-hash (test-utils/to-bytes "abcd"))
                    (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
           :piece-length 4
+          :name "loop.bin"
           :length 8}})
 
 (defn- loop-peer-state []
@@ -869,6 +982,7 @@
                            :piece-length (:piece-length info)
                            :total-length (:length info)
                            :total-pieces (count (:pieces info))}
+             :output-layout (:ok (torrent/compile-output-layout info))
              :ports {:network-port (or (:net opts) (mock-net/create))
                      :disk-port disk
                      :time-port (mock-time/create)}
@@ -1156,11 +1270,17 @@
                    :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
                   {:type :peer-message :address "peer-a"
                    :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
-          result (scripted-run events (loop-download) disk)]
+          download (loop-download)
+          expected-layout (:ok (torrent/compile-output-layout (:info (:torrent download))))
+          result (scripted-run events download disk)]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
-      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1)))))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1))))
+      ;; The coordinator must hand the compiled layout (not raw info) to
+      ;; every piece write: reverting the call argument keeps the bytes
+      ;; assertions green but fails this one (PR #36 r4115143527).
+      (is (= [expected-layout expected-layout] (mock-disk/get-output-layouts disk))))))
 
 (deftest run-coordinator-output-write-error-fails-download-test
   (testing "a failed output-layout write fails the download like a cache write"

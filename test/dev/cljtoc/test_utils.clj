@@ -1,6 +1,7 @@
 (ns dev.cljtoc.test-utils
   "Shared test utilities and helper functions."
-  (:require [clojure.spec.test.alpha :as stest]))
+  (:require [clojure.spec.test.alpha :as stest]
+            [dev.cljtoc.domain.torrent :as torrent]))
 
 (defn to-bytes
   "Convert string to UTF-8 byte array."
@@ -19,3 +20,23 @@
               (keep (fn [{:keys [sym failure]}]
                       (when failure [sym failure]))))
         syms))
+
+(defn layout-test-info
+  "Build an info dict for the given piece length and file lengths:
+   single-file when one length, multi-file otherwise. Shared by layout
+   tests that need valid input to mutate (ports.disk) or span (domain)."
+  [piece-length file-lengths]
+  (let [total (reduce + 0 file-lengths)
+        file-count (count file-lengths)]
+    (if (= 1 file-count)
+      {:name "f" :piece-length piece-length :length total}
+      {:name "t" :piece-length piece-length
+       :files (mapv (fn [file-index file-length]
+                      {:path [(str "f" file-index)] :length file-length})
+                    (range file-count) file-lengths)})))
+
+(defn compiled-test-layout
+  "The compiled output layout for layout-test-info: the valid shape that
+   mutation-based specs break one field at a time."
+  [piece-length file-lengths]
+  (:ok (torrent/compile-output-layout (layout-test-info piece-length file-lengths))))

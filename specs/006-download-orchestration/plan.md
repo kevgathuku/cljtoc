@@ -189,8 +189,8 @@ IDiskPort
 ├── read-torrent-file(path) → {:ok metadata} | {:error reason}
 ├── read-piece(piece-index) → {:ok bytes | nil}
 ├── write-piece(piece-index, bytes) → {:ok :written} | {:error reason}
-├── write-output-piece(info, output-dir, piece-index, bytes) → {:ok :written} | {:error reason}
-├── initialize-output-layout(info, output-dir) → {:ok :initialized} | {:error reason}
+├── write-output-piece(layout, output-dir, piece-index, bytes) → {:ok :written} | {:error reason}
+├── initialize-output-layout(layout, output-dir) → {:ok :initialized} | {:error reason}
 ├── ensure-directory(path) → {:ok :created} | {:error reason}
 ├── save-state(download) → {:ok :saved} | {:error reason}
 ├── load-state(id) → {:ok download | nil} | {:error reason}

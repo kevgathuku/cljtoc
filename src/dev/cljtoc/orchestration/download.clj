@@ -832,9 +832,10 @@
   "Deliver planned effects at the loop edge: block-request sends go out
    over the network port, verified pieces go to the piece cache and the
    output file layout via the disk port with the download stats updated.
-   Returns [state outcome]: :ok, or
-   {:fatal error-info} when a verified write failed and the download
-   cannot honestly continue.
+   Piece writes use the output layout compiled once per download and
+   carried in env, never re-derived per piece. Returns [state outcome]:
+   :ok, or {:fatal error-info} when a verified write failed and the
+   download cannot honestly continue.
 
    A failed send treats the peer as disconnected: close its socket,
    requeue its piece and drop it from every bookkeeping map, so a dead
@@ -845,7 +846,7 @@
          [effect & rest-effects] effects]
     (if (nil? effect)
       [state :ok]
-      (let [{:keys [ports conn-stats]} env
+      (let [{:keys [ports conn-stats output-layout]} env
             {:keys [network-port disk-port time-port]} ports]
         (cond
           (:send effect)
@@ -878,7 +879,7 @@
               (fail-verified-write state effects piece-idx (:message result) network-port)
               (let [output-result (async/<!! (disk/write-output-piece
                                               disk-port
-                                              (:info (:torrent download))
+                                              output-layout
                                               (:output-dir download)
                                               piece-idx data))]
                 (if (:error output-result)
@@ -952,6 +953,8 @@
             :pending-dials #{...}}
    events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
    env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
+          :output-layout (:ok (torrent/compile-output-layout info)) — the compiled
+                         layout value (not the result envelope), derived once per download
           :ports {:network-port ... :disk-port ... :time-port ...}
           :conn-stats (atom {:connected n :failed n})
           :total-attempted n}"
@@ -1043,72 +1046,85 @@
 (defn run-download
   "Run the download to completion. Blocking call.
    Connects to peers, requests pieces, writes verified pieces.
+   The output layout is compiled once up front and handed to the port
+   and the coordinator; a layout that cannot be compiled fails the
+   download before any peer is dialed or file created.
    Returns the final Download record."
   [manager download]
   (let [{:keys [disk-port config]} manager
-        init-result (async/<!! (disk/initialize-output-layout
-                                disk-port
-                                (:info (:torrent download))
-                                (:output-dir download)))
-        ;; Dial candidates capped exactly as the spawn below reads them,
-        ;; so the empty guard and the worker spawn cannot drift apart.
-        peer-addresses (capped-peer-addresses (map :address (:peers download)) config)]
-    (cond
-      (:error init-result)
+        compiled (torrent/compile-output-layout (:info (:torrent download)))]
+    (if (:error compiled)
       (assoc download :state :failed
              :error {:reason :disk-error
-                     :message (str "Failed to initialize output layout: "
-                                   (:message init-result))})
+                     :message (str "Failed to compile output layout: "
+                                   (:message compiled))})
+      (let [layout (:ok compiled)
+            init-result (async/<!! (disk/initialize-output-layout
+                                    disk-port
+                                    layout
+                                    (:output-dir download)))
+            ;; Dial candidates capped exactly as the spawn below reads them,
+            ;; so the empty guard and the worker spawn cannot drift apart.
+            peer-addresses (capped-peer-addresses (map :address (:peers download)) config)]
+        (cond
+          (:error init-result)
+          (assoc download :state :failed
+                 :error {:reason :disk-error
+                         :message (str "Failed to initialize output layout: "
+                                       (:message init-result))})
 
-      (pieces/complete? (:piece-state download))
-      (assoc download :state :completed)
+          (pieces/complete? (:piece-state download))
+          (assoc download :state :completed)
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.
-      (empty? peer-addresses)
-      (assoc download :state :failed
-             :error {:reason :no-peers
-                     :message "No peers available: nothing to connect to"})
+          (empty? peer-addresses)
+          (assoc download :state :failed
+                 :error {:reason :no-peers
+                         :message "No peers available: nothing to connect to"})
 
-      :else
-      (let [{:keys [network-port disk-port time-port]} manager
-            torrent (:torrent download)
-            info (:info torrent)
-            info-hash (:info-hash torrent)
-            total-pieces (count (:pieces info))
-            piece-hashes (:pieces info)
-            piece-length (:piece-length info)
-            total-length (torrent/total-size info)
-            peer-id (let [b (byte-array 20)]
-                      (.nextBytes (SecureRandom.) b)
-                      b)
-            events-ch (async/chan 256)
-            total-attempted (count peer-addresses)
-            conn-stats (atom {:connected 0 :failed 0})]
+          :else
+          (let [{:keys [network-port disk-port time-port]} manager
+                torrent (:torrent download)
+                info (:info torrent)
+                info-hash (:info-hash torrent)
+                total-pieces (count (:pieces info))
+                piece-hashes (:pieces info)
+                piece-length (:piece-length info)
+                ;; The compiled layout already carries the content length:
+                ;; one derivation, no second walk of the declared files.
+                total-length (:total layout)
+                peer-id (let [b (byte-array 20)]
+                          (.nextBytes (SecureRandom.) b)
+                          b)
+                events-ch (async/chan 256)
+                total-attempted (count peer-addresses)
+                conn-stats (atom {:connected 0 :failed 0})]
 
-        (println (str "  Connecting to " total-attempted " peers..."))
-        (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+            (println (str "  Connecting to " total-attempted " peers..."))
+            (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
       ;; Spawn peer workers; their channels close on worker exit,
       ;; so watching them tells the coordinator when all peers are gone.
-        (let [worker-chs (mapv (fn [addr]
-                                 (peer-worker/run-peer network-port info-hash peer-id
-                                                       addr total-pieces events-ch))
-                               peer-addresses)]
-          (watch-workers! worker-chs events-ch))
+            (let [worker-chs (mapv (fn [addr]
+                                     (peer-worker/run-peer network-port info-hash peer-id
+                                                           addr total-pieces events-ch))
+                                   peer-addresses)]
+              (watch-workers! worker-chs events-ch))
 
       ;; Hand the event channel to the coordinator loop
-        (run-coordinator (initial-coordinator-state download peer-addresses)
-                         events-ch
-                         {:message-ctx {:piece-hashes piece-hashes
-                                        :piece-length piece-length
-                                        :total-length total-length
-                                        :total-pieces total-pieces}
-                          :ports {:network-port network-port
-                                  :disk-port disk-port
-                                  :time-port time-port}
-                          :conn-stats conn-stats
-                          :total-attempted total-attempted})))))
+            (run-coordinator (initial-coordinator-state download peer-addresses)
+                             events-ch
+                             {:message-ctx {:piece-hashes piece-hashes
+                                            :piece-length piece-length
+                                            :total-length total-length
+                                            :total-pieces total-pieces}
+                              :output-layout layout
+                              :ports {:network-port network-port
+                                      :disk-port disk-port
+                                      :time-port time-port}
+                              :conn-stats conn-stats
+                              :total-attempted total-attempted})))))))
 
 (s/fdef run-download
   :args (s/cat :manager ::download-manager :download map?)
