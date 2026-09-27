@@ -4,7 +4,8 @@
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
             [dev.cljtoc.domain.torrent :as torrent]
-            [dev.cljtoc.domain.bencode :as bencode]))
+            [dev.cljtoc.domain.bencode :as bencode]
+            [dev.cljtoc.test-utils :as test-utils]))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -499,3 +500,32 @@
                       :files [{:path [hostile] :length 4}]}))
          spans (:ok (torrent/piece-file-spans {:name hostile :piece-length 4 :length 4} 0 4))]
      (and (nil? single) (nil? multi) (nil? spans)))))
+
+;; ---------------------------------------------------------------------------
+;; fdef specs hold generatively (stest/check).
+;; Every public fn in this namespace is pure and total over generated
+;; inputs, so the whole set is pinned here. A failure names its sym and
+;; shrunk counterexample — that pair says exactly which args shape to
+;; tighten next (as happened with total-size's ::totalable-info).
+;; ---------------------------------------------------------------------------
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "every torrent fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.domain.torrent/extract-info-dict-bytes
+                      dev.cljtoc.domain.torrent/compute-info-hash
+                      dev.cljtoc.domain.torrent/extract-announce-urls
+                      dev.cljtoc.domain.torrent/parse-pieces
+                      dev.cljtoc.domain.torrent/parse-info-dict
+                      dev.cljtoc.domain.torrent/total-size
+                      dev.cljtoc.domain.torrent/output-file-sizes
+                      dev.cljtoc.domain.torrent/piece-file-spans
+                      dev.cljtoc.domain.torrent/validate-required-fields
+                      dev.cljtoc.domain.torrent/validate-field-types
+                      dev.cljtoc.domain.torrent/validate-pieces-length
+                      dev.cljtoc.domain.torrent/validate-piece-length
+                      dev.cljtoc.domain.torrent/validate-torrent
+                      dev.cljtoc.domain.torrent/parse-torrent]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))

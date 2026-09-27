@@ -1093,3 +1093,39 @@
       (is (= :disk-error (get-in result [:error :reason])))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :verified]))))))
+
+;; ---------------------------------------------------------------------------
+;; fdef specs hold generatively (stest/check).
+;; Pinned: the pure, total half of this namespace. Excluded on principle,
+;; not by accident — the generator cannot conjure a protocol implementation,
+;; so anything behind an effect port fails before its :ret is even reached
+;; (check on calculate-rate dies in (time/now <generated-long>)):
+;; calculate-rate, update-stats-bytes, initial-stats, initial-download,
+;; progress (time port); start-download, run-coordinator, run-download,
+;; load-persisted-state, persist-download-state (ports, channels, workers).
+;; ---------------------------------------------------------------------------
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "every check-grade download fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.orchestration.download/capped-peer-addresses
+                      dev.cljtoc.orchestration.download/swarm-exhausted?
+                      dev.cljtoc.orchestration.download/can-retry?
+                      dev.cljtoc.orchestration.download/has-active-peers?
+                      dev.cljtoc.orchestration.download/on-connected
+                      dev.cljtoc.orchestration.download/on-disconnected
+                      dev.cljtoc.orchestration.download/on-message
+                      dev.cljtoc.orchestration.download/requeue-assignment
+                      dev.cljtoc.orchestration.download/initial-coordinator-state
+                      dev.cljtoc.orchestration.download/handle-no-peers
+                      dev.cljtoc.orchestration.download/retry-download
+                      dev.cljtoc.orchestration.download/transition-to-failed
+                      dev.cljtoc.orchestration.download/get-failed-piece
+                      dev.cljtoc.orchestration.download/requeue-piece
+                      dev.cljtoc.orchestration.download/handle-piece-verification-failure
+                      dev.cljtoc.orchestration.download/handle-peer-disconnect
+                      dev.cljtoc.orchestration.download/add-peer
+                      dev.cljtoc.orchestration.download/remove-peer]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))

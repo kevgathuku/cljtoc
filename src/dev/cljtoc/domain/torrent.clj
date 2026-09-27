@@ -137,10 +137,25 @@
   (or (:length info)
       (reduce + 0 (map :length (:files info)))))
 
-;; map?, not ::info: this defn sits above the data-spec block, and a spec
-;; must be defined before any fdef referencing it.
+(defn- totalable?
+  "True when total-size can answer honestly: a present :length must be a
+   nat-int, and present :files must be sequential entries each carrying a
+   nat-int :length. Absent keys mean zero, so {} is totalable."
+  [info]
+  (and (or (nil? (:length info)) (nat-int? (:length info)))
+       (let [files (:files info)]
+         (or (nil? files)
+             (and (sequential? files)
+                  (every? #(nat-int? (:length %)) files))))))
+
+;; Defined here, not in the data-spec block below: total-size's defn sits
+;; above it, and a spec must be defined before any fdef referencing it.
+;; map? alone lets {:length \"x\"} through while :ret promises nat-int? —
+;; stest/check passes that pairing only until the generator emits :length.
+(s/def ::totalable-info (s/and map? totalable?))
+
 (s/fdef total-size
-  :args (s/cat :info map?)
+  :args (s/cat :info ::totalable-info)
   :ret nat-int?)
 
 (s/def ::info map?)

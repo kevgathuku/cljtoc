@@ -173,7 +173,9 @@
           (= b (byte 0x69)) (decode-integer bs pos)
           (= b (byte 0x6c)) (decode-list bs pos)
           (= b (byte 0x64)) (decode-dict bs pos)
-          :else (bencode-error (str "unknown type byte: " (char b)) pos))))))
+          ;; Unsigned render: b is signed, so (char b) throws on negative
+          ;; bytes instead of reporting them.
+          :else (bencode-error (str "unknown type byte: 0x" (format "%02X" (bit-and b 0xFF))) pos))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Post-processing: convert byte-array strings to Clojure strings
