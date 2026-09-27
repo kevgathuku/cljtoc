@@ -129,13 +129,11 @@
                       files)
               (= total (reduce +' 0 (vals sizes)))
               (or (empty? files)
-                  (let [ordered (sort-by :start files)
-                        ends (map (fn [entry] (+ (:start entry) (:length entry)))
-                                  ordered)]
+                  (let [ends (map (fn [entry] (+ (:start entry) (:length entry))) files)]
                     ;; vec on both sides: butlast answers nil where map
                     ;; answers (), and sequential = tells them apart.
-                    (and (= 0 (:start (first ordered)))
-                         (= (vec (map :start (rest ordered)))
+                    (and (= 0 (:start (first files)))
+                         (= (vec (map :start (rest files)))
                             (vec (butlast ends)))
                          (= total (last ends)))))))))
 
