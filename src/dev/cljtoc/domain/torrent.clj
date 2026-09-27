@@ -238,6 +238,21 @@
        (not= "." component)
        (not (re-find #"[/\\]" component))))
 
+(defn- prefix-collision?
+  "True when one declared path properly contains another: no declaration
+   order repairs that layout, since the parent path cannot be both the file
+   one entry claims and the directory the other needs. Sorted order puts a
+   prefix immediately before everything it prefixes — anything between
+   would itself extend it and sort between — so checking adjacent pairs
+   suffices, O(n log n) rather than O(n²) per piece."
+  [paths]
+  (let [sorted (sort paths)]
+    (boolean (some (fn [[parent child]]
+                     (and (< (count parent) (count child))
+                          (= (vec parent)
+                             (subvec (vec child) 0 (count parent)))))
+                   (map vector sorted (rest sorted))))))
+
 (defn- file-layout
   "Relative output layout of an info dict: [{:path [name ...] :length n}].
    Single-file info yields its :length under [:name]; multi-file info
@@ -265,8 +280,10 @@
    prefers :length while file-layout prefers :files, and the two
    representations silently cover different bytes. So is a non-integer
    length: spans crash comparing against it while sizes hand the string
-   downstream to explode later, far from the lie. Returns the error map,
-   or nil when the layout is usable.
+   downstream to explode later, far from the lie. So is a nested pair: a
+   path inside another cannot be both the file one entry claims and the
+   directory the other needs, in any declaration order. Returns the error
+   map, or nil when the layout is usable.
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
@@ -295,6 +312,9 @@
 
       (not= (count layout) (count (distinct (map :path layout))))
       (bencode/torrent-error "info declares the same output path twice" {})
+
+      (prefix-collision? (map :path layout))
+      (bencode/torrent-error "info declares an output path inside another" {})
 
       :else
       nil)))

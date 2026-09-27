@@ -361,6 +361,27 @@
     (is (= :invalid-info (:error result)))
     (is (not (.exists (io/file output-dir "t"))))))
 
+(deftest initialize-output-layout-rejects-prefix-collision-test
+  ;; t/a cannot be both a file and t/a/b's directory. Pre-fix this created
+  ;; the file, then failed opening the child through it as :write-error;
+  ;; refuse the layout as :invalid-info with nothing created instead.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-prefix-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}
+        result (<!! (disk/initialize-output-layout port info output-dir))]
+    (is (= :invalid-info (:error result)))
+    (is (not (.exists (io/file output-dir "t"))))))
+
+(deftest resolve-contained-rejects-the-empty-path-test
+  ;; Unreachable through the guarded derivations (every layout path carries
+  ;; the root), but the primitive itself must refuse: [] resolves to the
+  ;; output dir, which is not contained under itself.
+  (let [output-dir (temp-dir "output-empty-path-")
+        result (#'disk-impl/resolve-contained output-dir [])]
+    (is (= :unsafe-path (:error result)))
+    (is (empty? (seq (.listFiles (io/file output-dir)))))))
+
 (deftest filesystem-root-is-detected-by-shape-not-spelling-test
   ;; The root policy must not depend on how a platform spells a root.
   ;; Comparing against File/separator matches the Unix root only: a Windows

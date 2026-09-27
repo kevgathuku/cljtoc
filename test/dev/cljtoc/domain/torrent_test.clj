@@ -454,6 +454,21 @@
       (is (:error sizes-result))
       (is (:error spans-result)))))
 
+(deftest prefix-colliding-paths-are-rejected-test
+  ;; ["t" "a"] cannot be both the file one entry claims and the directory
+  ;; another needs for ["t" "a" "b"]. No declaration order repairs it: one
+  ;; direction fails creating the child through the file, the other fails
+  ;; opening the parent as a file — so refuse upfront, in the shared guard.
+  (let [info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}]
+    (testing "both derivations refuse the nested layout"
+      (is (:error (torrent/output-file-sizes info)))
+      (is (:error (torrent/piece-file-spans info 0 4)))))
+  (testing "an empty entry path collides with its siblings the same way"
+    (let [info {:name "t" :piece-length 4
+                :files [{:path [] :length 4} {:path ["x"] :length 4}]}]
+      (is (:error (torrent/output-file-sizes info))))))
+
 (deftest non-integer-lengths-are-rejected-test
   ;; Lengths the derivations cannot honestly process: a string :length
   ;; crashes piece-file-spans in (>= piece-start total) instead of erroring,
