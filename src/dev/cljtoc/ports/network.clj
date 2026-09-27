@@ -5,10 +5,10 @@
    needed by the download orchestration layer. Implementations can be
    swapped for testing (test doubles) or different network backends.
 
-   Every method returns its result directly, by return value. The port is
-   the effect boundary; whether a caller overlaps calls, and on which
-   pool, is the coordination layer's decision above this seam, not
-   something the contract encodes."
+   Every method returns its result directly, by return value, and every
+   method blocks until it has one. Nothing here runs work on a pool, so a
+   caller that wants two calls in flight has to put them on threads of its
+   own -- that choice belongs above this seam, not inside it."
   (:require [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker]))
 

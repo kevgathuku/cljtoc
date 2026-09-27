@@ -6,9 +6,10 @@
    writing piece data, and persisting download state.
 
    Every method returns its {:ok ...} / {:error reason :message msg}
-   envelope directly, by return value. The port is the effect boundary;
-   how a caller wants to overlap calls is the coordination layer's
-   decision, above this seam, not something the contract encodes."
+   envelope directly, by return value, and every method blocks until it
+   has one. Nothing here runs work on a pool, so a caller that wants two
+   calls in flight has to put them on threads of its own -- that choice
+   belongs above this seam, not inside it."
   (:require [dev.cljtoc.domain.bencode :as bencode]
             [clojure.walk :as walk]
             [clojure.java.io :as io]

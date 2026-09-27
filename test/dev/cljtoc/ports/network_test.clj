@@ -3,26 +3,23 @@
    Seam: INetworkPort / ITrackerPort hand back their envelope directly, so
    no caller has to know about core.async to learn a result.
 
-   Every method is driven without touching the network: connect-peer is
-   handed a blank address (refused before any socket work), the read and
-   write methods are handed byte-array streams, and announce is handed a
-   torrent that declares no tracker."
+   The five INetworkPort methods are all driven without touching the
+   network: connect-peer gets a blank address, which is refused before any
+   socket work, and the read and write methods get byte-array streams.
+   announce is exercised on the mock only -- the real one always reaches
+   for a tracker, because collect-tracker-urls appends well-known public
+   fallbacks, so there is no offline input that stops it short."
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.core.async.impl.protocols :as chan]
+            [dev.cljtoc.protocol.peer :as peer]
+            [dev.cljtoc.test-utils :refer [an-envelope? channel?]]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.test-doubles.network :as mock-network])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream
             InputStream OutputStream]))
 
-(defn- channel?
-  "True when x is something a blocking take could read from. A port method
-   that returns one of these has wrapped a plain function in a channel, so
-   the caller has to know about core.async to learn the result."
-  [x]
-  (satisfies? chan/ReadPort x))
-
-(def ^:private handshake-bytes (byte-array 68))
+(def ^:private valid-handshake-bytes
+  (:ok (peer/build-handshake (byte-array 20) (byte-array 20))))
 
 (def ^:private keep-alive-prefix (byte-array [0 0 0 0]))
 
@@ -34,13 +31,10 @@
    connect-peer gets a blank address, which is refused before any socket
    work, and the read and write methods get byte-array streams."
   {:connect-peer #(network/connect-peer % "")
-   :send-message #(network/send-message % {:id "p" :out (ByteArrayOutputStream.)} handshake-bytes)
+   :send-message #(network/send-message % {:id "p" :out (ByteArrayOutputStream.)} valid-handshake-bytes)
    :receive-message #(network/receive-message % (peer-in keep-alive-prefix))
-   :receive-handshake #(network/receive-handshake % (peer-in handshake-bytes))
+   :receive-handshake #(network/receive-handshake % (peer-in valid-handshake-bytes))
    :close-peer #(network/close-peer % {:id "p" :socket nil})})
-
-(defn- an-envelope? [result]
-  (and (map? result) (or (contains? result :ok) (contains? result :error))))
 
 (deftest network-port-returns-envelopes-not-channels-test
   (testing "every INetworkPort method hands back its result directly, not a channel"
@@ -100,6 +94,17 @@
       (is (= :disconnected
              (:error (network/receive-message net (peer-in (byte-array 2)))))))))
 
+(deftest a-valid-handshake-comes-back-parsed-test
+  (testing "the port's success return is what this exercises. 68 zero bytes
+            parse to :unsupported-protocol, and an envelope check would have
+            passed on that error branch without ever reaching the success
+            path this issue changed."
+    (let [result (network/receive-handshake
+                  (network-impl/create)
+                  (peer-in valid-handshake-bytes))]
+      (is (some? (:ok result)) (pr-str result))
+      (is (instance? dev.cljtoc.protocol.peer.PeerHandshake (:ok result))))))
+
 (deftest a-failing-stream-is-mapped-to-its-reason-test
   (testing "each catch clause still fires, now that it wraps a return instead of a put"
     (let [net (network-impl/create)]
@@ -107,7 +112,7 @@
              (:error (network/send-message
                       net
                       {:id "p" :out (failing-output-stream (java.io.IOException. "boom"))}
-                      handshake-bytes))))
+                      valid-handshake-bytes))))
       (is (= :receive-failed
              (:error (network/receive-handshake
                       net

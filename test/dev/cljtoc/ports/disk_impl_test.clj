@@ -5,12 +5,12 @@
    Also pins the port contract itself: every method returns its envelope
    directly, so no caller needs to know about core.async."
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.core.async.impl.protocols :as chan]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
+            [dev.cljtoc.test-utils :refer [an-envelope? channel?]]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
@@ -34,13 +34,6 @@
 (defn- make-port [state-dir]
   (disk-impl/create {:state-dir state-dir
                      :piece-cache-dir (temp-dir "piece-cache-")}))
-
-(defn- channel?
-  "True when x is something a blocking take could read from. A port method
-   that returns one of these has wrapped a plain function in a channel, so
-   the caller has to know about core.async to learn the result."
-  [x]
-  (satisfies? chan/ReadPort x))
 
 (deftest disk-port-returns-envelopes-not-channels-test
   (testing "every IDiskPort method hands back its envelope, not a channel,
@@ -66,7 +59,7 @@
         (let [result (call port)]
           (is (not (channel? result))
               (str port-name " " method " returned a channel, not an envelope"))
-          (is (and (map? result) (or (contains? result :ok) (contains? result :error)))
+          (is (an-envelope? result)
               (str port-name " " method " returned neither :ok nor :error: "
                    (pr-str result))))))))
 
