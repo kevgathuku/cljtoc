@@ -605,6 +605,85 @@
      (and (nil? single) (nil? multi) (nil? spans)))))
 
 ;; ---------------------------------------------------------------------------
+;; Compiled output layout (issue #31): derived once per download, so the
+;; per-piece path no longer walks the declared file list.
+;; ---------------------------------------------------------------------------
+
+(deftest compile-output-layout-test
+  (testing "single-file info compiles to one entry starting at zero"
+    (is (= {:ok {:files [{:path ["test.txt"] :length 8 :start 0}]
+                   :sizes {["test.txt"] 8}
+                   :total 8
+                   :piece-length 4}}
+           (torrent/compile-output-layout {:name "test.txt" :piece-length 4 :length 8}))))
+  (testing "multi-file entries carry cumulative byte starts"
+    (is (= {:ok {:files [{:path ["t" "a"] :length 4 :start 0}
+                               {:path ["t" "b"] :length 6 :start 4}]
+                   :sizes {["t" "a"] 4 ["t" "b"] 6}
+                   :total 10
+                   :piece-length 6}}
+           (torrent/compile-output-layout {:name "t" :piece-length 6
+                                           :files [{:path ["a"] :length 4}
+                                                   {:path ["b"] :length 6}]}))))
+  (testing "sizes agree with output-file-sizes for the same info"
+    (let [info {:name "t" :piece-length 6
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
+      (is (= (:ok (torrent/output-file-sizes info))
+             (:sizes (:ok (torrent/compile-output-layout info)))))))
+  (testing "an unusable layout is an error, not a layout"
+    (is (:error (torrent/compile-output-layout {:piece-length 4 :length 8})))
+    (is (:error (torrent/compile-output-layout {:name ".." :piece-length 4 :length 8})))
+    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4 :length 8
+                                                :files [{:path ["a"] :length 8}]})))
+    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
+                                                :files [{:path ["a"] :length 4}
+                                                        {:path ["a"] :length 4}]})))))
+
+(deftest layout-spans-test
+  (testing "single-file piece maps to one span at the piece offset"
+    (let [layout (:ok (torrent/compile-output-layout {:name "test.txt" :piece-length 4 :length 8}))]
+      (is (= {:ok [{:path ["test.txt"] :file-offset 0 :data-offset 0 :length 4}]}
+             (torrent/layout-spans layout 0 4)))
+      (is (= {:ok [{:path ["test.txt"] :file-offset 4 :data-offset 0 :length 4}]}
+             (torrent/layout-spans layout 1 4)))))
+  (testing "a piece spanning a file boundary splits into two spans"
+    (let [layout (:ok (torrent/compile-output-layout {:name "t" :piece-length 6
+                                                      :files [{:path ["a"] :length 4}
+                                                              {:path ["b"] :length 6}]}))]
+      (is (= {:ok [{:path ["t" "a"] :file-offset 0 :data-offset 0 :length 4}
+                   {:path ["t" "b"] :file-offset 0 :data-offset 4 :length 2}]}
+             (torrent/layout-spans layout 0 6)))
+      (is (= {:ok [{:path ["t" "b"] :file-offset 2 :data-offset 0 :length 4}]}
+             (torrent/layout-spans layout 1 4)))))
+  (testing "out-of-range piece index is an error"
+    (let [layout (:ok (torrent/compile-output-layout {:name "test.txt" :piece-length 4 :length 8}))]
+      (is (:error (torrent/layout-spans layout 2 4)))))
+  (testing "unusable geometry is an error"
+    (let [layout (:ok (torrent/compile-output-layout {:name "t" :piece-length 4 :length 8}))]
+      (is (re-find #"must be valid" (:message (torrent/layout-spans layout -1 4))))
+      (is (re-find #"must be valid" (:message (torrent/layout-spans layout 0 0))))))
+  (testing "a layout without a positive piece length is an error"
+    (let [layout (assoc (:ok (torrent/compile-output-layout {:name "t" :piece-length 4 :length 8}))
+                        :piece-length nil)]
+      (is (re-find #"positive :piece-length" (:message (torrent/layout-spans layout 0 4)))))))
+
+(defspec layout-spans-agrees-with-piece-file-spans-spec 100
+  (prop/for-all
+   [piece-length (gen/choose 1 16)
+    file-lengths (gen/vector (gen/choose 1 20) 1 5)]
+   (let [info (generated-info piece-length file-lengths)
+         total (reduce + 0 file-lengths)
+         layout (:ok (torrent/compile-output-layout info))
+         piece-count (int (Math/ceil (/ total (double piece-length))))]
+     (and (some? layout)
+          (every? true?
+                  (for [piece-index (range piece-count)
+                        :let [start (* piece-index piece-length)
+                              len (min piece-length (- total start))]]
+                    (= (torrent/piece-file-spans info piece-index len)
+                       (torrent/layout-spans layout piece-index len))))))))
+
+;; ---------------------------------------------------------------------------
 ;; fdef specs hold generatively (stest/check).
 ;; Every public fn in this namespace is pure and total over generated
 ;; inputs, so the whole set is pinned here. A failure names its sym and
@@ -622,6 +701,8 @@
                       dev.cljtoc.domain.torrent/parse-info-dict
                       dev.cljtoc.domain.torrent/total-size
                       dev.cljtoc.domain.torrent/output-file-sizes
+                      dev.cljtoc.domain.torrent/compile-output-layout
+                      dev.cljtoc.domain.torrent/layout-spans
                       dev.cljtoc.domain.torrent/piece-file-spans
                       dev.cljtoc.domain.torrent/validate-required-fields
                       dev.cljtoc.domain.torrent/validate-field-types
