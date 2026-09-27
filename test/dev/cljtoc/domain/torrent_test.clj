@@ -659,7 +659,16 @@
       (let [info {:name "t" :piece-length 4 :files [{:path bad-path :length 4}]}]
         (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-path)))
         (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-path)))
-        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-path)))))))
+        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-path))))))
+  (testing "pathless entries are errors, not silent root writes"
+    ;; A missing or empty :path collapses to [name] in file-layout, so a
+    ;; single degenerate entry compiles into a write to the torrent root
+    ;; instead of failing (PR #36 r4115203706).
+    (doseq [bad-entry [{:length 4} {:path nil :length 4} {:path [] :length 4} {:path "" :length 4}]]
+      (let [info {:name "t" :piece-length 4 :files [bad-entry]}]
+        (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-entry)))
+        (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-entry)))
+        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-entry)))))))
 
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"

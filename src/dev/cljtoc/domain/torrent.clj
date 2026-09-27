@@ -283,28 +283,32 @@
    length: spans crash comparing against it while sizes hand the string
    downstream to explode later, far from the lie. So is a nested pair: a
    path inside another cannot be both the file one entry claims and the
-   directory the other needs, in any declaration order. Returns the error
+   directory the other needs, in any declaration order. So is a pathless
+   entry: a missing or empty :path collapses to [name] and silently writes
+   the torrent root instead of failing. Returns the error
    map, or nil when the layout is usable.
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
   ;; Checked before the layout is derived below: map/mapcat seq :files
   ;; and every entry :path, so a non-collection there throws instead of
-  ;; answering. info is torrent-controlled, and the namespace contract
-  ;; is errors as data. Strings stay permissible here: they seq without
-  ;; throwing and the component guard below refuses them as hostile.
+  ;; answering, and a missing or empty :path collapses to [name] and
+  ;; silently writes the torrent root. info is torrent-controlled, and
+  ;; the namespace contract is errors as data. Non-empty strings stay
+  ;; permissible here: they seq without throwing and the component guard
+  ;; below refuses them as hostile.
   (cond
     (and (some? (:files info)) (not (sequential? (:files info))))
     (bencode/torrent-error "info :files must be a collection of file entries" {})
 
     (and (sequential? (:files info))
          (some (fn [entry]
-                 (let [entry-path (:path entry)]
-                   (and (some? entry-path)
-                        (not (string? entry-path))
-                        (not (sequential? entry-path)))))
+                 (or (not (map? entry))
+                     (let [entry-path (:path entry)]
+                       (not (or (and (string? entry-path) (seq entry-path))
+                                (and (sequential? entry-path) (seq entry-path)))))))
                (:files info)))
-    (bencode/torrent-error "info file entries must carry sequential paths" {})
+    (bencode/torrent-error "info file entries must be maps with a non-empty path" {})
 
     :else
     (let [components (cons (:name info) (mapcat :path (:files info)))
