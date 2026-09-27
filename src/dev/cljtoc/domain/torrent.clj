@@ -26,6 +26,12 @@
       (let [[start end] (:ok span-result)]
         {:ok (Arrays/copyOfRange torrent-bytes (int start) (int end))}))))
 
+(s/fdef extract-info-dict-bytes
+  :args (s/cat :torrent-bytes bytes?)
+  :ret map?
+  :fn #(or (bytes? (-> % :ret :ok))
+           (keyword? (-> % :ret :error))))
+
 (defn compute-info-hash
   "Computes the 20-byte SHA-1 info hash from torrent bytes.
   The hash is computed over the original bencoded info dict bytes,
@@ -35,6 +41,13 @@
     (if (:error info-result)
       info-result
       {:ok (bencode/sha1-hash ^bytes (:ok info-result))})))
+
+(s/fdef compute-info-hash
+  :args (s/cat :torrent-bytes bytes?)
+  :ret map?
+  :fn #(or (and (bytes? (-> % :ret :ok))
+                (= 20 (alength ^bytes (-> % :ret :ok))))
+           (keyword? (-> % :ret :error))))
 
 ;; ---------------------------------------------------------------------------
 ;; Announce URL extraction
@@ -69,6 +82,11 @@
       []
       (vec (for [i (range 0 len 20)]
              (Arrays/copyOfRange piece-data (int i) (int (min (+ i 20) len))))))))
+
+(s/fdef parse-pieces
+  :args (s/cat :piece-data bytes?)
+  :ret vector?
+  :fn #(every? bytes? (:ret %)))
 
 ;; ---------------------------------------------------------------------------
 ;; Info dict parsing
@@ -268,6 +286,10 @@
         (conj! errors (bencode/torrent-error "missing required field: info.pieces" {}))))
     (persistent! errors)))
 
+(s/fdef validate-required-fields
+  :args (s/cat :torrent map?)
+  :ret vector?)
+
 (defn validate-field-types
   "Checks that torrent fields have correct types: piece-length and length
   must be integers. Returns a vector of error maps."
@@ -285,6 +307,10 @@
                        {:field "length" :actual (type (:length info))}))))
     (persistent! errors)))
 
+(s/fdef validate-field-types
+  :args (s/cat :torrent map?)
+  :ret vector?)
+
 (defn validate-pieces-length
   "Checks that every piece hash is exactly 20 bytes. Returns a vector of error maps."
   [torrent]
@@ -299,6 +325,10 @@
                  {:piece-index idx :actual-length (alength piece)})))
             pieces)))))
 
+(s/fdef validate-pieces-length
+  :args (s/cat :torrent map?)
+  :ret vector?)
+
 (defn validate-piece-length
   "Checks that piece-length is a positive integer. Returns a vector of error maps."
   [torrent]
@@ -308,6 +338,10 @@
       [(bencode/torrent-error
         (str "piece-length must be a positive integer, got: " pl)
         {:field "piece-length" :value pl})])))
+
+(s/fdef validate-piece-length
+  :args (s/cat :torrent map?)
+  :ret vector?)
 
 (defn validate-torrent
   "Runs all validation checks on a parsed torrent map. Returns {:ok true}
@@ -320,6 +354,12 @@
     (if (empty? errors)
       {:ok true}
       {:error errors})))
+
+(s/fdef validate-torrent
+  :args (s/cat :torrent map?)
+  :ret map?
+  :fn #(or (true? (-> % :ret :ok))
+           (vector? (-> % :ret :error))))
 
 ;; ---------------------------------------------------------------------------
 ;; Main torrent parser
@@ -369,52 +409,8 @@
                           {:ok parsed}
                           validation)))))))))))))
 
-;; ============================================================================
-;; Function Specs
-;; ============================================================================
-
-(s/fdef extract-info-dict-bytes
-  :args (s/cat :torrent-bytes bytes?)
-  :ret  map?
-  :fn   #(or (bytes? (-> % :ret :ok))
-             (keyword? (-> % :ret :error))))
-
-(s/fdef compute-info-hash
-  :args (s/cat :torrent-bytes bytes?)
-  :ret  map?
-  :fn   #(or (and (bytes? (-> % :ret :ok))
-                  (= 20 (alength ^bytes (-> % :ret :ok))))
-             (keyword? (-> % :ret :error))))
-
-(s/fdef parse-pieces
-  :args (s/cat :piece-data bytes?)
-  :ret  vector?
-  :fn   #(every? bytes? (:ret %)))
-
-(s/fdef validate-required-fields
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-field-types
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-pieces-length
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-piece-length
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-torrent
-  :args (s/cat :torrent map?)
-  :ret  map?
-  :fn   #(or (true? (-> % :ret :ok))
-             (vector? (-> % :ret :error))))
-
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)
-  :ret  map?
-  :fn   #(or (map? (-> % :ret :ok))
-             (keyword? (-> % :ret :error))))
+  :ret map?
+  :fn #(or (map? (-> % :ret :ok))
+           (keyword? (-> % :ret :error))))

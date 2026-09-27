@@ -81,11 +81,17 @@
 ;; written by one seam loads through the other.
 ;; ---------------------------------------------------------------------------
 
+(s/def ::hex-string (s/and string? #(even? (count %)) #(re-matches #"[0-9a-f]*" %)))
+
 (defn hex-string->bytes
   "Parse a lowercase hex string back into a byte array."
   [hex-string]
   (byte-array (map #(unchecked-byte (Integer/parseInt (apply str %) 16))
                    (partition 2 hex-string))))
+
+(s/fdef hex-string->bytes
+  :args (s/cat :hex-string ::hex-string)
+  :ret bytes?)
 
 (defn encode-state
   "Convert a download to EDN-safe data: records become plain maps and
@@ -102,6 +108,10 @@
        :else node))
    download))
 
+(s/fdef encode-state
+  :args (s/cat :download map?)
+  :ret map?)
+
 (defn decode-state
   "Restore tagged {:cljtoc/bytes hex} maps produced by encode-state back
    into byte arrays. Applied on every load path so a resumed download
@@ -116,6 +126,10 @@
        node))
    data))
 
+(s/fdef decode-state
+  :args (s/cat :data any?)
+  :ret any?)
+
 (defn id-from-path
   "Generate the canonical human-readable download ID from a torrent file path."
   [torrent-path]
@@ -124,20 +138,6 @@
     (if (and ext (not (empty? ext)))
       (subs file-name 0 (- (count file-name) (inc (count ext))))
       file-name)))
-
-(s/def ::hex-string (s/and string? #(even? (count %)) #(re-matches #"[0-9a-f]*" %)))
-
-(s/fdef hex-string->bytes
-  :args (s/cat :hex-string ::hex-string)
-  :ret bytes?)
-
-(s/fdef encode-state
-  :args (s/cat :download map?)
-  :ret map?)
-
-(s/fdef decode-state
-  :args (s/cat :data any?)
-  :ret any?)
 
 (s/fdef id-from-path
   :args (s/cat :torrent-path string?)
