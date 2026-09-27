@@ -934,6 +934,15 @@
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
 
+(deftest run-coordinator-closed-channel-fails-no-peers-test
+  (testing "a closed event channel fails the download instead of parking"
+    (let [disk (mock-disk/create)
+          result (scripted-run [] (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (= "All peers disconnected" (get-in result [:error :message]))))))
+
 ;; Issue #11: the first refused dial must not fail the download while
 ;; other dials are still in flight; failure waits until every dial has
 ;; resolved with zero connections.
