@@ -146,8 +146,10 @@ carries real bytes into handshake and verification
 
 `info` is torrent-controlled, so the layout compile MUST treat every
 declared path as hostile (refusing `..`/empty/separator-bearing
-components with `{:error :invalid-info}`), and both output methods MUST
-treat the filesystem as hostile:
+components with an `{:error :invalid-torrent}` envelope from
+`domain.torrent/compile-output-layout`), and both output methods MUST
+treat the filesystem as hostile. A layout that never compiled is refused
+by the port itself as `{:error :invalid-info}`.
 
 - Resolve symlinks and require the canonical file path to stay under the
   canonical `output-dir` — return `{:error :unsafe-path}` before opening.
