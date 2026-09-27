@@ -625,11 +625,18 @@
            (torrent/compile-output-layout {:name "t" :piece-length 6
                                            :files [{:path ["a"] :length 4}
                                                    {:path ["b"] :length 6}]}))))
-  (testing "sizes agree with output-file-sizes for the same info"
-    (let [info {:name "t" :piece-length 6
-                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
-      (is (= (:ok (torrent/output-file-sizes info))
-             (:sizes (:ok (torrent/compile-output-layout info)))))))
+  (testing "zero-length files ride in sizes but never in span search"
+    ;; Empties are created by layout init, yet overlap no piece bytes,
+    ;; so the per-piece walk visits exactly the overlapped files.
+    (is (= {:ok {:files [{:path ["t" "a"] :length 4 :start 0}
+                         {:path ["t" "b"] :length 4 :start 4}]
+                 :sizes {["t" "a"] 4 ["t" "empty"] 0 ["t" "b"] 4}
+                 :total 8
+                 :piece-length 4}}
+           (torrent/compile-output-layout {:name "t" :piece-length 4
+                                           :files [{:path ["a"] :length 4}
+                                                   {:path ["empty"] :length 0}
+                                                   {:path ["b"] :length 4}]}))))
   (testing "an unusable layout is an error, not a layout"
     (is (:error (torrent/compile-output-layout {:piece-length 4 :length 8})))
     (is (:error (torrent/compile-output-layout {:name ".." :piece-length 4 :length 8})))
@@ -685,7 +692,7 @@
 (defspec layout-spans-agrees-with-piece-file-spans-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)
-    file-lengths (gen/vector (gen/choose 1 20) 1 5)]
+    file-lengths (gen/vector (gen/choose 0 20) 1 5)]
    (let [info (generated-info piece-length file-lengths)
          total (reduce + 0 file-lengths)
          layout (:ok (torrent/compile-output-layout info))

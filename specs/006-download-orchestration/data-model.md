@@ -98,15 +98,23 @@ Disk effect abstraction.
   (read-torrent-file [this path] "Parse .torrent file")
   (read-piece [this piece-index] "Read cached piece data")
   (write-piece [this piece-index bytes] "Write verified piece to the piece cache")
-  (write-output-piece [this info output-dir piece-index bytes]
+  (write-output-piece [this layout output-dir piece-index bytes]
     "Write one verified piece into the torrent file layout under output-dir")
-  (initialize-output-layout [this info output-dir]
+  (initialize-output-layout [this layout output-dir]
     "Create every declared output path at its declared length, including zero-length files")
   (ensure-directory [this path] "Create directory if missing")
   (save-state [this download] "Persist download state")
   (load-state [this id] "Load persisted download state")
   (delete-state [this id] "Delete persisted download state"))
 ```
+
+`layout` is the compiled output layout for the download
+(`domain.torrent/compile-output-layout`: entries with cumulative byte
+`:start`s, the `:sizes` map, content `:total`, `:piece-length`),
+derived once per download by `run-download` — which fails `:disk-error`
+on a compile failure before dialing — and threaded through to every
+port call, so the per-piece path pays O(log files) span lookup instead
+of re-deriving the layout per piece.
 
 #### Result semantics
 
@@ -136,11 +144,11 @@ carries real bytes into handshake and verification
 
 #### Output-path containment
 
-`info` is torrent-controlled, so both output methods MUST treat every
-declared path as hostile:
+`info` is torrent-controlled, so the layout compile MUST treat every
+declared path as hostile (refusing `..`/empty/separator-bearing
+components with `{:error :invalid-info}`), and both output methods MUST
+treat the filesystem as hostile:
 
-- Reject any path component that is `..`, empty, or separator-bearing —
-  return `{:error :invalid-info}` before building a path.
 - Resolve symlinks and require the canonical file path to stay under the
   canonical `output-dir` — return `{:error :unsafe-path}` before opening.
   Lexical component checks alone do not stop a pre-existing symlink inside
@@ -157,8 +165,9 @@ declared path as hostile:
 
 `initialize-output-layout` runs once at download start, *before* the
 completion check, so a torrent with no pieces still materializes its
-declared files. `run-download` treats its failure as a `:disk-error` that
-fails the download rather than reporting completion.
+declared files. `run-download` compiles the layout before reaching the
+port and treats either a compile or an init failure as a `:disk-error`
+that fails the download rather than reporting completion.
 
 ### ITimePort
 

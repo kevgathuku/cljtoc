@@ -329,8 +329,12 @@
   "Derive the output layout of an info dict once per download: every
    declared entry with its cumulative byte :start, the sizes map
    output-file-sizes returns, the content :total, and the :piece-length
-   passed through for span math. A layout that could not be written as
-   declared (see layout-error) is an error.
+   passed through for span math. :files holds only positive-length
+   entries — a zero-length file overlaps no piece, so excluding it keeps
+   the per-piece walk to exactly the overlapped files — while :sizes
+   still lists every declared path so layout init creates the empties.
+   A layout that could not be written as declared (see layout-error)
+   is an error.
    Returns {:ok layout} or {:error ...}."
   [info]
   (if-let [error (layout-error info)]
@@ -345,9 +349,11 @@
                       (let [{file-path :path file-length :length} (first remaining)]
                         (recur (rest remaining)
                                (+ file-start file-length)
-                               (conj! acc {:path file-path
-                                           :length file-length
-                                           :start file-start})))))
+                               (if (pos? file-length)
+                                 (conj! acc {:path file-path
+                                             :length file-length
+                                             :start file-start})
+                                 acc)))))
             total (reduce + 0 (map :length entries))]
         {:ok {:files files
               :sizes (into {} (map (fn [{file-path :path file-length :length}]
@@ -362,11 +368,13 @@
   :args (s/cat :info ::info)
   :ret map?
   ;; The single derivation output-file-sizes and piece-file-spans share:
-  ;; sizes cover every file entry, and their values sum to the total.
+  ;; every searched entry is a declared size, and the sizes sum to the total.
   :fn #(let [ret (:ret %)]
          (or (:error ret)
              (let [layout (:ok ret)]
-               (and (= (count (:files layout)) (count (:sizes layout)))
+               (and (every? (fn [{file-path :path file-length :length}]
+                              (= file-length (get (:sizes layout) file-path)))
+                            (:files layout))
                     (= (:total layout) (reduce + 0 (vals (:sizes layout)))))))))
 
 (defn- first-overlap-index
@@ -375,13 +383,13 @@
    the compiled :starts, O(log files) instead of the O(files) linear
    walk piece-file-spans used to pay on every piece."
   [files piece-start]
-  (loop [lo 0 hi (count files)]
-    (if (= lo hi)
-      (max 0 (dec lo))
-      (let [mid (quot (+ lo hi) 2)]
-        (if (<= (:start (nth files mid)) piece-start)
-          (recur (inc mid) hi)
-          (recur lo mid))))))
+  (loop [low-idx 0 high-idx (count files)]
+    (if (= low-idx high-idx)
+      (max 0 (dec low-idx))
+      (let [mid-idx (quot (+ low-idx high-idx) 2)]
+        (if (<= (:start (nth files mid-idx)) piece-start)
+          (recur (inc mid-idx) high-idx)
+          (recur low-idx mid-idx))))))
 
 (defn layout-spans
   "Map one piece to file-layout spans from a compiled output layout
@@ -405,9 +413,10 @@
       ;; this refactor removes right back on the per-piece path. A
       ;; hand-built layout that passes the guards but carries malformed
       ;; entries fails closed in the catch below, never a throw.
+      ;; ponytail: trusts compiled entry shapes for speed; the catch is
+      ;; the backstop, and direct callers with garbage get an error envelope.
       (not (and (map? layout)
                 (vector? (:files layout))
-                (seq (:files layout))
                 (nat-int? (:total layout))))
       (bencode/torrent-error "layout must be a compiled output layout" {})
 
@@ -416,12 +425,22 @@
       ;; the contract is errors as data — never a throw.
       (try
         (let [total (:total layout)
-              piece-start (* piece-index nominal)]
-          (if (>= piece-start total)
+              piece-start (* piece-index nominal)
+              files (:files layout)]
+          (cond
+            ;; No searchable entries yet bytes declared: not a layout
+            ;; compile-output-layout can produce. (Empty with zero total
+            ;; falls through to the past-total error, matching
+            ;; piece-file-spans on an all-empty layout.)
+            (and (empty? files) (pos? total))
+            (bencode/torrent-error "layout must be a compiled output layout" {})
+
+            (>= piece-start total)
             (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
                                    {:piece-index piece-index})
-            (let [piece-end (min total (+ piece-start piece-byte-count))
-                  files (:files layout)]
+
+            :else
+            (let [piece-end (min total (+ piece-start piece-byte-count))]
               {:ok (loop [idx (first-overlap-index files piece-start)
                           acc (transient [])]
                      (if (>= idx (count files))
