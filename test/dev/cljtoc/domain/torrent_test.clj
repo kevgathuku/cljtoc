@@ -713,6 +713,49 @@
                     (= (torrent/piece-file-spans info piece-index len)
                        (torrent/layout-spans layout piece-index len))))))))
 
+(defn- expected-spans
+  "Independent span oracle: overlaps derived straight from declared
+   lengths with cumulative starts, sharing no code with
+   compile-output-layout/layout-spans (reductions + for, versus binary
+   search over compiled starts). Paths mirror generated-info's scheme."
+  [single? file-lengths piece-length piece-index piece-byte-count]
+  (let [total (reduce + 0 file-lengths)
+        piece-start (* piece-index piece-length)]
+    (if (>= piece-start total)
+      {:error :past-total}
+      (let [piece-end (min total (+ piece-start piece-byte-count))]
+        {:ok (vec (for [file-index (range (count file-lengths))
+                        :let [file-start (reduce + 0 (take file-index file-lengths))
+                              file-length (nth file-lengths file-index)
+                              file-end (+ file-start file-length)
+                              overlap-start (max piece-start file-start)
+                              overlap-end (min piece-end file-end)]
+                        :when (< overlap-start overlap-end)]
+                    {:path (if single? ["f"] ["t" (str "f" file-index)])
+                     :file-offset (- overlap-start file-start)
+                     :data-offset (- overlap-start piece-start)
+                     :length (- overlap-end overlap-start)}))}))))
+
+(defspec layout-spans-match-independent-oracle-spec 100
+  (prop/for-all
+   [piece-length (gen/choose 1 16)
+    file-lengths (gen/vector (gen/choose 0 20) 1 5)]
+   (let [single? (= 1 (count file-lengths))
+         info (generated-info piece-length file-lengths)
+         total (reduce + 0 file-lengths)
+         layout (:ok (torrent/compile-output-layout info))
+         piece-count (if (zero? total)
+                       0
+                       (int (Math/ceil (/ total (double piece-length)))))]
+     (and (some? layout)
+          (every? true?
+                  (for [piece-index (range piece-count)
+                        :let [start (* piece-index piece-length)
+                              len (min piece-length (- total start))]]
+                    (= (:ok (expected-spans single? file-lengths piece-length
+                                            piece-index len))
+                       (:ok (torrent/layout-spans layout piece-index len)))))))))
+
 ;; ---------------------------------------------------------------------------
 ;; fdef specs hold generatively (stest/check).
 ;; Every public fn in this namespace is pure and total over generated
