@@ -644,40 +644,35 @@
                                                 :files [{:path ["a"] :length 8}]})))
     (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
                                                 :files [{:path ["a"] :length 4}
-                                                        {:path ["a"] :length 4}]}))))
-  (testing "non-collection :files is an error envelope, never a throw"
-    ;; Every entry point into the shared layout guard must answer, since
-    ;; info is torrent-controlled and callers handle errors as data.
-    (let [info {:name "t" :piece-length 4 :files 42}]
-      (is (:error (torrent/compile-output-layout info)))
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
-  (testing "non-sequential entry paths are error envelopes, never a throw"
-    ;; mapcat seqs each :path below, so a number (or keyword) there throws
-    ;; before any guard can answer (PR #36 r4115143509).
-    (doseq [bad-path [42 :kw true]]
-      (let [info {:name "t" :piece-length 4 :files [{:path bad-path :length 4}]}]
-        (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-path)))
-        (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-path)))
-        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-path))))))
-  (testing "pathless entries are errors, not silent root writes"
-    ;; A missing or empty :path collapses to [name] in file-layout, so a
-    ;; single degenerate entry compiles into a write to the torrent root
-    ;; instead of failing (PR #36 r4115203706).
-    (doseq [bad-entry [{:length 4} {:path nil :length 4} {:path [] :length 4} {:path "" :length 4}]]
-      (let [info {:name "t" :piece-length 4 :files [bad-entry]}]
-        (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-entry)))
-        (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-entry)))
-        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-entry))))))
-  (testing "a missing or non-positive piece length is an error in all derivations"
-    ;; The shared guard never validated :piece-length, so compile handed
-    ;; out layouts the port contract cannot accept while sizes reported
-    ;; success (PR #36 r4115308867).
-    (doseq [bad-pl [nil 0 -4 4.5]]
-      (let [info {:name "t" :piece-length bad-pl :length 8}]
-        (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-pl)))
-        (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-pl)))
-        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-pl)))))))
+                                                        {:path ["a"] :length 4}]})))))
+
+(def info-mutations
+  "One-field breaks of a valid info dict; every one must fail all three
+   layout derivations as data, never a throw. Each targets a different
+   clause of the shared guard: collection and entry shapes, hostile
+   paths, lengths, names, and piece lengths (PR #36 rounds 4-5)."
+  [(fn [info] (assoc-in info [:files 0 :path] 42))
+   (fn [info] (assoc-in info [:files 0 :path] []))
+   (fn [info] (assoc-in info [:files 0 :path] nil))
+   (fn [info] (assoc-in info [:files 0 :path] ""))
+   (fn [info] (assoc info :files [42]))
+   (fn [info] (assoc info :files 42))
+   (fn [info] (assoc-in info [:files 0 :length] "x"))
+   (fn [info] (dissoc info :name))
+   (fn [info] (assoc info :piece-length 0))
+   (fn [info] (assoc info :piece-length nil))
+   (fn [info] (assoc info :piece-length "x"))
+   (fn [info] (update info :files conj (first (:files info))))])
+
+(defspec malformed-info-mutations-are-errors-spec 100
+  (prop/for-all [piece-length (gen/choose 1 16)
+                 file-lengths (gen/vector (gen/choose 1 20) 1 5)
+                 mutation-idx (gen/choose 0 (dec (count info-mutations)))]
+                (let [info ((nth info-mutations mutation-idx)
+                            (test-utils/layout-test-info piece-length file-lengths))]
+                  (and (:error (torrent/compile-output-layout info))
+                       (:error (torrent/output-file-sizes info))
+                       (:error (torrent/piece-file-spans info 0 4))))))
 
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"
@@ -713,7 +708,9 @@
     (is (:error (torrent/layout-spans {:files [] :total 0 :piece-length 4} 0 4)))
     (is (:error (torrent/layout-spans {:files [{}] :total 4 :piece-length 4} 0 4)))
     (is (:error (torrent/layout-spans {:files [42] :total 4 :piece-length 4} 0 4)))
-    (is (:error (torrent/layout-spans {:files [{:path ["a"]}] :total 4 :piece-length 4} 0 4))))
+    (is (:error (torrent/layout-spans {:files [{:path ["a"]}] :total 4 :piece-length 4} 0 4)))
+    (is (:error (torrent/layout-spans {:files 42 :total 0 :piece-length 4} 0 4)))
+    (is (:error (torrent/layout-spans {:files [] :total -1 :piece-length 4} 0 4))))
   (testing "empty spans for a piece before total are an error, not :ok"
     ;; A zero-length entry overlaps nothing, so a layout of only such
     ;; entries yields no spans while the piece starts before :total —
