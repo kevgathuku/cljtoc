@@ -46,3 +46,10 @@
                                     {:clojure.spec.test.check/opts {:num-tests 50}})]
       (is (nil? (-> check-result first :failure))
           "Function should pass all generative tests"))))
+
+(deftest valid-output-layout-fdef-check-test
+  (testing "valid-output-layout? conforms to fdef spec over any input"
+    (let [check-result (stest/check 'dev.cljtoc.ports.disk/valid-output-layout?
+                                    {:clojure.spec.test.check/opts {:num-tests 50}})]
+      (is (nil? (-> check-result first :failure))
+          "Function should pass all generative tests"))))

@@ -81,6 +81,21 @@
      
      Side effects: deletes file"))
 
+(defn valid-output-layout?
+  "True when layout has the compiled shape the disk port methods take:
+   a map carrying a sizes map and a files vector. Both DiskPortImpl and
+   MockDiskPort refuse anything else with :invalid-info before recording
+   or opening anything, so orchestration tests cannot miss an invalid
+   layout at either entry point."
+  [layout]
+  (and (map? layout)
+       (map? (:sizes layout))
+       (vector? (:files layout))))
+
+(s/fdef valid-output-layout?
+  :args (s/cat :layout any?)
+  :ret boolean?)
+
 ;; ---------------------------------------------------------------------------
 ;; Shared state encoding — the single persistence seam.
 ;; Both the async DiskPortImpl and the sync cli-state adapter persist

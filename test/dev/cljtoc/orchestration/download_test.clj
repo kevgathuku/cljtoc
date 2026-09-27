@@ -6,6 +6,7 @@
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.domain.torrent :as torrent]
+            [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.test-utils :as test-utils]
@@ -877,6 +878,14 @@
       (is (= :completed (:state result)))
       (is (= [(:ok (torrent/compile-output-layout info))]
              (mapv :layout @(:layouts-initialized disk)))))))
+
+(deftest mock-init-refuses-uncompiled-layout-test
+  (testing "the mock mirrors the real port: raw info or nil is :invalid-info, unrecorded"
+    (let [disk (mock-disk/create)]
+      (doseq [bad [nil {:pieces [] :piece-length 4 :length 8 :name "raw.bin"}]]
+        (let [result (async/<!! (disk/initialize-output-layout disk bad "/out"))]
+          (is (= :invalid-info (:error result)) (str "init " (pr-str bad)))))
+      (is (empty? @(:layouts-initialized disk))))))
 
 ;; Scripted events-ch through the extracted loop (issue #2.4): feed
 ;; run-coordinator a pre-loaded channel and assert piece-state

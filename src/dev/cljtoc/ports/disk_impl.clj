@@ -259,7 +259,7 @@
                             :message (str "Cannot map piece " piece-index ": "
                                           (:message spans-result))})
 
-              (not (map? sizes))
+              (not (disk/valid-output-layout? layout))
               (async/>! ch {:error :invalid-info
                             :message "Invalid output layout: missing file sizes"})
 
@@ -282,7 +282,7 @@
               declined
               (async/>! ch declined)
 
-              (not (map? sizes))
+              (not (disk/valid-output-layout? layout))
               (async/>! ch {:error :invalid-info
                             :message "Invalid output layout: missing file sizes"})
 

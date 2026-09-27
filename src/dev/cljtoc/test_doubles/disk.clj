@@ -47,9 +47,7 @@
         ;; Mirrors the real port's refusal: raw info (or any uncompiled
         ;; shape) is an :invalid-info, never silently accepted.
         (if-let [err (or (:output-write-error config) (:write-error config)
-                         (when-not (and (map? layout)
-                                        (map? (:sizes layout))
-                                        (vector? (:files layout)))
+                         (when-not (disk/valid-output-layout? layout)
                            {:error :invalid-info
                             :message "Invalid output layout: missing file sizes"}))]
           (async/>! ch err)
@@ -62,7 +60,10 @@
   (initialize-output-layout [_ layout output-dir]
     (let [ch (async/chan 1)]
       (async/go
-        (if-let [err (:output-init-error config)]
+        (if-let [err (or (:output-init-error config)
+                         (when-not (disk/valid-output-layout? layout)
+                           {:error :invalid-info
+                            :message "Invalid output layout: missing file sizes"}))]
           (async/>! ch err)
           (do
             (swap! layouts-initialized conj {:layout layout :output-dir output-dir})

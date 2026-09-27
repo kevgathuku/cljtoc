@@ -953,7 +953,8 @@
             :pending-dials #{...}}
    events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
    env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
-          :output-layout (torrent/compile-output-layout info), compiled once per download
+          :output-layout (:ok (torrent/compile-output-layout info)) — the compiled
+                         layout value (not the result envelope), derived once per download
           :ports {:network-port ... :disk-port ... :time-port ...}
           :conn-stats (atom {:connected n :failed n})
           :total-attempted n}"
