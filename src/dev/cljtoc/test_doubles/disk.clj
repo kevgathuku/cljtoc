@@ -11,6 +11,7 @@
             torrent-data
             piece-cache
             output-pieces
+            output-layouts
             layouts-initialized
             state-files
             directories-created]
@@ -40,12 +41,20 @@
             (async/>! ch {:ok :written}))))
       ch))
 
-  (write-output-piece [_ _layout _output-dir piece-index bytes]
+  (write-output-piece [_ layout _output-dir piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
-        (if-let [err (or (:output-write-error config) (:write-error config))]
+        ;; Mirrors the real port's refusal: raw info (or any uncompiled
+        ;; shape) is an :invalid-info, never silently accepted.
+        (if-let [err (or (:output-write-error config) (:write-error config)
+                         (when-not (and (map? layout)
+                                        (map? (:sizes layout))
+                                        (vector? (:files layout)))
+                           {:error :invalid-info
+                            :message "Invalid output layout: missing file sizes"}))]
           (async/>! ch err)
           (do
+            (swap! output-layouts conj layout)
             (swap! output-pieces assoc piece-index bytes)
             (async/>! ch {:ok :written}))))
       ch))
@@ -102,6 +111,7 @@
                    (atom {})
                    (atom {})
                    (atom [])
+                   (atom [])
                    (atom {})
                    (atom #{}))))
 
@@ -129,6 +139,13 @@
 (s/fdef get-output-piece
   :args (s/cat :mock-disk any? :piece-index nat-int?)
   :ret any?)
+
+(defn get-output-layouts [mock-disk]
+  @(:output-layouts mock-disk))
+
+(s/fdef get-output-layouts
+  :args (s/cat :mock-disk any?)
+  :ret vector?)
 
 (defn get-state [mock-disk id]
   (get @(:state-files mock-disk) id))

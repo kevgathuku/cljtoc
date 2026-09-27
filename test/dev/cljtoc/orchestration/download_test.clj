@@ -1193,11 +1193,17 @@
                    :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
                   {:type :peer-message :address "peer-a"
                    :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
-          result (scripted-run events (loop-download) disk)]
+          download (loop-download)
+          expected-layout (:ok (torrent/compile-output-layout (:info (:torrent download))))
+          result (scripted-run events download disk)]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
-      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1)))))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1))))
+      ;; The coordinator must hand the compiled layout (not raw info) to
+      ;; every piece write: reverting the call argument keeps the bytes
+      ;; assertions green but fails this one (PR #36 r4115143527).
+      (is (= [expected-layout expected-layout] (mock-disk/get-output-layouts disk))))))
 
 (deftest run-coordinator-output-write-error-fails-download-test
   (testing "a failed output-layout write fails the download like a cache write"
