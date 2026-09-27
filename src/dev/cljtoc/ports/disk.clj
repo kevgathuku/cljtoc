@@ -26,9 +26,11 @@
      Side effects: reads from piece cache")
 
   (write-piece [this piece-index bytes]
-    "Write verified piece data to disk in the correct file layout.
-     Returns a channel that will deliver :ok or {:error reason}.
-     
+    "Write verified piece data to the piece cache under piece-index.
+     This is not the final file layout — that is write-output-piece's job,
+     which maps the bytes into output-dir via domain.torrent/piece-file-spans.
+     Returns a channel that will deliver {:ok :written} or {:error reason}.
+
      Side effects: writes to filesystem")
 
   (write-output-piece [this info output-dir piece-index bytes]

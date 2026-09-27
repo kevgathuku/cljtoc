@@ -258,6 +258,46 @@
       (is (= :unsafe-path (:error result)))
       (is (not (.exists (io/file outside-dir "sub")))))))
 
+(deftest initialize-output-layout-rejects-filesystem-alias-test
+  ;; Two DISTINCT declared paths resolving to one file: t/a is a pre-existing
+  ;; in-tree symlink to t/b, so each path passes containment on its own —
+  ;; but truncating and writing both lands two independent torrent ranges in
+  ;; the same target, the aliasing twin of the duplicate-path collapse.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-alias-")
+        target (io/file output-dir "t" "b")]
+    (.mkdirs (.getParentFile target))
+    (spit target "SENTINEL")
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath (io/file output-dir "t" "a"))
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    (let [info {:name "t" :piece-length 8
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          result (<!! (disk/initialize-output-layout port info output-dir))]
+      (is (:error result))
+      (is (= "SENTINEL" (slurp target))))))
+
+(deftest write-output-piece-rejects-filesystem-alias-test
+  ;; Same alias through the piece writer: without init, both spans of one
+  ;; piece resolve contained and the second range overwrites the first in
+  ;; the shared target.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-alias-write-")
+        target (io/file output-dir "t" "b")]
+    (.mkdirs (.getParentFile target))
+    (spit target "SENTINEL")
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath (io/file output-dir "t" "a"))
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    (let [info {:name "t" :piece-length 8
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          result (<!! (disk/write-output-piece port info output-dir 0
+                                               (byte-array [1 2 3 4 5 6 7 8])))]
+      (is (:error result))
+      (is (= "SENTINEL" (slurp target))))))
+
 (deftest filesystem-root-is-detected-by-shape-not-spelling-test
   ;; The root policy must not depend on how a platform spells a root.
   ;; Comparing against File/separator matches the Unix root only: a Windows

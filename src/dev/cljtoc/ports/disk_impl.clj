@@ -76,22 +76,55 @@
           {:ok out-file}
           (escape))))))
 
-(defn- write-layout!
-  "Blocking write of one piece into the torrent file layout. Only files this
-   piece overlaps are opened; each is resolved (symlink-contained), truncated
-   to its declared length, then the spans land. Returns {:ok :written} or
-   {:error ...}."
-  [output-dir sizes spans bytes]
-  (let [touched (group-by :path spans)
-        resolved (into {} (map (fn [declared-path]
+(defn- resolve-layout
+  "Resolve every declared path under output-dir for writing. Each path is
+   containment-checked (see resolve-contained), then the resolved targets
+   are rejected when two declared paths share one canonical file. Per-path
+   containment cannot see that alias — an in-tree symlink passes for both
+   entries alone, after which their independent ranges overwrite one target.
+   Nothing is truncated or written by this step.
+   ponytail: compared as canonical strings, so two spellings one filesystem
+   folds onto one file (A/a on a case-insensitive FS) still slip through —
+   realpath keeps the spelling as given. Catching those needs inode identity
+   on existing files, which is a bigger creation-then-verify dance.
+   Returns {:ok {declared-path File}} or {:error ...}."
+  [output-dir declared-paths]
+  (let [resolved (into {} (map (fn [declared-path]
                                  [declared-path (resolve-contained output-dir declared-path)])
-                               (keys touched)))
+                               declared-paths))
         escaped (first (filter #(-> % val :error) resolved))]
     (if escaped
       (val escaped)
+      (let [files (into {} (map (fn [[declared-path envelope]]
+                                  [declared-path (:ok envelope)])
+                                resolved))
+            collision (->> files
+                           (map (fn [[declared-path out-file]]
+                                  [declared-path (.getCanonicalPath ^File out-file)]))
+                           (group-by second)
+                           (filter #(> (count (second %)) 1))
+                           first)]
+        (if collision
+          (let [[target entries] collision]
+            {:error :unsafe-path
+             :message (str "Output paths " (pr-str (mapv first entries))
+                           " resolve to the same file " target
+                           " under " output-dir)})
+          {:ok files})))))
+
+(defn- write-layout!
+  "Blocking write of one piece into the torrent file layout. Only files this
+   piece overlaps are opened; each is resolved (symlink-contained, alias-free
+   across the piece's paths), truncated to its declared length, then the
+   spans land. Returns {:ok :written} or {:error ...}."
+  [output-dir sizes spans bytes]
+  (let [touched (group-by :path spans)
+        layout-result (resolve-layout output-dir (keys touched))]
+    (if (:error layout-result)
+      layout-result
       (try
         (doseq [[declared-path file-spans] touched]
-          (let [out-file (:ok (get resolved declared-path))]
+          (let [out-file (get (:ok layout-result) declared-path)]
             (with-open [raf (RandomAccessFile. out-file "rw")]
               (.setLength raf (get sizes declared-path))
               (doseq [{file-offset :file-offset
@@ -108,17 +141,16 @@
 
 (defn- init-layout!
   "Blocking creation of every declared output path at its declared length,
-   including zero-length files. Returns {:ok :initialized} or {:error ...}."
+   including zero-length files. Every path is resolved (symlink-contained,
+   alias-free across the layout) before the first file is truncated.
+   Returns {:ok :initialized} or {:error ...}."
   [output-dir sizes]
-  (let [resolved (into {} (map (fn [[declared-path _]]
-                                 [declared-path (resolve-contained output-dir declared-path)])
-                               sizes))
-        escaped (first (filter #(-> % val :error) resolved))]
-    (if escaped
-      (val escaped)
+  (let [layout-result (resolve-layout output-dir (keys sizes))]
+    (if (:error layout-result)
+      layout-result
       (try
         (doseq [[declared-path declared-length] sizes]
-          (with-open [raf (RandomAccessFile. (:ok (get resolved declared-path)) "rw")]
+          (with-open [raf (RandomAccessFile. (get (:ok layout-result) declared-path) "rw")]
             (.setLength raf declared-length)))
         {:ok :initialized}
         (catch Exception error
