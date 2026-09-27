@@ -34,17 +34,25 @@ Both gates must pass before proceeding; fix what they report, don't work around 
 
 Re-run each gate after its fixes until clean.
 
-## 6. Self-review with /code-review
+## 6. Coverage gate
+
+Before self-review, prove the new code is exercised — green tests alone hide untested branches. Run `lein cloverage` scoped to the touched namespaces, then intersect uncovered/partial lines with the PR's added lines (`git diff main...HEAD`):
+
+- Fully-uncovered added lines are missing tests: add them, then re-run the gates in step 5.
+- Partial branch lines need judgement, not reflex fixes: fail-closed branches on hostile input (guards, validators, error envelopes) get **mutation-based generative specs** — generate a valid input, break one field per mutation, assert rejection — plus one positive invariant (valid input always accepted). Prefer these over envelope-only example doseqs: examples cover shapes, mutations cover branch combinations. But keep the mutation vocabulary as shape-diverse as the examples it replaces (an empty string exercises a different subform than an empty vector); verify by re-running coverage.
+- Acceptable residues, documented in the PR body rather than fixed: loop/recur macro internals (both semantic branches covered), fdef `:fn` false-branches (fail-only-on-bug by design), single short-circuit subforms where every semantic direction has a test.
+
+## 7. Self-review with /code-review
 
 Run the `code-review` skill against the branch (fixed point `main`) before opening the PR: Standards (repo conventions) and Spec (the issue as written). Address what it finds — fix, then re-run the gates in step 5 — and note deliberate deviations for the PR body and the palace entry.
 
 As part of the review, judge whether the touched code could benefit from clojure.spec tests (fdef arg/ret contracts, generative checks on pure seams); where it would, add them, then re-run the gates in step 5.
 
-## 7. Update docs and specs
+## 8. Update docs and specs
 
 Before opening the PR, keep the docs consistent with the change: search `docs/`, `specs/`, `CONTEXT.md`, and `docs/adr/` for statements this PR invalidates (removed APIs, changed seams, renamed concepts, altered behavior). Update what the change actually breaks, in the same branch so docs and code land together. Scoped to broken assumptions only — never rewrite unrelated docs.
 
-## 8. Open the PR
+## 9. Open the PR
 
 Stage only intended files, commit with a message describing what changed and why, push with `-u origin`, then `gh pr create` with:
 
@@ -54,13 +62,13 @@ Stage only intended files, commit with a message describing what changed and why
 
 Return the PR URL.
 
-## 9. Request Copilot review
+## 10. Request Copilot review
 
 Once the PR is open, request a review from Copilot at Lite effort:
 
 - `gh pr edit <number> --add-reviewer @copilot` (Lite is the default effort level; pick Balanced in the PR UI under Reviewers only if the change is security-sensitive or cross-service).
 - Confirm the request landed: `gh pr view <number> --json reviewRequests -q '.reviewRequests[].login'`.
 
-## 10. File the decision
+## 11. File the decision
 
 Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
