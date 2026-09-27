@@ -7,8 +7,7 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
-            [clojure.spec.alpha :as s]
-            [clojure.core.async :as async])
+            [clojure.spec.alpha :as s])
   (:import [java.io File RandomAccessFile]
            [java.nio.file Files LinkOption]
            [java.nio.file.attribute BasicFileAttributes]
@@ -199,149 +198,121 @@
 
   disk/IDiskPort
   (read-torrent-file [_ path]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [file (io/file path)]
-            (if (.exists file)
-              (let [bytes (Files/readAllBytes (.toPath file))
-                    parse-result (torrent/parse-torrent bytes)]
-                (if (:error parse-result)
-                  (async/>! ch {:error :invalid-torrent :message (str "Failed to parse: " (get-in parse-result [:error :message]))})
-                  (async/>! ch {:ok (:ok parse-result)})))
-              (async/>! ch {:error :file-not-found :message (str "File not found: " path)})))
-          (catch Exception e
-            (async/>! ch {:error :read-error :message (.getMessage e)}))))
-      ch))
+    (try
+      (let [file (io/file path)]
+        (if (.exists file)
+          (let [bytes (Files/readAllBytes (.toPath file))
+                parse-result (torrent/parse-torrent bytes)]
+            (if (:error parse-result)
+              {:error :invalid-torrent :message (str "Failed to parse: " (get-in parse-result [:error :message]))}
+              {:ok (:ok parse-result)}))
+          {:error :file-not-found :message (str "File not found: " path)}))
+      (catch Exception e
+        {:error :read-error :message (.getMessage e)})))
 
   (read-piece [_ piece-index]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))]
-            (if (.exists piece-file)
-              (async/>! ch {:ok (Files/readAllBytes (.toPath piece-file))})
-              (async/>! ch {:ok nil})))
-          (catch Exception e
-            (async/>! ch {:error :read-error :message (.getMessage e)}))))
-      ch))
+    (try
+      (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))]
+        (if (.exists piece-file)
+          {:ok (Files/readAllBytes (.toPath piece-file))}
+          {:ok nil}))
+      (catch Exception e
+        {:error :read-error :message (.getMessage e)})))
 
   (write-piece [_ piece-index bytes]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
-                parent (.getParentFile piece-file)]
-            (when-not (.exists parent)
-              (.mkdirs parent))
-            (clojure.java.io/copy bytes piece-file)
-            (async/>! ch {:ok :written}))
-          (catch Exception e
-            (async/>! ch {:error :write-error :message (.getMessage e)}))))
-      ch))
+    (try
+      (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
+            parent (.getParentFile piece-file)]
+        (when-not (.exists parent)
+          (.mkdirs parent))
+        (clojure.java.io/copy bytes piece-file)
+        {:ok :written})
+      (catch Exception e
+        {:error :write-error :message (.getMessage e)})))
 
   (write-output-piece [_ layout output-dir piece-index bytes]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))
-                sizes (:sizes layout)
-                declined (declined-output-dir output-dir)]
-            ;; No sizes-error branch: a compiled layout carries the sizes
-            ;; the spans were derived from, so spans-result is the only
-            ;; derivation that can fail.
-            (cond
-              declined
-              (async/>! ch declined)
+    (try
+      (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))
+            sizes (:sizes layout)
+            declined (declined-output-dir output-dir)]
+        ;; No sizes-error branch: a compiled layout carries the sizes
+        ;; the spans were derived from, so spans-result is the only
+        ;; derivation that can fail.
+        (cond
+          declined
+          declined
 
-              (:error spans-result)
-              (async/>! ch {:error :invalid-info
-                            :message (str "Cannot map piece " piece-index ": "
-                                          (:message spans-result))})
+          (:error spans-result)
+          {:error :invalid-info
+           :message (str "Cannot map piece " piece-index ": "
+                         (:message spans-result))}
 
-              (not (disk/valid-output-layout? layout))
-              (async/>! ch disk/invalid-output-layout-error)
+          (not (disk/valid-output-layout? layout))
+          disk/invalid-output-layout-error
 
-              (not (every? #(contains? sizes (:path %)) (:ok spans-result)))
-              (async/>! ch disk/invalid-output-layout-error)
+          (not (every? #(contains? sizes (:path %)) (:ok spans-result)))
+          disk/invalid-output-layout-error
 
-              :else
-              (async/>! ch (write-layout! output-dir
-                                          sizes
-                                          (:ok spans-result)
-                                          bytes))))
-          (catch Exception error
-            (async/>! ch {:error :write-error :message (.getMessage error)}))))
-      ch))
+          :else
+          (write-layout! output-dir
+                         sizes
+                         (:ok spans-result)
+                         bytes)))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
 
   (initialize-output-layout [_ layout output-dir]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [sizes (:sizes layout)
-                declined (declined-output-dir output-dir)]
-            (cond
-              declined
-              (async/>! ch declined)
+    (try
+      (let [sizes (:sizes layout)
+            declined (declined-output-dir output-dir)]
+        (cond
+          declined
+          declined
 
-              (not (disk/consistent-output-layout? layout))
-              (async/>! ch disk/invalid-output-layout-error)
+          (not (disk/consistent-output-layout? layout))
+          disk/invalid-output-layout-error
 
-              :else
-              (async/>! ch (init-layout! output-dir sizes))))
-          (catch Exception error
-            (async/>! ch {:error :write-error :message (.getMessage error)}))))
-      ch))
+          :else
+          (init-layout! output-dir sizes)))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
 
   (ensure-directory [_ path]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [dir (io/file path)]
-            (when-not (.exists dir)
-              (.mkdirs dir))
-            (async/>! ch {:ok :created}))
-          (catch Exception e
-            (async/>! ch {:error :mkdir-error :message (.getMessage e)}))))
-      ch))
+    (try
+      (let [dir (io/file path)]
+        (when-not (.exists dir)
+          (.mkdirs dir))
+        {:ok :created})
+      (catch Exception e
+        {:error :mkdir-error :message (.getMessage e)})))
 
   (save-state [_ download]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [state-file (io/file state-dir (str (:id download) ".edn"))]
-            (when-not (.exists state-dir)
-              (.mkdirs state-dir))
-            (spit state-file (pr-str (disk/encode-state download)))
-            (async/>! ch {:ok :saved}))
-          (catch Exception e
-            (async/>! ch {:error :save-error :message (.getMessage e)}))))
-      ch))
+    (try
+      (let [state-file (io/file state-dir (str (:id download) ".edn"))]
+        (when-not (.exists state-dir)
+          (.mkdirs state-dir))
+        (spit state-file (pr-str (disk/encode-state download)))
+        {:ok :saved})
+      (catch Exception e
+        {:error :save-error :message (.getMessage e)})))
 
   (load-state [_ id]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [state-file (io/file state-dir (str id ".edn"))]
-            (if (.exists state-file)
-              (let [data (disk/decode-state (edn/read-string (slurp state-file)))]
-                (async/>! ch {:ok data}))
-              (async/>! ch {:ok nil})))
-          (catch Exception e
-            (async/>! ch {:error :load-error :message (.getMessage e)}))))
-      ch))
+    (try
+      (let [state-file (io/file state-dir (str id ".edn"))]
+        (if (.exists state-file)
+          {:ok (disk/decode-state (edn/read-string (slurp state-file)))}
+          {:ok nil}))
+      (catch Exception e
+        {:error :load-error :message (.getMessage e)})))
 
   (delete-state [_ id]
-    (let [ch (async/chan 1)]
-      (async/go
-        (try
-          (let [state-file (io/file state-dir (str id ".edn"))]
-            (when (.exists state-file)
-              (.delete state-file))
-            (async/>! ch {:ok :deleted}))
-          (catch Exception e
-            (async/>! ch {:error :delete-error :message (.getMessage e)}))))
-      ch)))
+    (try
+      (let [state-file (io/file state-dir (str id ".edn"))]
+        (when (.exists state-file)
+          (.delete state-file))
+        {:ok :deleted})
+      (catch Exception e
+        {:error :delete-error :message (.getMessage e)}))))
 
 (defn create
   "Create a DiskPortImpl instance.

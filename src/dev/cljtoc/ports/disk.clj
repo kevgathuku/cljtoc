@@ -3,7 +3,12 @@
   
    This protocol defines the contract for all disk I/O operations
    needed by the download orchestration layer: reading .torrent files,
-   writing piece data, and persisting download state."
+   writing piece data, and persisting download state.
+
+   Every method returns its {:ok ...} / {:error reason :message msg}
+   envelope directly, by return value. The port is the effect boundary;
+   how a caller wants to overlap calls is the coordination layer's
+   decision, above this seam, not something the contract encodes."
   (:require [dev.cljtoc.domain.bencode :as bencode]
             [clojure.walk :as walk]
             [clojure.java.io :as io]
@@ -14,13 +19,13 @@
 
   (read-torrent-file [this path]
     "Read and parse a .torrent file from disk.
-     Returns a channel that will deliver TorrentMetadata or error.
+     Returns {:ok torrent-metadata} or {:error reason :message msg}.
      
      Side effects: reads file from filesystem")
 
   (read-piece [this piece-index]
     "Read cached piece data from disk.
-     Returns a channel that will deliver bytes or nil if not cached.
+     Returns {:ok bytes} or {:ok nil} when not cached.
      
      Side effects: reads from piece cache")
 
@@ -28,7 +33,7 @@
     "Write verified piece data to the piece cache under piece-index.
      This is not the final file layout — that is write-output-piece's job,
      which maps the bytes into output-dir via the compiled output layout.
-     Returns a channel that will deliver {:ok :written} or {:error reason}.
+     Returns {:ok :written} or {:error reason :message msg}.
 
      Side effects: writes to filesystem")
 
@@ -39,8 +44,7 @@
      start so the per-piece path does no layout arithmetic of its own.
      Single-file layouts land at output-dir/<name>; multi-file layouts
      at output-dir/<name>/<path...>, splitting pieces that cross a file
-     boundary. Returns a channel that will deliver {:ok :written} or
-     {:error reason}.
+     boundary. Returns {:ok :written} or {:error reason :message msg}.
 
       Side effects: writes to filesystem")
 
@@ -51,32 +55,31 @@
      Runs once at download start so a torrent with no pieces still
      materializes its empty files, and so piece writes only touch files
      they overlap.
-     Returns a channel that will deliver {:ok :initialized} or {:error reason}.
+     Returns {:ok :initialized} or {:error reason :message msg}.
 
      Side effects: creates files and directories")
 
   (ensure-directory [this path]
     "Ensure a directory exists, creating it if necessary.
-     Returns a channel that will deliver :ok or {:error reason}.
+     Returns {:ok :created} or {:error reason :message msg}.
      
      Side effects: creates directories")
 
   (save-state [this download]
     "Persist download state to disk for pause/resume support.
-     Returns a channel that will deliver :ok or {:error reason}.
+     Returns {:ok :saved} or {:error reason :message msg}.
      
      Side effects: writes state file")
 
   (load-state [this id]
     "Load persisted download state from disk.
-     Returns a channel that will deliver {:ok download} or {:ok nil}
-     when no state exists for id.
+     Returns {:ok download}, or {:ok nil} when no state exists for id.
      
      Side effects: reads from filesystem")
 
   (delete-state [this id]
     "Delete persisted download state.
-     Returns a channel that will deliver :ok or {:error reason}.
+     Returns {:ok :deleted} or {:error reason :message msg}.
      
      Side effects: deletes file"))
 

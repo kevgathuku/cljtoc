@@ -1,9 +1,11 @@
 (ns dev.cljtoc.ports.disk-impl-test
   "Tests for DiskPortImpl state persistence.
    Seam: IDiskPort save-state / load-state through real temp dirs.
-   Byte arrays must round-trip EDN-safe (hex), loadable by either seam."
+   Byte arrays must round-trip EDN-safe (hex), loadable by either seam.
+   Also pins the port contract itself: every method returns its envelope
+   directly, so no caller needs to know about core.async."
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.core.async :refer [<!!]]
+            [clojure.core.async.impl.protocols :as chan]
             [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.test.check.clojure-test :refer [defspec]]
@@ -14,6 +16,7 @@
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.orchestration.download :as download]
+            [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.cli.state :as cli-state])
   (:import [java.io File]))
 
@@ -32,6 +35,41 @@
   (disk-impl/create {:state-dir state-dir
                      :piece-cache-dir (temp-dir "piece-cache-")}))
 
+(defn- channel?
+  "True when x is something a blocking take could read from. A port method
+   that returns one of these has wrapped a plain function in a channel, so
+   the caller has to know about core.async to learn the result."
+  [x]
+  (satisfies? chan/ReadPort x))
+
+(deftest disk-port-returns-envelopes-not-channels-test
+  (testing "every IDiskPort method hands back its envelope, not a channel,
+            on the real port and on the mock alike"
+    (let [torrent-dir (temp-dir "torrent-")
+          output-dir (temp-dir "output-contract-")
+          torrent-path (str torrent-dir "/contract.torrent")
+          layout (compile-layout {:name "t" :piece-length 4 :length 4})
+          piece-bytes (byte-array [0 1 2 3])
+          calls {:read-torrent-file #(disk/read-torrent-file % torrent-path)
+                 :read-piece #(disk/read-piece % 0)
+                 :write-piece #(disk/write-piece % 0 piece-bytes)
+                 :write-output-piece #(disk/write-output-piece % layout output-dir 0 piece-bytes)
+                 :initialize-output-layout #(disk/initialize-output-layout % layout output-dir)
+                 :ensure-directory #(disk/ensure-directory % output-dir)
+                 :save-state #(disk/save-state % {:id "contract"})
+                 :load-state #(disk/load-state % "contract")
+                 :delete-state #(disk/delete-state % "contract")}
+          ports {:real (make-port (temp-dir "disk-state-"))
+                 :mock (mock-disk/create {})}]
+      (doseq [[port-name port] ports
+              [method call] calls]
+        (let [result (call port)]
+          (is (not (channel? result))
+              (str port-name " " method " returned a channel, not an envelope"))
+          (is (and (map? result) (or (contains? result :ok) (contains? result :error)))
+              (str port-name " " method " returned neither :ok nor :error: "
+                   (pr-str result))))))))
+
 (deftest save-load-round-trip-with-bytes-test
   (testing "a download containing byte arrays round-trips through the disk port"
     (let [state-dir (temp-dir "disk-state-")
@@ -39,8 +77,8 @@
           download {:id "bytes-torrent"
                     :torrent {:info-hash (byte-array [0 1 15 16 127 -1])}
                     :state :paused}]
-      (is (= {:ok :saved} (<!! (disk/save-state port download))))
-      (let [result (<!! (disk/load-state port "bytes-torrent"))
+      (is (= {:ok :saved} (disk/save-state port download)))
+      (let [result (disk/load-state port "bytes-torrent")
             loaded-hash (get-in result [:ok :torrent :info-hash])]
         (is (contains? result :ok))
         (is (= "bytes-torrent" (get-in result [:ok :id])))
@@ -57,8 +95,8 @@
                     :torrent {:info-hash info-hash
                               :info {:pieces [piece-hash]}}
                     :state :paused}]
-      (<!! (disk/save-state port download))
-      (let [loaded (:ok (<!! (disk/load-state port "bytes-torrent")))
+      (disk/save-state port download)
+      (let [loaded (:ok (disk/load-state port "bytes-torrent"))
             loaded-hash (get-in loaded [:torrent :info-hash])
             loaded-piece (first (get-in loaded [:torrent :info :pieces]))]
         (is (bytes? loaded-hash))
@@ -73,7 +111,7 @@
           download {:id "edn-safe"
                     :torrent {:info-hash (byte-array [1 2 3])}
                     :state :paused}]
-      (<!! (disk/save-state port download))
+      (disk/save-state port download)
       (let [content (slurp (io/file state-dir "edn-safe.edn"))
             parsed (edn/read-string content)]
         (is (= "edn-safe" (:id parsed)))
@@ -84,16 +122,16 @@
     (let [state-dir (temp-dir "disk-state-")
           port (make-port state-dir)
           via-disk {:id "interop" :state :paused :note "from-disk"}]
-      (<!! (disk/save-state port via-disk))
+      (disk/save-state port via-disk)
       (is (= :paused (:state (cli-state/load-state "interop" state-dir))))
       (cli-state/save-state {:id "interop2" :state :downloading} state-dir)
-      (let [result (<!! (disk/load-state port "interop2"))]
+      (let [result (disk/load-state port "interop2")]
         (is (= :downloading (get-in result [:ok :state])))))))
 
 (deftest load-missing-returns-nil-ok-test
   (testing "loading an unknown id returns {:ok nil}"
     (let [port (make-port (temp-dir "disk-state-"))]
-      (is (= {:ok nil} (<!! (disk/load-state port "nope")))))))
+      (is (= {:ok nil} (disk/load-state port "nope"))))))
 
 (deftest pause-resume-cycle-through-disk-port-test
   (testing "pause persists and resume restores the same download id"
@@ -116,7 +154,7 @@
           piece-bytes [(byte-array [0 1 2 3]) (byte-array [4 5 6 7]) (byte-array [8 9])]]
       (doseq [[piece-index piece-data] (map-indexed vector piece-bytes)]
         (is (= {:ok :written}
-               (<!! (disk/write-output-piece port (compile-layout info) output-dir piece-index piece-data)))))
+               (disk/write-output-piece port (compile-layout info) output-dir piece-index piece-data))))
       (is (java.util.Arrays/equals (byte-array (range 10))
                                    (java.nio.file.Files/readAllBytes
                                     (.toPath (io/file output-dir "data.bin"))))))))
@@ -128,9 +166,9 @@
           info {:name "t" :piece-length 6
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
       (is (= {:ok :written}
-             (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3 4 5])))))
+             (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3 4 5]))))
       (is (= {:ok :written}
-             (<!! (disk/write-output-piece port (compile-layout info) output-dir 1 (byte-array [6 7 8 9])))))
+             (disk/write-output-piece port (compile-layout info) output-dir 1 (byte-array [6 7 8 9]))))
       (is (java.util.Arrays/equals (byte-array [0 1 2 3])
                                    (java.nio.file.Files/readAllBytes
                                     (.toPath (io/file output-dir "t" "a")))))
@@ -151,7 +189,7 @@
                                                             (byte-array [4 5 6 7])
                                                             (byte-array [8 9])])]
         (is (= {:ok :written}
-               (<!! (disk/write-output-piece port (compile-layout info) output-dir piece-index piece-data)))))
+               (disk/write-output-piece port (compile-layout info) output-dir piece-index piece-data))))
       (is (java.util.Arrays/equals (byte-array (range 10))
                                    (java.nio.file.Files/readAllBytes (.toPath stale)))))))
 
@@ -167,7 +205,7 @@
        (.toPath target)
        (into-array java.nio.file.attribute.FileAttribute []))
       (let [info {:name "link.bin" :piece-length 4 :length 4}
-            result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4])))]
+            result (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4]))]
         (is (:error result))
         (is (= "original" (slurp target)))))))
 
@@ -183,7 +221,7 @@
        (.toPath target)
        (into-array java.nio.file.attribute.FileAttribute []))
       (let [info {:name "link.bin" :piece-length 4 :length 4}
-            result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+            result (disk/initialize-output-layout port (compile-layout info) output-dir)]
         (is (= :unsafe-path (:error result)))
         (is (= "original" (slurp target)))))))
 
@@ -198,7 +236,7 @@
        (into-array java.nio.file.attribute.FileAttribute []))
       (let [info {:name "t" :piece-length 4
                   :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]}
-            result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+            result (disk/initialize-output-layout port (compile-layout info) output-dir)]
         (is (= :unsafe-path (:error result)))
         (is (not (.exists (io/file outside-dir "a"))))
         (is (not (.exists (io/file outside-dir "b"))))))))
@@ -207,7 +245,7 @@
   (testing "assembling a torrent into / is a mistake, not a download to attempt"
     (let [port (make-port (temp-dir "disk-state-"))
           info {:name "t" :piece-length 4 :files [{:path ["a"] :length 4}]}
-          result (<!! (disk/initialize-output-layout port (compile-layout info) File/separator))]
+          result (disk/initialize-output-layout port (compile-layout info) File/separator)]
       (is (= :unsafe-output-dir (:error result)))
       (is (re-find #"(?i)explicit output director" (:message result)))
       (is (not (.exists (io/file File/separator "t" "a")))))))
@@ -216,7 +254,7 @@
   (testing "the piece writer refuses / too, not just layout init"
     (let [port (make-port (temp-dir "disk-state-"))
           info {:name "t" :piece-length 4 :files [{:path ["a"] :length 4}]}
-          result (<!! (disk/write-output-piece port (compile-layout info) File/separator 0 (byte-array 4)))]
+          result (disk/write-output-piece port (compile-layout info) File/separator 0 (byte-array 4))]
       (is (= :unsafe-output-dir (:error result)))
       (is (not (.exists (io/file File/separator "t" "a")))))))
 
@@ -240,9 +278,9 @@
         output-dir (temp-dir "output-dup-")
         info {:name "t" :piece-length 4
               :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
-    (is (= :invalid-info (:error (<!! (disk/initialize-output-layout port (compile-layout info) output-dir)))))
-    (is (= :invalid-info (:error (<!! (disk/write-output-piece port (compile-layout info) output-dir 0
-                                                               (byte-array 4))))))
+    (is (= :invalid-info (:error (disk/initialize-output-layout port (compile-layout info) output-dir))))
+    (is (= :invalid-info (:error (disk/write-output-piece port (compile-layout info) output-dir 0
+                                                          (byte-array 4)))))
     (is (not (.exists (io/file output-dir "t"))))))
 
 (deftest initialize-output-layout-creates-no-parent-dir-through-a-symlink-test
@@ -260,7 +298,7 @@
      (into-array java.nio.file.attribute.FileAttribute []))
     (let [info {:name "t" :piece-length 4
                 :files [{:path ["sub" "a"] :length 4}]}
-          result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
       (is (= :unsafe-path (:error result)))
       (is (not (.exists (io/file outside-dir "sub")))))))
 
@@ -280,7 +318,7 @@
      (into-array java.nio.file.attribute.FileAttribute []))
     (let [info {:name "t" :piece-length 8
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
-          result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
@@ -299,8 +337,8 @@
      (into-array java.nio.file.attribute.FileAttribute []))
     (let [info {:name "t" :piece-length 8
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
-          result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0
-                                               (byte-array [1 2 3 4 5 6 7 8])))]
+          result (disk/write-output-piece port (compile-layout info) output-dir 0
+                                          (byte-array [1 2 3 4 5 6 7 8]))]
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
@@ -317,7 +355,7 @@
                                     (.toPath target))
     (let [info {:name "t" :piece-length 8
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
-          result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
@@ -331,8 +369,8 @@
                                     (.toPath target))
     (let [info {:name "t" :piece-length 8
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
-          result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0
-                                               (byte-array [1 2 3 4 5 6 7 8])))]
+          result (disk/write-output-piece port (compile-layout info) output-dir 0
+                                          (byte-array [1 2 3 4 5 6 7 8]))]
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
@@ -351,8 +389,8 @@
      (into-array java.nio.file.attribute.FileAttribute []))
     (let [info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
-          result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0
-                                               (byte-array [1 2 3 4])))]
+          result (disk/write-output-piece port (compile-layout info) output-dir 0
+                                          (byte-array [1 2 3 4]))]
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
@@ -363,7 +401,7 @@
   (let [port (make-port (temp-dir "disk-state-"))
         output-dir (temp-dir "output-no-length-")
         info {:name "t" :piece-length 4}
-        result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+        result (disk/initialize-output-layout port (compile-layout info) output-dir)]
     (is (= :invalid-info (:error result)))
     (is (not (.exists (io/file output-dir "t"))))))
 
@@ -375,7 +413,7 @@
         output-dir (temp-dir "output-prefix-")
         info {:name "t" :piece-length 4
               :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}
-        result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+        result (disk/initialize-output-layout port (compile-layout info) output-dir)]
     (is (= :invalid-info (:error result)))
     (is (not (.exists (io/file output-dir "t"))))))
 
@@ -405,10 +443,10 @@
       (is (false? (root? nil)))))
   (testing "the guard still declines the Unix root end to end"
     (let [port (make-port (temp-dir "disk-state-"))
-          result (<!! (disk/initialize-output-layout port
-                                                     {:name "t" :piece-length 4
-                                                      :files [{:path ["a"] :length 4}]}
-                                                     File/separator))]
+          result (disk/initialize-output-layout port
+                                                {:name "t" :piece-length 4
+                                                 :files [{:path ["a"] :length 4}]}
+                                                File/separator)]
       (is (= :unsafe-output-dir (:error result))))))
 
 (deftest initialize-output-layout-rejects-escaping-component-test
@@ -419,7 +457,7 @@
           output-dir (temp-dir "output-init-escape-")
           info {:name "a/b" :piece-length 4 :length 4}
           compiled (torrent/compile-output-layout info)
-          result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
       (is (:error compiled))
       (is (re-find #"escape" (:message compiled)))
       (is (= :invalid-info (:error result)))
@@ -430,7 +468,7 @@
           output-dir (temp-dir "output-init-nested-")
           info {:name "t" :piece-length 4
                 :files [{:path ["sub" "deep" "a"] :length 4}]}]
-      (is (= {:ok :initialized} (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))))
+      (is (= {:ok :initialized} (disk/initialize-output-layout port (compile-layout info) output-dir)))
       (is (.exists (io/file output-dir "t" "sub" "deep" "a"))))))
 
 (deftest write-output-piece-creates-zero-length-file-test
@@ -442,11 +480,11 @@
                         {:path ["empty"] :length 0}
                         {:path ["b"] :length 4}]}
           empty-file (io/file output-dir "t" "empty")]
-      (is (= {:ok :initialized} (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))))
+      (is (= {:ok :initialized} (disk/initialize-output-layout port (compile-layout info) output-dir)))
       (is (= {:ok :written}
-             (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3])))))
+             (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3]))))
       (is (= {:ok :written}
-             (<!! (disk/write-output-piece port (compile-layout info) output-dir 1 (byte-array [4 5 6 7])))))
+             (disk/write-output-piece port (compile-layout info) output-dir 1 (byte-array [4 5 6 7]))))
       (is (.exists empty-file))
       (is (zero? (.length empty-file)))
       (is (java.util.Arrays/equals (byte-array [0 1 2 3])
@@ -462,7 +500,7 @@
           output-dir (temp-dir "output-empty-only-")
           info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 0} {:path ["b"] :length 0}]}]
-      (is (= {:ok :initialized} (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))))
+      (is (= {:ok :initialized} (disk/initialize-output-layout port (compile-layout info) output-dir)))
       (is (.exists (io/file output-dir "t" "a")))
       (is (zero? (.length (io/file output-dir "t" "a"))))
       (is (.exists (io/file output-dir "t" "b"))))))
@@ -474,7 +512,7 @@
           info {:name "t" :piece-length 4
                 :files [{:path ["nested" "a"] :length 4}]}]
       (spit (io/file output-dir "t") "not a directory")
-      (let [result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+      (let [result (disk/initialize-output-layout port (compile-layout info) output-dir)]
         (is (= :write-error (:error result)))
         (is (string? (:message result)))))))
 
@@ -485,7 +523,7 @@
           info {:name "t" :piece-length 4
                 :files [{:path ["nested" "a"] :length 4}]}]
       (spit (io/file output-dir "t") "not a directory")
-      (let [result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4])))]
+      (let [result (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4]))]
         (is (= :write-error (:error result)))
         (is (= "not a directory" (slurp (io/file output-dir "t"))))))))
 
@@ -498,7 +536,7 @@
           info {:name "t" :piece-length 4
                 :files [{:path [".."] :length 4}]}
           compiled (torrent/compile-output-layout info)
-          result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4])))]
+          result (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4]))]
       (is (:error compiled))
       (is (re-find #"escape" (:message compiled)))
       (is (= :invalid-info (:error result))))))
@@ -511,7 +549,7 @@
           output-dir (temp-dir "output-init-no-name-")
           info {:piece-length 4 :length 4}
           compiled (torrent/compile-output-layout info)
-          result (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))]
+          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
       (is (:error compiled))
       (is (re-find #":name" (:message compiled)))
       (is (= :invalid-info (:error result))))))
@@ -521,7 +559,7 @@
     (let [port (make-port (temp-dir "disk-state-"))
           output-dir (temp-dir "output-bad-input-")
           info {:name "t" :piece-length 4 :length 4}
-          result (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 "not-bytes"))]
+          result (disk/write-output-piece port (compile-layout info) output-dir 0 "not-bytes")]
       (is (= :write-error (:error result)))
       (is (string? (:message result))))))
 
@@ -534,8 +572,8 @@
           output-dir (temp-dir "output-bad-files-")
           info {:name "t" :piece-length 4 :files 42}
           compiled (torrent/compile-output-layout info)
-          result (<!! (disk/initialize-output-layout port (compile-layout info)
-                                                     output-dir))]
+          result (disk/initialize-output-layout port (compile-layout info)
+                                                output-dir)]
       (is (:error compiled))
       (is (= :invalid-info (:error result)))
       (is (string? (:message result))))))
@@ -553,7 +591,7 @@
                        :files [{:path ["t" "a"] :length 4 :start 4}]
                        :total 8 :piece-length 4}]]
         (let [output-dir (temp-dir "output-inconsistent-")
-              result (<!! (disk/initialize-output-layout port layout output-dir))]
+              result (disk/initialize-output-layout port layout output-dir)]
           (is (= :invalid-info (:error result)) (str "init " (pr-str layout)))
           (is (not (.exists (io/file output-dir "t")))))))))
 
@@ -564,7 +602,7 @@
           layout {:sizes {}
                   :files [{:path ["t" "a"] :length 4 :start 0}]
                   :total 4 :piece-length 4}
-          result (<!! (disk/write-output-piece port layout output-dir 0 (byte-array [1 2 3 4])))]
+          result (disk/write-output-piece port layout output-dir 0 (byte-array [1 2 3 4]))]
       (is (= :invalid-info (:error result))))))
 
 (deftest write-output-piece-leaves-untouched-files-alone-test
@@ -574,10 +612,10 @@
           info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
           sentinel (io/file output-dir "t" "b")]
-      (<!! (disk/initialize-output-layout port (compile-layout info) output-dir))
+      (disk/initialize-output-layout port (compile-layout info) output-dir)
       (spit sentinel "sentinel")
       (is (= {:ok :written}
-             (<!! (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3])))))
+             (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3]))))
       (is (= "sentinel" (slurp sentinel)))
       (is (java.util.Arrays/equals (byte-array [0 1 2 3])
                                    (java.nio.file.Files/readAllBytes
@@ -624,9 +662,9 @@
   [port info output-dir source-bytes piece-length piece-index total]
   (let [start (* piece-index piece-length)
         len (min piece-length (- total start))]
-    (<!! (disk/write-output-piece
-          port (compile-layout info) output-dir piece-index
-          (java.util.Arrays/copyOfRange source-bytes (int start) (int (+ start len)))))))
+    (disk/write-output-piece
+     port (compile-layout info) output-dir piece-index
+     (java.util.Arrays/copyOfRange source-bytes (int start) (int (+ start len))))))
 
 (defn- prefill-with-junk!
   [output-dir layout]
@@ -665,7 +703,7 @@
          piece-count (int (Math/ceil (/ total (double piece-length))))]
      (when prefill? (prefill-with-junk! output-dir layout))
      (and (= {:ok :initialized}
-             (<!! (disk/initialize-output-layout port (compile-layout info) output-dir)))
+             (disk/initialize-output-layout port (compile-layout info) output-dir))
           (every? #(= {:ok :written} %)
                   (mapv #(write-piece-at port info output-dir source-bytes
                                          piece-length % total)

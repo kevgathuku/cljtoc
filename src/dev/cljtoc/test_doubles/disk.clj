@@ -1,11 +1,12 @@
 (ns dev.cljtoc.test-doubles.disk
   "Mock disk port for testing download orchestration.
-   
-   Provides predictable responses for testing without actual disk I/O."
+
+   Provides predictable responses for testing without actual disk I/O.
+   Mirrors DiskPortImpl's envelopes exactly, so a test that passes here
+   is testing the same contract the real port honours."
   (:require [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.domain.torrent :as torrent]
-            [clojure.spec.alpha :as s]
-            [clojure.core.async :as async]))
+            [clojure.spec.alpha :as s]))
 
 (defrecord MockDiskPort
            [config
@@ -19,104 +20,81 @@
 
   disk/IDiskPort
   (read-torrent-file [_ path]
-    (let [ch (async/chan 1)]
-      (async/go
-        (if-let [data (get @torrent-data path)]
-          (async/>! ch {:ok data})
-          (async/>! ch {:error :file-not-found :message (str "File not found: " path)})))
-      ch))
+    (if-let [data (get @torrent-data path)]
+      {:ok data}
+      {:error :file-not-found :message (str "File not found: " path)}))
 
   (read-piece [_ piece-index]
-    (let [ch (async/chan 1)]
-      (async/go
-        (async/>! ch (get @piece-cache piece-index)))
-      ch))
+    ;; Mirrors DiskPortImpl: a cache hit and a miss are both {:ok ...},
+    ;; the miss carrying nil. Returning the bare bytes (or nil) instead
+    ;; is a contract drift no caller can see, because read-piece has no
+    ;; caller yet to catch it.
+    {:ok (get @piece-cache piece-index)})
 
   (write-piece [_ piece-index bytes]
-    (let [ch (async/chan 1)]
-      (async/go
-        (if-let [err (:write-error config)]
-          (async/>! ch err)
-          (do
-            (swap! piece-cache assoc piece-index bytes)
-            (async/>! ch {:ok :written}))))
-      ch))
+    (if-let [err (:write-error config)]
+      err
+      (do
+        (swap! piece-cache assoc piece-index bytes)
+        {:ok :written})))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
-    (let [ch (async/chan 1)]
-      (async/go
-        ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
-        ;; the O(1) shape gate, then touched-path membership. The full
-        ;; invariant check (consistent-output-layout?) runs once at init on
-        ;; both ports, so tests drive exactly the refusal paths the real
-        ;; port produces — no stricter, no looser. The try/catch mirrors
-        ;; the real port too: a bad bytes argument (alength throws) comes
-        ;; back as {:error :write-error}, never an uncaught throw in go.
-        (try
-          (if-let [err (or (:output-write-error config) (:write-error config))]
-            (async/>! ch err)
-            (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
-              (if-let [err (cond
-                             (:error spans-result)
-                             {:error :invalid-info
-                              :message (str "Cannot map piece " piece-index ": "
-                                            (:message spans-result))}
+    ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
+    ;; the O(1) shape gate, then touched-path membership. The full
+    ;; invariant check (consistent-output-layout?) runs once at init on
+    ;; both ports, so tests drive exactly the refusal paths the real
+    ;; port produces — no stricter, no looser. The try/catch mirrors
+    ;; the real port too: a bad bytes argument (alength throws) comes
+    ;; back as {:error :write-error}, never an uncaught throw.
+    (try
+      (if-let [err (or (:output-write-error config) (:write-error config))]
+        err
+        (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
+          (if-let [err (cond
+                         (:error spans-result)
+                         {:error :invalid-info
+                          :message (str "Cannot map piece " piece-index ": "
+                                        (:message spans-result))}
 
-                             (not (disk/valid-output-layout? layout))
-                             disk/invalid-output-layout-error
+                         (not (disk/valid-output-layout? layout))
+                         disk/invalid-output-layout-error
 
-                             (not (every? #(contains? (:sizes layout) (:path %))
-                                          (:ok spans-result)))
-                             disk/invalid-output-layout-error
+                         (not (every? #(contains? (:sizes layout) (:path %))
+                                      (:ok spans-result)))
+                         disk/invalid-output-layout-error
 
-                             :else nil)]
-                (async/>! ch err)
-                (do
-                  (swap! output-layouts conj layout)
-                  (swap! output-pieces assoc piece-index bytes)
-                  (async/>! ch {:ok :written})))))
-          (catch Exception error
-            (async/>! ch {:error :write-error :message (.getMessage error)}))))
-      ch))
+                         :else nil)]
+            err
+            (do
+              (swap! output-layouts conj layout)
+              (swap! output-pieces assoc piece-index bytes)
+              {:ok :written}))))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
 
   (initialize-output-layout [_ layout output-dir]
-    (let [ch (async/chan 1)]
-      (async/go
-        (if-let [err (or (:output-init-error config)
-                         (when-not (disk/consistent-output-layout? layout)
-                           disk/invalid-output-layout-error))]
-          (async/>! ch err)
-          (do
-            (swap! layouts-initialized conj {:layout layout :output-dir output-dir})
-            (async/>! ch {:ok :initialized}))))
-      ch))
+    (if-let [err (or (:output-init-error config)
+                     (when-not (disk/consistent-output-layout? layout)
+                       disk/invalid-output-layout-error))]
+      err
+      (do
+        (swap! layouts-initialized conj {:layout layout :output-dir output-dir})
+        {:ok :initialized})))
 
   (ensure-directory [_ path]
-    (let [ch (async/chan 1)]
-      (async/go
-        (swap! directories-created conj path)
-        (async/>! ch {:ok :created}))
-      ch))
+    (swap! directories-created conj path)
+    {:ok :created})
 
   (save-state [_ download]
-    (let [ch (async/chan 1)]
-      (async/go
-        (swap! state-files assoc (:id download) download)
-        (async/>! ch {:ok :saved}))
-      ch))
+    (swap! state-files assoc (:id download) download)
+    {:ok :saved})
 
   (load-state [_ id]
-    (let [ch (async/chan 1)]
-      (async/go
-        (async/>! ch {:ok (get @state-files id)}))
-      ch))
+    {:ok (get @state-files id)})
 
   (delete-state [_ id]
-    (let [ch (async/chan 1)]
-      (async/go
-        (swap! state-files dissoc id)
-        (async/>! ch {:ok :deleted}))
-      ch)))
+    (swap! state-files dissoc id)
+    {:ok :deleted}))
 
 (defn create
   "Create a mock disk port for testing.
