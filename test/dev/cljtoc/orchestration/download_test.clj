@@ -892,6 +892,29 @@
           (is (= :invalid-info (:error result)) (str "init " (pr-str bad)))))
       (is (empty? @(:layouts-initialized disk))))))
 
+(deftest mock-write-surfaces-configured-write-error-test
+  (testing "the :write-error fallback reaches output writes, not just cache writes"
+    (let [info {:name "t" :piece-length 4 :length 4}
+          layout (:ok (torrent/compile-output-layout info))
+          disk (mock-disk/create {:write-error {:error :write-error
+                                                :message "disk full"}})
+          result (async/<!! (disk/write-output-piece disk layout "/out" 0
+                                                     (test-utils/to-bytes "abcd")))]
+      (is (= :write-error (:error result)))
+      (is (empty? (mock-disk/get-output-layouts disk))))))
+
+(deftest mock-write-refuses-uncompiled-layout-test
+  (testing "mock writes refuse uncompiled shapes like the real port"
+    (let [disk (mock-disk/create)
+          bad {:sizes {}
+               :files [{:path ["t" "a"] :length 4 :start 0}]
+               :total 4 :piece-length 4}
+          result (async/<!! (disk/write-output-piece disk bad "/out" 0
+                                                     (test-utils/to-bytes "abcd")))]
+      (is (= :invalid-info (:error result)))
+      (is (empty? (mock-disk/get-output-layouts disk)))
+      (is (nil? (mock-disk/get-output-piece disk 0))))))
+
 ;; Scripted events-ch through the extracted loop (issue #2.4): feed
 ;; run-coordinator a pre-loaded channel and assert piece-state
 ;; transitions, including requeue on choke and disconnect.
