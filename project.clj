@@ -9,6 +9,6 @@
   :main ^:skip-aot dev.cljtoc.core
   :target-path "target/%s"
   :plugins [[lein-cloverage "1.2.4"]]
-  :profiles {:dev {:dependencies [[org.clojure/test.check "1.1.1"]]}
+  :profiles {:dev {:dependencies [[org.clojure/test.check "1.1.3"]]}
              :uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})

@@ -160,6 +160,12 @@
   (testing "unknown type byte returns error"
     (let [result (bencode/decode-bencode (to-bytes "x"))]
       (is (= :bencode-parse-error (:error result)))))
+  (testing "a negative type byte returns an error instead of throwing"
+    ;; Found by stest/check on torrent/parse-torrent: (char -1) throws
+    ;; "Value out of range for char", breaking the errors-as-data contract
+    ;; for binary input. 0xFF is -1 as a signed JVM byte.
+    (let [result (bencode/decode-bencode (byte-array [-1]))]
+      (is (= :bencode-parse-error (:error result)))))
   (testing "trailing data after value returns error"
     (let [result (bencode/decode-bencode (to-bytes "i42eXXX"))]
       (is (= :bencode-parse-error (:error result))))))

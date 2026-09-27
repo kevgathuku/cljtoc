@@ -794,6 +794,39 @@
       (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk 0))))
       (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk 1)))))))
 
+(deftest run-download-fails-on-output-layout-error-test
+  (testing "a failed layout init fails the download instead of reporting completion"
+    (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "init-fail")
+                         :state :downloading)
+          disk (mock-disk/create {:output-init-error {:error :write-error
+                                                      :message "no space"}})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (re-find #"no space" (get-in result [:error :message])))
+      (is (empty? @(:layouts-initialized disk))))))
+
+(deftest run-download-initializes-layout-before-completing-test
+  (testing "a zero-piece download materializes its output layout before completing"
+    (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "empty")
+                         :state :downloading)
+          disk (mock-disk/create)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :completed (:state result)))
+      (is (= 1 (count @(:layouts-initialized disk)))))))
+
 ;; Scripted events-ch through the extracted loop (issue #2.4): feed
 ;; run-coordinator a pre-loaded channel and assert piece-state
 ;; transitions, including requeue on choke and disconnect.
@@ -1028,3 +1061,71 @@
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
+
+(deftest run-coordinator-writes-output-layout-test
+  (testing "verified pieces land in the output layout as well as the piece cache"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1)))))))
+
+(deftest run-coordinator-output-write-error-fails-download-test
+  (testing "a failed output-layout write fails the download like a cache write"
+    (let [disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "output full"}})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (contains? (get-in result [:piece-state :needed]) 0))
+      (is (empty? (get-in result [:piece-state :verified]))))))
+
+;; ---------------------------------------------------------------------------
+;; fdef specs hold generatively (stest/check).
+;; Pinned: the pure, total half of this namespace. Excluded on principle,
+;; not by accident — the generator cannot conjure a protocol implementation,
+;; so anything behind an effect port fails before its :ret is even reached
+;; (check on calculate-rate dies in (time/now <generated-long>)):
+;; calculate-rate, update-stats-bytes, initial-stats, initial-download,
+;; progress (time port); start-download, run-coordinator, run-download,
+;; load-persisted-state, persist-download-state (ports, channels, workers).
+;; ---------------------------------------------------------------------------
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "every check-grade download fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.orchestration.download/capped-peer-addresses
+                      dev.cljtoc.orchestration.download/swarm-exhausted?
+                      dev.cljtoc.orchestration.download/can-retry?
+                      dev.cljtoc.orchestration.download/has-active-peers?
+                      dev.cljtoc.orchestration.download/on-connected
+                      dev.cljtoc.orchestration.download/on-disconnected
+                      dev.cljtoc.orchestration.download/on-message
+                      dev.cljtoc.orchestration.download/requeue-assignment
+                      dev.cljtoc.orchestration.download/initial-coordinator-state
+                      dev.cljtoc.orchestration.download/handle-no-peers
+                      dev.cljtoc.orchestration.download/retry-download
+                      dev.cljtoc.orchestration.download/transition-to-failed
+                      dev.cljtoc.orchestration.download/get-failed-piece
+                      dev.cljtoc.orchestration.download/requeue-piece
+                      dev.cljtoc.orchestration.download/handle-piece-verification-failure
+                      dev.cljtoc.orchestration.download/handle-peer-disconnect
+                      dev.cljtoc.orchestration.download/add-peer
+                      dev.cljtoc.orchestration.download/remove-peer]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))

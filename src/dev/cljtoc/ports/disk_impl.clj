@@ -7,9 +7,190 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [clojure.java.io :as io]
             [clojure.edn :as edn]
+            [clojure.spec.alpha :as s]
             [clojure.core.async :as async])
-  (:import [java.io File FileInputStream FileOutputStream]
-           [java.nio.file Files Paths]))
+  (:import [java.io File RandomAccessFile]
+           [java.nio.file Files LinkOption]
+           [java.nio.file.attribute BasicFileAttributes]
+           [java.util Arrays]))
+
+(defn- containment-prefix
+  "A canonical directory as a path prefix for containment checks. The
+   separator is appended only when missing: a canonical dir that is itself the
+   filesystem root already ends in one, and doubling it yields \"//\", which
+   no canonical child can start with — every write refused as :unsafe-path."
+  [canonical-dir]
+  (if (.endsWith canonical-dir File/separator)
+    canonical-dir
+    (str canonical-dir File/separator)))
+
+(defn- filesystem-root?
+  "True when a canonical path is a filesystem root. Detected by shape rather
+   than by spelling: a root is the one path with no parent, which holds for
+   the Unix \"/\" and for a Windows drive root alike. Comparing against
+   File/separator would match only the Unix root and let a drive root through."
+  [canonical-path]
+  (and (some? canonical-path)
+       (nil? (.getParentFile (io/file canonical-path)))))
+
+(defn- declined-output-dir
+  "Policy, not a containment check: refuse to assemble a torrent directly in
+   a filesystem root. A caller who passes / almost always means an explicit
+   directory, and scattering declared files across a root risks overwriting
+   unrelated system paths. Containment holds either way — declared path
+   components are still validated — so this only makes the mistake loud and
+   deterministic instead of a :write-error that depends on whether the
+   process happens to be allowed to write there.
+   Returns the error envelope, or nil when the directory is acceptable."
+  [output-dir]
+  (let [canonical (try
+                    (.getCanonicalPath (io/file output-dir))
+                    (catch Exception _ nil))]
+    (when (filesystem-root? canonical)
+      {:error :unsafe-output-dir
+       :message (str "Refusing to download into the filesystem root: " output-dir
+                     ". Pass an explicit output directory.")})))
+
+(defn- contained?
+  "True when out-file resolves inside the canonical output dir."
+  [canonical-dir out-file]
+  (.startsWith (.getCanonicalPath out-file) (containment-prefix canonical-dir)))
+
+(defn- resolve-contained
+  "Resolve relative path components under output-dir for writing.
+   Checks containment, then creates missing parents, then checks again. Both
+   checks are load-bearing: a pre-existing symlink component would redirect
+   the write outside the dir, and checking only after mkdirs would already
+   have created that directory out there. Returns {:ok File} or
+   {:error :unsafe-path ...}."
+  [output-dir file-path]
+  (let [out-file (apply io/file output-dir file-path)
+        canonical-dir (.getCanonicalPath (io/file output-dir))
+        escape (fn [] {:error :unsafe-path
+                       :message (str "Output path escapes " output-dir ": " (pr-str file-path))})]
+    (if-not (contained? canonical-dir out-file)
+      (escape)
+      (let [parent (.getParentFile out-file)]
+        (when parent
+          (.mkdirs parent))
+        (if (contained? canonical-dir out-file)
+          {:ok out-file}
+          (escape))))))
+
+(defn- file-identity
+  "Filesystem identity of an existing target for alias detection: the
+   store-qualified fileKey, which sees what canonical strings cannot — hard
+   links (two names, one inode) and case-folded spellings of an existing
+   file. Nil when the target does not exist (nothing to alias yet), when
+   the filesystem provides no key, or when the attributes cannot be read;
+   unknown identities never group, so this fails open toward the canonical
+   check rather than refusing distinct files. Never throws."
+  [out-file]
+  (try
+    (when (.exists ^File out-file)
+      (let [path (.toPath ^File out-file)
+            key (-> (Files/readAttributes path BasicFileAttributes
+                                          (into-array LinkOption []))
+                    (.fileKey))]
+        (when (some? key)
+          [(.name (Files/getFileStore path)) key])))
+    (catch Exception _
+      nil)))
+
+(defn- resolve-layout
+  "Resolve every declared path under output-dir for writing. Each path is
+   containment-checked (see resolve-contained), then the resolved targets
+   are rejected when two declared paths share one canonical file or one
+   filesystem identity. Per-path containment cannot see those aliases — an
+   in-tree symlink or hard link passes for both entries alone, after which
+   their independent ranges overwrite one target. Nothing is truncated or
+   written by this step.
+   ponytail: identity needs an existing file, so two spellings one
+   filesystem folds onto a not-yet-created file (A/a, neither present)
+   still slip through — realpath keeps the spelling as given and there is
+   no inode to compare. Closed the moment either spelling exists.
+   Returns {:ok {declared-path File}} or {:error ...}."
+  [output-dir declared-paths]
+  (let [resolved (into {} (map (fn [declared-path]
+                                 [declared-path (resolve-contained output-dir declared-path)])
+                               declared-paths))
+        escaped (first (filter #(-> % val :error) resolved))]
+    (if escaped
+      (val escaped)
+      (let [files (into {} (map (fn [[declared-path envelope]]
+                                  [declared-path (:ok envelope)])
+                                resolved))
+            canonical-collision (->> files
+                                     (map (fn [[declared-path out-file]]
+                                            [declared-path (.getCanonicalPath ^File out-file)]))
+                                     (group-by second)
+                                     (filter #(> (count (second %)) 1))
+                                     first)]
+        (if canonical-collision
+          (let [[target entries] canonical-collision]
+            {:error :unsafe-path
+             :message (str "Output paths " (pr-str (mapv first entries))
+                           " resolve to the same file " target
+                           " under " output-dir)})
+          (let [identity-collision (->> files
+                                        (map (fn [[declared-path out-file]]
+                                               [declared-path (file-identity out-file)]))
+                                        (filter (comp some? second))
+                                        (group-by second)
+                                        (filter #(> (count (second %)) 1))
+                                        first)]
+            (if identity-collision
+              (let [[_ entries] identity-collision]
+                {:error :unsafe-path
+                 :message (str "Output paths " (pr-str (mapv first entries))
+                               " refer to the same file on disk under " output-dir)})
+              {:ok files})))))))
+
+(defn- write-layout!
+  "Blocking write of one piece into the torrent file layout. Every declared
+   target is validated (symlink-contained, alias-free across the whole
+   layout — an alias between a touched path and an untouched one corrupts
+   just the same), but only files this piece overlaps are opened, truncated
+   to their declared length, and written. Returns {:ok :written} or
+   {:error ...}."
+  [output-dir sizes spans bytes]
+  (let [touched (group-by :path spans)
+        layout-result (resolve-layout output-dir (keys sizes))]
+    (if (:error layout-result)
+      layout-result
+      (try
+        (doseq [[declared-path file-spans] touched]
+          (let [out-file (get (:ok layout-result) declared-path)]
+            (with-open [raf (RandomAccessFile. out-file "rw")]
+              (.setLength raf (get sizes declared-path))
+              (doseq [{file-offset :file-offset
+                       data-offset :data-offset
+                       span-length :length} file-spans]
+                (let [slice (Arrays/copyOfRange ^bytes bytes
+                                                (int data-offset)
+                                                (int (+ data-offset span-length)))]
+                  (.seek raf file-offset)
+                  (.write raf slice))))))
+        {:ok :written}
+        (catch Exception error
+          {:error :write-error :message (.getMessage error)})))))
+
+(defn- init-layout!
+  "Blocking creation of every declared output path at its declared length,
+   including zero-length files. Every path is resolved (symlink-contained,
+   alias-free across the layout) before the first file is truncated.
+   Returns {:ok :initialized} or {:error ...}."
+  [output-dir sizes]
+  (let [layout-result (resolve-layout output-dir (keys sizes))]
+    (if (:error layout-result)
+      layout-result
+      (try
+        (doseq [[declared-path declared-length] sizes]
+          (with-open [raf (RandomAccessFile. (get (:ok layout-result) declared-path) "rw")]
+            (.setLength raf declared-length)))
+        {:ok :initialized}
+        (catch Exception error
+          {:error :write-error :message (.getMessage error)})))))
 
 (defrecord DiskPortImpl
            [state-dir
@@ -17,7 +198,7 @@
             config]
 
   disk/IDiskPort
-  (read-torrent-file [this path]
+  (read-torrent-file [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -33,7 +214,7 @@
             (async/>! ch {:error :read-error :message (.getMessage e)}))))
       ch))
 
-  (read-piece [this piece-index]
+  (read-piece [_ piece-index]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -45,7 +226,7 @@
             (async/>! ch {:error :read-error :message (.getMessage e)}))))
       ch))
 
-  (write-piece [this piece-index bytes]
+  (write-piece [_ piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -59,7 +240,54 @@
             (async/>! ch {:error :write-error :message (.getMessage e)}))))
       ch))
 
-  (ensure-directory [this path]
+  (write-output-piece [_ info output-dir piece-index bytes]
+    (let [ch (async/chan 1)]
+      (async/go
+        (try
+          (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
+                sizes-result (torrent/output-file-sizes info)
+                declined (declined-output-dir output-dir)]
+            ;; No sizes-error branch: every size error comes from the layout
+            ;; guard piece-file-spans also runs, so spans-result is always
+            ;; the first to fail.
+            (cond
+              declined
+              (async/>! ch declined)
+
+              (:error spans-result)
+              (async/>! ch {:error :invalid-info
+                            :message (str "Cannot map piece " piece-index ": "
+                                          (:message spans-result))})
+
+              :else
+              (async/>! ch (write-layout! output-dir
+                                          (:ok sizes-result)
+                                          (:ok spans-result)
+                                          bytes))))
+          (catch Exception error
+            (async/>! ch {:error :write-error :message (.getMessage error)}))))
+      ch))
+
+  (initialize-output-layout [_ info output-dir]
+    (let [ch (async/chan 1)]
+      (async/go
+        (try
+          (let [sizes-result (torrent/output-file-sizes info)
+                declined (declined-output-dir output-dir)]
+            (cond
+              declined
+              (async/>! ch declined)
+
+              (:error sizes-result)
+              (async/>! ch {:error :invalid-info :message (:message sizes-result)})
+
+              :else
+              (async/>! ch (init-layout! output-dir (:ok sizes-result)))))
+          (catch Exception error
+            (async/>! ch {:error :write-error :message (.getMessage error)}))))
+      ch))
+
+  (ensure-directory [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -71,7 +299,7 @@
             (async/>! ch {:error :mkdir-error :message (.getMessage e)}))))
       ch))
 
-  (save-state [this download]
+  (save-state [_ download]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -84,7 +312,7 @@
             (async/>! ch {:error :save-error :message (.getMessage e)}))))
       ch))
 
-  (load-state [this id]
+  (load-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -97,7 +325,7 @@
             (async/>! ch {:error :load-error :message (.getMessage e)}))))
       ch))
 
-  (delete-state [this id]
+  (delete-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -124,6 +352,10 @@
                    (io/file piece-cache-dir)
                    config)))
 
+(s/fdef create
+  :args (s/cat :opts (s/? map?))
+  :ret any?)
+
 (defn available-space
   "Get available disk space in bytes for the given path."
   [path]
@@ -133,6 +365,10 @@
     (catch Exception _
       nil)))
 
+(s/fdef available-space
+  :args (s/cat :path any?)
+  :ret (s/nilable nat-int?))
+
 (defn ensure-directory
   "Ensure a directory exists, creating it if necessary."
   [path]
@@ -140,6 +376,10 @@
     (when-not (.exists file)
       (.mkdirs file))
     file))
+
+(s/fdef ensure-directory
+  :args (s/cat :path any?)
+  :ret any?)
 
 (defn check-disk-space
   "Check if there's enough disk space for the torrent.
@@ -153,7 +393,8 @@
                         required-bytes available)}
       {:ok true})))
 
-(defn get-torrent-size
-  "Get total size of torrent from metadata."
-  [torrent-metadata]
-  (torrent/total-size torrent-metadata))
+(s/fdef check-disk-space
+  :args (s/cat :path any? :required-bytes nat-int?)
+  :ret map?)
+
+

@@ -26,10 +26,30 @@
      Side effects: reads from piece cache")
 
   (write-piece [this piece-index bytes]
-    "Write verified piece data to disk in the correct file layout.
-     Returns a channel that will deliver :ok or {:error reason}.
-     
+    "Write verified piece data to the piece cache under piece-index.
+     This is not the final file layout — that is write-output-piece's job,
+     which maps the bytes into output-dir via domain.torrent/piece-file-spans.
+     Returns a channel that will deliver {:ok :written} or {:error reason}.
+
      Side effects: writes to filesystem")
+
+  (write-output-piece [this info output-dir piece-index bytes]
+    "Write one verified piece into the torrent file layout under output-dir.
+     Single-file info (:length) lands at output-dir/<name>; multi-file
+     info (:files) lands at output-dir/<name>/<path...>, splitting pieces
+     that cross a file boundary via domain.torrent/piece-file-spans.
+     Returns a channel that will deliver {:ok :written} or {:error reason}.
+
+     Side effects: writes to filesystem")
+
+  (initialize-output-layout [this info output-dir]
+    "Create every declared output path under output-dir at its declared
+     length, including zero-length files. Runs once at download start so
+     a torrent with no pieces still materializes its empty files, and so
+     piece writes only touch files they overlap.
+     Returns a channel that will deliver {:ok :initialized} or {:error reason}.
+
+     Side effects: creates files and directories")
 
   (ensure-directory [this path]
     "Ensure a directory exists, creating it if necessary.
@@ -63,11 +83,17 @@
 ;; written by one seam loads through the other.
 ;; ---------------------------------------------------------------------------
 
+(s/def ::hex-string (s/and string? #(even? (count %)) #(re-matches #"[0-9a-f]*" %)))
+
 (defn hex-string->bytes
   "Parse a lowercase hex string back into a byte array."
   [hex-string]
   (byte-array (map #(unchecked-byte (Integer/parseInt (apply str %) 16))
                    (partition 2 hex-string))))
+
+(s/fdef hex-string->bytes
+  :args (s/cat :hex-string ::hex-string)
+  :ret bytes?)
 
 (defn encode-state
   "Convert a download to EDN-safe data: records become plain maps and
@@ -84,6 +110,10 @@
        :else node))
    download))
 
+(s/fdef encode-state
+  :args (s/cat :download map?)
+  :ret map?)
+
 (defn decode-state
   "Restore tagged {:cljtoc/bytes hex} maps produced by encode-state back
    into byte arrays. Applied on every load path so a resumed download
@@ -98,6 +128,10 @@
        node))
    data))
 
+(s/fdef decode-state
+  :args (s/cat :data any?)
+  :ret any?)
+
 (defn id-from-path
   "Generate the canonical human-readable download ID from a torrent file path."
   [torrent-path]
@@ -106,20 +140,6 @@
     (if (and ext (not (empty? ext)))
       (subs file-name 0 (- (count file-name) (inc (count ext))))
       file-name)))
-
-(s/def ::hex-string (s/and string? #(even? (count %)) #(re-matches #"[0-9a-f]*" %)))
-
-(s/fdef hex-string->bytes
-  :args (s/cat :hex-string ::hex-string)
-  :ret bytes?)
-
-(s/fdef encode-state
-  :args (s/cat :download map?)
-  :ret map?)
-
-(s/fdef decode-state
-  :args (s/cat :data any?)
-  :ret any?)
 
 (s/fdef id-from-path
   :args (s/cat :torrent-path string?)

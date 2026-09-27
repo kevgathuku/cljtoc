@@ -26,6 +26,16 @@
       (let [[start end] (:ok span-result)]
         {:ok (Arrays/copyOfRange torrent-bytes (int start) (int end))}))))
 
+(s/fdef extract-info-dict-bytes
+  :args (s/cat :torrent-bytes bytes?)
+  :ret map?
+  :fn #(or (keyword? (-> % :ret :error))
+           (let [input (-> % :args :torrent-bytes)
+                 extracted (-> % :ret :ok)]
+             ;; A subrange copy: bytes out, never more bytes than went in.
+             (and (bytes? extracted)
+                  (<= (alength ^bytes extracted) (alength ^bytes input))))))
+
 (defn compute-info-hash
   "Computes the 20-byte SHA-1 info hash from torrent bytes.
   The hash is computed over the original bencoded info dict bytes,
@@ -35,6 +45,13 @@
     (if (:error info-result)
       info-result
       {:ok (bencode/sha1-hash ^bytes (:ok info-result))})))
+
+(s/fdef compute-info-hash
+  :args (s/cat :torrent-bytes bytes?)
+  :ret map?
+  :fn #(or (and (bytes? (-> % :ret :ok))
+                (= 20 (alength ^bytes (-> % :ret :ok))))
+           (keyword? (-> % :ret :error))))
 
 ;; ---------------------------------------------------------------------------
 ;; Announce URL extraction
@@ -56,6 +73,11 @@
    :announce-list (when-let [al (get decoded-dict "announce-list")]
                     (mapv (fn [tier] (mapv bytes->str tier)) al))})
 
+(s/fdef extract-announce-urls
+  :args (s/cat :decoded-dict map?)
+  :ret map?
+  :fn #(= #{:announce :announce-list} (-> % :ret keys set)))
+
 ;; ---------------------------------------------------------------------------
 ;; Piece parsing
 ;; ---------------------------------------------------------------------------
@@ -70,6 +92,23 @@
       (vec (for [i (range 0 len 20)]
              (Arrays/copyOfRange piece-data (int i) (int (min (+ i 20) len))))))))
 
+(s/fdef parse-pieces
+  :args (s/cat :piece-data bytes?)
+  :ret vector?
+  ;; Count, split positions, and round-trip together pin the chunking: the
+  ;; count forces ceil(len/20) chunks, all-but-last at exactly 20 forces
+  ;; where each split falls, and the round-trip pins content and the final
+  ;; short chunk. A non-canonical split (say 19 + 6 for 25 bytes) fails the
+  ;; all-but-last clause.
+  :fn #(let [input (-> % :args :piece-data)
+             chunks (:ret %)
+             input-length (alength ^bytes input)]
+         (and (every? bytes? chunks)
+              (= (count chunks) (long (Math/ceil (/ input-length 20.0))))
+              (every? (fn [^bytes chunk] (= 20 (alength chunk)))
+                      (butlast chunks))
+              (= (vec input) (vec (mapcat seq chunks))))))
+
 ;; ---------------------------------------------------------------------------
 ;; Info dict parsing
 ;; ---------------------------------------------------------------------------
@@ -83,9 +122,10 @@
 
 (defn parse-info-dict
   "Parses a decoded info dictionary into a structured map with keys:
-  :name, :piece-length, :pieces (vector of 20-byte arrays),
-  :length (single-file only), :files (multi-file only), :private (optional).
-  Returns {:ok info-map} or an error map."
+   :name, :piece-length, :pieces (vector of 20-byte arrays),
+   :length (single-file only), :files (multi-file only), :private (optional).
+   Always returns {:ok info-map}; absent fields surface as nils for
+   validate-torrent to report."
   [info-map]
   (let [name-val (bytes->str (get info-map "name"))
         piece-length (get info-map "piece length")
@@ -103,12 +143,276 @@
            files (assoc :files (mapv parse-file-entry files))
            (some? private) (assoc :private (= 1 private)))}))
 
+(s/fdef parse-info-dict
+  :args (s/cat :info-map map?)
+  :ret map?
+  :fn #(let [parsed (-> % :ret :ok)
+             keys-found (set (keys parsed))]
+         (and (map? parsed)
+              (every? keys-found [:name :piece-length :pieces])
+              (every? #{:name :piece-length :pieces :length :files :private}
+                      keys-found))))
+
 (defn total-size
   "Total content bytes described by an info dict: :length for single-file
    torrents, the sum of contained file lengths for multi-file ones."
   [info]
   (or (:length info)
       (reduce + 0 (map :length (:files info)))))
+
+(defn- totalable?
+  "True when total-size can answer honestly: a present :length must be a
+   nat-int, and present :files must be sequential entries each carrying a
+   nat-int :length. Absent keys mean zero, so {} is totalable."
+  [info]
+  (and (or (nil? (:length info)) (nat-int? (:length info)))
+       (let [files (:files info)]
+         (or (nil? files)
+             (and (sequential? files)
+                  (every? #(nat-int? (:length %)) files))))))
+
+;; Defined here, not in the data-spec block below: total-size's defn sits
+;; above it, and a spec must be defined before any fdef referencing it.
+;; map? alone lets {:length \"x\"} through while :ret promises nat-int? —
+;; stest/check passes that pairing only until the generator emits :length.
+(s/def ::totalable-info (s/and map? totalable?))
+
+(s/fdef total-size
+  :args (s/cat :info ::totalable-info)
+  :ret nat-int?)
+
+(s/def ::piece-span-index nat-int?)
+(s/def ::piece-byte-count pos-int?)
+(s/def ::path (s/coll-of string? :kind vector? :min-count 1))
+(s/def ::file-offset nat-int?)
+(s/def ::data-offset nat-int?)
+
+(defn- span-shaped?
+  "True when span has the file-span shape: a non-empty string path vector,
+   nat-int offsets, positive length. A predicate rather than s/keys:
+   s/keys matches keys by spec name, and :length already means the nat-int
+   file length above — one key, one meaning per namespace — so the pos-int?
+   span length is asserted here instead."
+  [span]
+  (and (map? span)
+       (let [{span-path :path file-offset :file-offset
+              data-offset :data-offset span-length :length} span]
+         (and (vector? span-path)
+              (seq span-path)
+              (every? string? span-path)
+              (nat-int? file-offset)
+              (nat-int? data-offset)
+              (pos-int? span-length)))))
+
+(s/def ::file-span (s/and map? span-shaped?))
+(s/def ::file-span-list (s/coll-of ::file-span :kind vector?))
+
+;; Declared info shapes: single-file carries :length, multi-file carries
+;; :files, never both (layout-error refuses the pair). s/keys matches keys
+;; by spec name, so the nat-int file :length needs its own spec — ::length
+;; used to mean the pos-int? span length, now ::span-length above.
+(s/def ::name string?)
+(s/def ::piece-length pos-int?)
+(s/def ::pieces (s/coll-of bytes?))
+(s/def ::length nat-int?)
+(s/def ::file-entry
+  (s/keys :req-un [::path ::length]))
+(s/def ::files (s/coll-of ::file-entry :kind vector?))
+(s/def ::private boolean?)
+(s/def ::single-info
+  (s/keys :req-un [::name ::piece-length ::length]
+          :opt-un [::pieces ::private]))
+(s/def ::multi-info
+  (s/keys :req-un [::name ::piece-length ::files]
+          :opt-un [::pieces ::private]))
+(s/def ::info
+  (s/or :single ::single-info :multi ::multi-info))
+
+(defn- safe-path-component?
+  "True when a torrent-declared path component cannot escape the output
+   directory: a non-empty name with no parent reference, self-reference,
+   or separator."
+  [component]
+  (and (string? component)
+       (not (empty? component))
+       (not= ".." component)
+       (not= "." component)
+       (not (re-find #"[/\\]" component))))
+
+(defn- prefix-collision?
+  "True when one declared path properly contains another: no declaration
+   order repairs that layout, since the parent path cannot be both the file
+   one entry claims and the directory the other needs. Sorted order puts a
+   prefix immediately before everything it prefixes — anything between
+   would itself extend it and sort between — so checking adjacent pairs
+   suffices, O(n log n) rather than O(n²) per piece."
+  [paths]
+  (let [sorted (sort paths)]
+    (boolean (some (fn [[parent child]]
+                     (and (< (count parent) (count child))
+                          (= (vec parent)
+                             (subvec (vec child) 0 (count parent)))))
+                   (map vector sorted (rest sorted))))))
+
+(defn- file-layout
+  "Relative output layout of an info dict: [{:path [name ...] :length n}].
+   Single-file info yields its :length under [:name]; multi-file info
+   yields each entry under [name + path]. Nil when :name is missing."
+  [info]
+  (if (:files info)
+    (let [root (:name info)]
+      (when-not (nil? root)
+        (mapv (fn [file-entry]
+                {:path (into [root] (:path file-entry))
+                 :length (:length file-entry)})
+              (:files info))))
+    (when (:name info)
+      [{:path [(:name info)] :length (:length info)}])))
+
+(defn- layout-error
+  "The one layout guard shared by output-file-sizes and piece-file-spans: the
+   layout needs a :name, carries exactly one of :length (single-file) or
+   :files (multi-file), every declared path component must stay inside the
+   output directory, every present length must be a natural integer, and no
+   two entries may claim the same path. A duplicate is fatal because the two
+   derivations disagree about it — sizes collapse the entries into one map
+   entry while spans keep them as distinct byte ranges, and both ranges then
+   land in the same physical file. So is carrying both fields: total-size
+   prefers :length while file-layout prefers :files, and the two
+   representations silently cover different bytes. So is a non-integer
+   length: spans crash comparing against it while sizes hand the string
+   downstream to explode later, far from the lie. So is a nested pair: a
+   path inside another cannot be both the file one entry claims and the
+   directory the other needs, in any declaration order. Returns the error
+   map, or nil when the layout is usable.
+   ponytail: paths are compared as declared, so a case-insensitive filesystem
+   can still map two differently-spelled paths onto one file."
+  [info]
+  (let [components (cons (:name info) (mapcat :path (:files info)))
+        ;; Top-level :length is legitimately absent on multi-file infos;
+        ;; file entries always carry theirs, so only the top slot tolerates
+        ;; nil. (Single-file infos without :length are caught by the
+        ;; no-layout branch above, before this runs.)
+        layout (file-layout info)]
+    (cond
+      (and (some? (:length info)) (some? (:files info)))
+      (bencode/torrent-error "info must not carry both :length and :files" {})
+
+      (and (nil? (:length info)) (nil? (:files info)))
+      (bencode/torrent-error "info must carry either :length or :files" {})
+
+      (not (and (or (nil? (:length info)) (nat-int? (:length info)))
+                (every? nat-int? (map :length (:files info)))))
+      (bencode/torrent-error "info carries a file length that is not a natural integer" {})
+
+      (nil? (:name info))
+      (bencode/torrent-error "info must carry :name for output paths" {})
+
+      (not (every? safe-path-component? components))
+      (bencode/torrent-error "info carries a path component that escapes the output directory" {})
+
+      (not= (count layout) (count (distinct (map :path layout))))
+      (bencode/torrent-error "info declares the same output path twice" {})
+
+      (prefix-collision? (map :path layout))
+      (bencode/torrent-error "info declares an output path inside another" {})
+
+      :else
+      nil)))
+
+(defn output-file-sizes
+  "Declared output sizes of an info dict: {relative-path-vector length}.
+   Rejects a layout that could not be written as declared (see layout-error),
+   so a caller never receives a path it must not open.
+   Returns {:ok sizes} or {:error ...}."
+  [info]
+  (if-let [error (layout-error info)]
+    error
+    {:ok (into {} (map (fn [{file-path :path file-length :length}]
+                         [file-path file-length])
+                       (file-layout info)))}))
+
+(s/fdef output-file-sizes
+  :args (s/cat :info ::info)
+  :ret map?
+  ;; Sizes map declared path vectors to lengths: write-layout! looks each
+  ;; spanned path up in this map, so non-vector keys would silently miss.
+  :fn #(let [ret (:ret %)]
+         (or (:error ret)
+             (and (map? (:ok ret))
+                  (every? vector? (keys (:ok ret)))))))
+
+(defn piece-file-spans
+  "Map one piece to file-layout spans: per overlapped file,
+   {:path [name ...] :file-offset n :data-offset m :length k}.
+   Single-file info (:length) yields one span; multi-file info (:files)
+   splits pieces crossing a file boundary. The final short piece maps
+   only its own bytes. A layout that could not be written as declared
+   (see layout-error) is an error.
+   Returns {:ok spans} or {:error ...}."
+  [info piece-index piece-byte-count]
+  (let [nominal (:piece-length info)
+        bad-layout (layout-error info)]
+    (cond
+      (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
+      (bencode/torrent-error "piece index and byte count must be valid" {})
+
+      (or (not (integer? nominal)) (not (pos? nominal)))
+      (bencode/torrent-error "info must carry a positive :piece-length" {})
+
+      bad-layout
+      bad-layout
+
+      :else
+      ;; Legit lengths can still overflow long arithmetic (a huge nominal
+      ;; times a huge index), and the contract is errors as data — never a
+      ;; throw — so overflow reports like any other unmappable piece. total
+      ;; is computed here, past the guard, for the same reason: summing
+      ;; unvalidated lengths can throw before the guard gets its say.
+      (try
+        (let [total (total-size info)
+              piece-start (* piece-index nominal)]
+          (if (>= piece-start total)
+            (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
+                                   {:piece-index piece-index})
+            (let [piece-end (min total (+ piece-start piece-byte-count))
+                  ;; layout is non-nil here: layout-error has already rejected
+                  ;; the nil or unsafe :name that is the only way file-layout
+                  ;; returns nil.
+                  layout (file-layout info)]
+              {:ok (loop [remaining layout
+                          file-start 0
+                          acc (transient [])]
+                     (if (empty? remaining)
+                       (persistent! acc)
+                       (let [{file-path :path file-length :length} (first remaining)
+                             file-end (+ file-start file-length)
+                             overlap-start (max piece-start file-start)
+                             overlap-end (min piece-end file-end)]
+                         (recur (rest remaining)
+                                file-end
+                                (if (< overlap-start overlap-end)
+                                  (conj! acc {:path file-path
+                                              :file-offset (- overlap-start file-start)
+                                              :data-offset (- overlap-start piece-start)
+                                              :length (- overlap-end overlap-start)})
+                                  acc)))))})))
+        (catch ArithmeticException _
+          (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
+                                 {:piece-index piece-index}))))))
+
+(s/fdef piece-file-spans
+  :args (s/cat :info ::info
+               :piece-index ::piece-span-index
+               :piece-byte-count ::piece-byte-count)
+  :ret map?
+  ;; Every emitted span conforms ::file-span: paths survive the component
+  ;; guard as string vectors, offsets are ordered differences (nat-int?),
+  ;; and the overlap guard keeps lengths positive. Error envelopes take
+  ;; the other branch, so this also gives ::file-span-list its first use.
+  :fn #(let [ret (:ret %)]
+         (or (:error ret)
+             (s/valid? ::file-span-list (:ok ret)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Validation
@@ -132,6 +436,11 @@
         (conj! errors (bencode/torrent-error "missing required field: info.pieces" {}))))
     (persistent! errors)))
 
+(s/fdef validate-required-fields
+  :args (s/cat :torrent map?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
+
 (defn validate-field-types
   "Checks that torrent fields have correct types: piece-length and length
   must be integers. Returns a vector of error maps."
@@ -149,6 +458,11 @@
                        {:field "length" :actual (type (:length info))}))))
     (persistent! errors)))
 
+(s/fdef validate-field-types
+  :args (s/cat :torrent map?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
+
 (defn validate-pieces-length
   "Checks that every piece hash is exactly 20 bytes. Returns a vector of error maps."
   [torrent]
@@ -163,6 +477,11 @@
                  {:piece-index idx :actual-length (alength piece)})))
             pieces)))))
 
+(s/fdef validate-pieces-length
+  :args (s/cat :torrent map?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
+
 (defn validate-piece-length
   "Checks that piece-length is a positive integer. Returns a vector of error maps."
   [torrent]
@@ -172,6 +491,11 @@
       [(bencode/torrent-error
         (str "piece-length must be a positive integer, got: " pl)
         {:field "piece-length" :value pl})])))
+
+(s/fdef validate-piece-length
+  :args (s/cat :torrent map?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-torrent
   "Runs all validation checks on a parsed torrent map. Returns {:ok true}
@@ -184,6 +508,12 @@
     (if (empty? errors)
       {:ok true}
       {:error errors})))
+
+(s/fdef validate-torrent
+  :args (s/cat :torrent map?)
+  :ret map?
+  :fn #(or (true? (-> % :ret :ok))
+           (vector? (-> % :ret :error))))
 
 ;; ---------------------------------------------------------------------------
 ;; Main torrent parser
@@ -212,73 +542,29 @@
               (let [info-map (get decoded "info")]
                 (if-not info-map
                   (bencode/torrent-error "missing info dict" {:keys-found (keys decoded)})
+                  ;; parse-info-dict is total — it always returns {:ok ...} —
+                  ;; so there is no error branch to take here.
                   (let [info-result (parse-info-dict info-map)
-                        announce-urls (extract-announce-urls decoded)]
-                    (if (:error info-result)
-                      info-result
-                      (let [parsed (cond-> {:announce (:announce announce-urls)
-                                            :announce-list (:announce-list announce-urls)
-                                            :info (:ok info-result)
-                                            :info-hash (:ok info-hash-result)}
-                                     (get decoded "comment")
-                                     (assoc :comment (bytes->str (get decoded "comment")))
-                                     (get decoded "created by")
-                                     (assoc :created-by (bytes->str (get decoded "created by")))
-                                     (get decoded "creation date")
-                                     (assoc :creation-date (get decoded "creation date"))
-                                     (get decoded "encoding")
-                                     (assoc :encoding (bytes->str (get decoded "encoding"))))
-                            validation (validate-torrent parsed)]
-                        (if (:ok validation)
-                          {:ok parsed}
-                          validation)))))))))))))
-
-;; ============================================================================
-;; Function Specs
-;; ============================================================================
-
-(s/fdef extract-info-dict-bytes
-  :args (s/cat :torrent-bytes bytes?)
-  :ret  map?
-  :fn   #(or (bytes? (-> % :ret :ok))
-             (keyword? (-> % :ret :error))))
-
-(s/fdef compute-info-hash
-  :args (s/cat :torrent-bytes bytes?)
-  :ret  map?
-  :fn   #(or (and (bytes? (-> % :ret :ok))
-                  (= 20 (alength ^bytes (-> % :ret :ok))))
-             (keyword? (-> % :ret :error))))
-
-(s/fdef parse-pieces
-  :args (s/cat :piece-data bytes?)
-  :ret  vector?
-  :fn   #(every? bytes? (:ret %)))
-
-(s/fdef validate-required-fields
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-field-types
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-pieces-length
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-piece-length
-  :args (s/cat :torrent map?)
-  :ret  vector?)
-
-(s/fdef validate-torrent
-  :args (s/cat :torrent map?)
-  :ret  map?
-  :fn   #(or (true? (-> % :ret :ok))
-             (vector? (-> % :ret :error))))
+                        announce-urls (extract-announce-urls decoded)
+                        parsed (cond-> {:announce (:announce announce-urls)
+                                        :announce-list (:announce-list announce-urls)
+                                        :info (:ok info-result)
+                                        :info-hash (:ok info-hash-result)}
+                                 (get decoded "comment")
+                                 (assoc :comment (bytes->str (get decoded "comment")))
+                                 (get decoded "created by")
+                                 (assoc :created-by (bytes->str (get decoded "created by")))
+                                 (get decoded "creation date")
+                                 (assoc :creation-date (get decoded "creation date"))
+                                 (get decoded "encoding")
+                                 (assoc :encoding (bytes->str (get decoded "encoding"))))
+                        validation (validate-torrent parsed)]
+                    (if (:ok validation)
+                      {:ok parsed}
+                      validation)))))))))))
 
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)
-  :ret  map?
-  :fn   #(or (map? (-> % :ret :ok))
-             (keyword? (-> % :ret :error))))
+  :ret map?
+  :fn #(or (map? (-> % :ret :ok))
+           (keyword? (-> % :ret :error))))

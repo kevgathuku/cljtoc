@@ -186,11 +186,15 @@ INetworkPort
 └── peer-loop(peer, message-handler) → supervised-worker
 
 IDiskPort
-├── read-piece(piece-index) → (bytes | nil)
-├── write-piece(piece-index, bytes) → :ok | {:error reason}
-├── read-torrent-file(path) → TorrentMetadata
-├── ensure-directory(path) → :ok
-└── state-file-path(torrent-id) → string
+├── read-torrent-file(path) → {:ok metadata} | {:error reason}
+├── read-piece(piece-index) → {:ok bytes | nil}
+├── write-piece(piece-index, bytes) → {:ok :written} | {:error reason}
+├── write-output-piece(info, output-dir, piece-index, bytes) → {:ok :written} | {:error reason}
+├── initialize-output-layout(info, output-dir) → {:ok :initialized} | {:error reason}
+├── ensure-directory(path) → {:ok :created} | {:error reason}
+├── save-state(download) → {:ok :saved} | {:error reason}
+├── load-state(id) → {:ok download | nil} | {:error reason}
+└── delete-state(id) → {:ok :deleted} | {:error reason}
 
 ITimePort
 ├── now → instant
