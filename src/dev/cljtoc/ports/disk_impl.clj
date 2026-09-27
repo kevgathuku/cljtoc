@@ -363,11 +363,4 @@
   :args (s/cat :path any? :required-bytes nat-int?)
   :ret map?)
 
-(defn get-torrent-size
-  "Get total size of torrent from metadata."
-  [torrent-metadata]
-  (torrent/total-size torrent-metadata))
 
-(s/fdef get-torrent-size
-  :args (s/cat :torrent-metadata map?)
-  :ret nat-int?)

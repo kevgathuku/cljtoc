@@ -29,8 +29,12 @@
 (s/fdef extract-info-dict-bytes
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
-  :fn #(or (bytes? (-> % :ret :ok))
-           (keyword? (-> % :ret :error))))
+  :fn #(or (keyword? (-> % :ret :error))
+           (let [input (-> % :args :torrent-bytes)
+                 extracted (-> % :ret :ok)]
+             ;; A subrange copy: bytes out, never more bytes than went in.
+             (and (bytes? extracted)
+                  (<= (alength ^bytes extracted) (alength ^bytes input))))))
 
 (defn compute-info-hash
   "Computes the 20-byte SHA-1 info hash from torrent bytes.
@@ -91,7 +95,19 @@
 (s/fdef parse-pieces
   :args (s/cat :piece-data bytes?)
   :ret vector?
-  :fn #(every? bytes? (:ret %)))
+  ;; Count, split positions, and round-trip together pin the chunking: the
+  ;; count forces ceil(len/20) chunks, all-but-last at exactly 20 forces
+  ;; where each split falls, and the round-trip pins content and the final
+  ;; short chunk. A non-canonical split (say 19 + 6 for 25 bytes) fails the
+  ;; all-but-last clause.
+  :fn #(let [input (-> % :args :piece-data)
+             chunks (:ret %)
+             input-length (alength ^bytes input)]
+         (and (every? bytes? chunks)
+              (= (count chunks) (long (Math/ceil (/ input-length 20.0))))
+              (every? (fn [^bytes chunk] (= 20 (alength chunk)))
+                      (butlast chunks))
+              (= (vec input) (vec (mapcat seq chunks))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Info dict parsing
@@ -290,7 +306,13 @@
 
 (s/fdef output-file-sizes
   :args (s/cat :info ::info)
-  :ret map?)
+  :ret map?
+  ;; Sizes map declared path vectors to lengths: write-layout! looks each
+  ;; spanned path up in this map, so non-vector keys would silently miss.
+  :fn #(let [ret (:ret %)]
+         (or (:error ret)
+             (and (map? (:ok ret))
+                  (every? vector? (keys (:ok ret)))))))
 
 (defn piece-file-spans
   "Map one piece to file-layout spans: per overlapped file,
@@ -389,7 +411,8 @@
 
 (s/fdef validate-required-fields
   :args (s/cat :torrent map?)
-  :ret vector?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-field-types
   "Checks that torrent fields have correct types: piece-length and length
@@ -410,7 +433,8 @@
 
 (s/fdef validate-field-types
   :args (s/cat :torrent map?)
-  :ret vector?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-pieces-length
   "Checks that every piece hash is exactly 20 bytes. Returns a vector of error maps."
@@ -428,7 +452,8 @@
 
 (s/fdef validate-pieces-length
   :args (s/cat :torrent map?)
-  :ret vector?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-piece-length
   "Checks that piece-length is a positive integer. Returns a vector of error maps."
@@ -442,7 +467,8 @@
 
 (s/fdef validate-piece-length
   :args (s/cat :torrent map?)
-  :ret vector?)
+  :ret vector?
+  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-torrent
   "Runs all validation checks on a parsed torrent map. Returns {:ok true}
