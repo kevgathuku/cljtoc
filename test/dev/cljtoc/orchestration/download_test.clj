@@ -1,12 +1,14 @@
 (ns dev.cljtoc.orchestration.download-test
   "Unit tests for download orchestration."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
             [clojure.core.async :as async]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.test-utils :as test-utils]
@@ -1333,3 +1335,141 @@
                     50)]
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))
+
+;; ============================================================================
+;; Resume: materializing verified pieces (issue #30)
+;; ============================================================================
+;;
+;; A saved record carries a verified piece set whose bytes live in the piece
+;; cache, not in the output files. Declaring :completed on that record alone
+;; hands back files that initialize-output-layout only truncated to length.
+
+(defn- materialize-fixture
+  "A 2-piece single-file download with piece 0 verified, its bytes in the
+   cache, and piece 1 still needed. Returns {:download :layout :disk}."
+  []
+  (let [piece-0 (test-utils/to-bytes "abcd")
+        info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+        info {:pieces [(bencode/sha1-hash piece-0)
+                       (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+              :piece-length 4
+              :name "mat.bin"
+              :length 8}
+        torrent {:info-hash info-hash :info info}
+        ;; mark-in-flight takes 0 out of :needed, mark-verified puts it in
+        ;; :verified, so :needed is left holding just piece 1.
+        piece-state (-> (pieces/initial-piece-state 2)
+                        (#(:ok (pieces/mark-in-flight % 0)))
+                        (#(:ok (pieces/mark-verified % 0))))
+        download (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   "/out"
+                                                   "mat")
+                        :piece-state piece-state)
+        disk (mock-disk/create)]
+    (disk/write-piece disk 0 piece-0)
+    {:download download
+     :layout (:ok (torrent/compile-output-layout info))
+     :disk disk
+     :piece-0 piece-0}))
+(deftest materialize-copies-verified-pieces-out-of-the-cache-test
+  (testing "a verified piece reaches the output layout on resume"
+    (let [{:keys [download layout disk piece-0]}
+          (materialize-fixture)
+          result (#'download/materialize-verified-pieces
+                  download disk layout)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
+
+(deftest materialize-keeps-the-verified-set-test
+  (testing "materializing does not un-verify the pieces it wrote"
+    (let [{:keys [download layout disk]} (materialize-fixture)
+          result (#'download/materialize-verified-pieces download disk layout)
+          piece-state (:piece-state (:ok result))]
+      (is (= #{0} (:verified piece-state)))
+      (is (= #{1} (:needed piece-state))))))
+
+(deftest materialize-requeues-a-verified-piece-with-no-cached-bytes-test
+  (testing "a record claiming a piece is verified that the cache no longer
+            holds cannot be written out. Leaving it verified would let
+            complete? answer true and declare a download finished with a
+            hole in it, so it goes back to :needed and the swarm re-fetches it"
+    (let [{:keys [download layout]} (materialize-fixture)
+          ;; A fresh port: the record still claims piece 0 verified, but the
+          ;; cache no longer has its bytes.
+          disk (mock-disk/create)
+          result (#'download/materialize-verified-pieces download disk layout)
+          piece-state (:piece-state (:ok result))]
+      (is (= #{} (:verified piece-state)))
+      (is (= #{0 1} (:needed piece-state)))
+      (is (false? (pieces/complete? piece-state))))))
+
+(deftest materialize-fails-when-the-layout-rejects-a-write-test
+  (testing "a refused write fails the resume rather than reporting a
+            download whose bytes never landed"
+    (let [{:keys [download layout]} (materialize-fixture)
+          disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "disk full"}})
+          _ (disk/write-piece disk 0 (test-utils/to-bytes "abcd"))
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (= :write-error (:error result)))
+      (is (= "disk full" (:message result))))))
+
+(deftest materialize-fails-when-the-cache-cannot-be-read-test
+  (testing "an unreadable piece cache fails the resume instead of reporting
+            the piece as verified and moving on"
+    (let [{:keys [download layout]} (materialize-fixture)
+          disk (mock-disk/create {:read-error {:error :read-error
+                                               :message "permission denied"}})
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (= :read-error (:error result)))
+      (is (= "permission denied" (:message result))))))
+
+(defn- temp-dir [prefix]
+  (let [dir (io/file (System/getProperty "java.io.tmpdir")
+                     (str prefix (System/nanoTime)))]
+    (.mkdirs dir)
+    (.getAbsolutePath dir)))
+
+(deftest resume-of-a-fully-verified-download-writes-the-real-content-test
+  (testing "a record whose pieces are all verified materializes them from the
+            cache into the output file. initialize-output-layout only creates
+            the file at its declared length, so before this the download
+            reported :completed over an empty file -- the one resume case
+            that looks successful and is not (issue #30, PR #24 review)"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          piece-1 (test-utils/to-bytes "efgh")
+          content (byte-array 8)
+          info {:pieces [(bencode/sha1-hash piece-0) (bencode/sha1-hash piece-1)]
+                :piece-length 4
+                :name "whole.bin"
+                :length 8}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          output-dir (temp-dir "resume-out-")
+          port (disk-impl/create {:state-dir (temp-dir "resume-state-")
+                                  :piece-cache-dir (temp-dir "resume-cache-")})
+          _ (System/arraycopy piece-0 0 content 0 4)
+          _ (System/arraycopy piece-1 0 content 4 4)
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0)))
+                          (#(:ok (pieces/mark-in-flight % 1)))
+                          (#(:ok (pieces/mark-verified % 1))))
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent
+                                                     output-dir
+                                                     "whole")
+                          :piece-state piece-state
+                          :state :downloading)
+          _ (disk/write-piece port 0 piece-0)
+          _ (disk/write-piece port 1 piece-1)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port port
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        download)
+          on-disk (slurp (io/file output-dir "whole.bin"))]
+      (is (= :completed (:state result)))
+      (is (= (seq content) (seq (test-utils/to-bytes on-disk)))
+          "the completed file carries the verified content, not its length"))))
