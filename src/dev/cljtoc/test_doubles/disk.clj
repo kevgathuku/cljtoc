@@ -49,29 +49,34 @@
         ;; the O(1) shape gate, then touched-path membership. The full
         ;; invariant check (consistent-output-layout?) runs once at init on
         ;; both ports, so tests drive exactly the refusal paths the real
-        ;; port produces — no stricter, no looser.
-        (if-let [err (or (:output-write-error config) (:write-error config))]
-          (async/>! ch err)
-          (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
-            (if-let [err (cond
-                           (:error spans-result)
-                           {:error :invalid-info
-                            :message (str "Cannot map piece " piece-index ": "
-                                          (:message spans-result))}
+        ;; port produces — no stricter, no looser. The try/catch mirrors
+        ;; the real port too: a bad bytes argument (alength throws) comes
+        ;; back as {:error :write-error}, never an uncaught throw in go.
+        (try
+          (if-let [err (or (:output-write-error config) (:write-error config))]
+            (async/>! ch err)
+            (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
+              (if-let [err (cond
+                             (:error spans-result)
+                             {:error :invalid-info
+                              :message (str "Cannot map piece " piece-index ": "
+                                            (:message spans-result))}
 
-                           (not (disk/valid-output-layout? layout))
-                           disk/invalid-output-layout-error
+                             (not (disk/valid-output-layout? layout))
+                             disk/invalid-output-layout-error
 
-                           (not (every? #(contains? (:sizes layout) (:path %))
-                                        (:ok spans-result)))
-                           disk/invalid-output-layout-error
+                             (not (every? #(contains? (:sizes layout) (:path %))
+                                          (:ok spans-result)))
+                             disk/invalid-output-layout-error
 
-                           :else nil)]
-              (async/>! ch err)
-              (do
-                (swap! output-layouts conj layout)
-                (swap! output-pieces assoc piece-index bytes)
-                (async/>! ch {:ok :written}))))))
+                             :else nil)]
+                (async/>! ch err)
+                (do
+                  (swap! output-layouts conj layout)
+                  (swap! output-pieces assoc piece-index bytes)
+                  (async/>! ch {:ok :written})))))
+          (catch Exception error
+            (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))
 
   (initialize-output-layout [_ layout output-dir]

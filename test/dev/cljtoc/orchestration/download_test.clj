@@ -919,6 +919,19 @@
       (is (empty? (mock-disk/get-output-layouts disk)))
       (is (nil? (mock-disk/get-output-piece disk 0))))))
 
+(deftest mock-write-returns-write-error-on-non-bytes-test
+  (testing "non-byte-array input yields the :write-error envelope like the real port, never a throw"
+    ;; DiskPortImpl wraps its whole write body in try/catch, so a bad bytes
+    ;; argument comes back as {:error :write-error}. The mock must mirror
+    ;; that envelope or tests cannot drive the orchestration error path —
+    ;; an uncaught throw inside go closes the channel and <!! answers nil.
+    (let [info {:name "t" :piece-length 4 :length 4}
+          layout (:ok (torrent/compile-output-layout info))
+          disk (mock-disk/create)
+          result (async/<!! (disk/write-output-piece disk layout "/out" 0 "not-bytes"))]
+      (is (= :write-error (:error result)))
+      (is (empty? (mock-disk/get-output-layouts disk))))))
+
 (deftest mock-write-mirrors-real-gate-test
   (testing "mock write gates mirror the real port: span derivation, O(1) shape, touched-path membership"
     ;; A shape-valid layout whose starts do not chain fails
