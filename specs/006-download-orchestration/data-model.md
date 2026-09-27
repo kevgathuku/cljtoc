@@ -83,11 +83,23 @@ Network effect abstraction.
 
 ```clojure
 (defprotocol INetworkPort
-  (connect [this address] "Open TCP connection to peer")
+  (connect-peer [this address] "Open TCP connection to peer")
   (send-message [this peer message] "Send peer wire message")
   (receive-message [this peer] "Receive next message from peer")
-  (close [this peer] "Close connection"))
+  (receive-handshake [this peer] "Read the 68-byte peer handshake")
+  (close-peer [this peer] "Close connection"))
+
+(defprotocol ITrackerPort
+  (announce [this torrent-metadata] "Announce and get peers"))
 ```
+
+Like `IDiskPort`, these return their envelope directly:
+`{:ok peer-data}`, `{:ok :sent}`, `{:ok peer-message}`,
+`{:ok peer-handshake}`, `nil` for `close-peer`, and
+`{:ok #{peer-address}}` for `announce`, or
+`{:error reason :message msg}` on failure. They are blocking: the
+receiver is expected to already be on a thread, and `peer-worker`'s
+`async/thread` body is where peer I/O belongs.
 
 ### IDiskPort
 
@@ -124,9 +136,12 @@ hot path stays flat in file count.
 
 #### Result semantics
 
-Every method returns a channel delivering exactly one envelope.
+Every method returns exactly one envelope, by return value — the port is
+the effect boundary, so a caller learns the result without naming
+core.async. Overlapping calls, and the pool they run on, are the
+coordination layer's decision above this seam.
 
-| Envelope | Delivered by |
+| Envelope | Returned by |
 |----------|--------------|
 | `{:ok metadata}` | `read-torrent-file` |
 | `{:ok bytes}` or `{:ok nil}` | `read-piece` (nil when not cached) |

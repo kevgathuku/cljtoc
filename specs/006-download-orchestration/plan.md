@@ -180,8 +180,10 @@ Peer
 
 ```
 INetworkPort
-├── connect-peer(address) → chan of PeerConnection
-├── send-message(peer, message) → chan of Response
+├── connect-peer(address) → {:ok peer-data} | {:error reason}
+├── send-message(peer, message) → {:ok :sent} | {:error reason}
+├── receive-message(peer) → {:ok peer-message} | {:error reason}
+├── receive-handshake(peer) → {:ok peer-handshake} | {:error reason}
 ├── close-peer(peer) → nil
 └── peer-loop(peer, message-handler) → supervised-worker
 
