@@ -164,6 +164,8 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 - Never test a filesystem guard by writing to a real system location: assert refusal happens before any creation, or exercise the pure helper directly (`#'` on a private fn) so the test never touches `/`. A rule only one platform can exercise is pinned on the helper — macOS has no `C:\` to hand the port, it canonicalizes to an ordinary file under the cwd
 - Every declared output path must be initialized, not just the paths with data: zero-length files produce no spans and would otherwise be missing from a completed download. `write-layout!` deliberately opens only the files a piece overlaps, so this is `init-layout!`'s job (reached via `initialize-output-layout`), not the piece writer's
 - A layout the two derivations disagree about is not a layout: `output-file-sizes` collapses duplicate declared paths into one map entry while `piece-file-spans` still hands out a distinct byte range for each, and both ranges land in the same physical file. Validate such a layout once, in the guard both callers share (`torrent/layout-error`) — a check that lives in one derivation leaves the other writing a file nothing declared
+- Pin check-grade fdefs with `stest/check`: every pure, total public fn gets a generative check over its fdef (see `test-utils/check-fdefs`; `torrent-test` / `download-test` `fdef-specs-hold-generatively-test`). Fns behind effect ports are excluded on principle, not by accident — the generator cannot conjure a protocol implementation, so a check on `calculate-rate` dies in `(time/now <generated-long>)` before its `:ret` is even reached. Record the exclusion at the test site. A failing check is either a spec to tighten or a real bug: the first run here found `(char b)` in `bencode/decode-value` throwing on negative bytes
+- Calibrate fdef `:args` and `:ret` to each other, never independently to maximum precision: a strict `:ret` over loose `:args` passes only until something emits the shape `:ret` cannot survive (`total-size` with `map?` args + `nat-int?` ret survived 1000 generated cases, yet hand-built `{:length "x"}` returns `"x"`). Tighten args toward the real input shape (`torrent/::totalable-info`: a present `:length` and every present `:files` entry must be nat-int) or loosen the ret — never pin a lucky pass. `stest/instrument` checks `:args` only (proven from `spec-checking-fn` source: it conforms args, calls through, returns unchecked); `:ret`/`:fn` are exercised solely by `stest/check`
 
 ## Common Errors to Avoid
 
@@ -182,7 +184,8 @@ All PRs must verify:
 3. All go blocks have explicit supervisor ownership
 4. No new global state introduced
 5. New code has corresponding tests; domain tests are pure
-6. Changed files are `cljfmt`-clean (`cljfmt fix` before committing, `cljfmt check` after)
+6. New public fns carry co-located fdefs; pure, total ones are pinned by `stest/check` (effect-port fns excluded with the reason recorded at the test site)
+7. Changed files are `cljfmt`-clean (`cljfmt fix` before committing, `cljfmt check` after)
 
 ## Memory
 
