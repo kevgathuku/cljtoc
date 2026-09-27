@@ -376,6 +376,22 @@
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason]))))))
 
+(deftest run-download-guard-reads-capped-addresses-test
+  (testing "a cap that dials nothing fails fast with the no-peers guard (issue #32)"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "capped-empty")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.1:6881"}})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port (mock-disk/create)
+                                         :time-port (mock-time/create)
+                                         :config {:max-peers 0}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (= "No peers available: nothing to connect to" (get-in result [:error :message]))))))
+
 (deftest manager-rejects-invalid-config-test
   (let [network (mock-net/create)
         disk (mock-disk/create)
@@ -934,6 +950,74 @@
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
 
+(deftest run-coordinator-closed-channel-fails-no-peers-test
+  (testing "a closed event channel fails the download instead of parking"
+    (let [disk (mock-disk/create)
+          result (scripted-run [] (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (= "All peers disconnected" (get-in result [:error :message]))))))
+
+;; Issue #32: the worker-exit signal must close the event channel, so
+;; the coordinator's nil? branch terminates the download instead of
+;; parking. Raced against a timeout so a regression fails, never hangs.
+
+(deftest watch-workers-closes-events-when-all-done-test
+  (testing "events-ch closes once every worker channel closes"
+    (let [worker-a (async/chan 1)
+          worker-b (async/chan 1)
+          events-ch (async/chan 16)
+          _ (download/watch-workers! [worker-a worker-b] events-ch)]
+      (async/close! worker-a)
+      (async/close! worker-b)
+      (let [[value winner] (async/alts!! [events-ch (async/timeout 3000)])]
+        (is (= events-ch winner))
+        (is (nil? value)))))
+  (testing "zero workers closes immediately instead of parking"
+    (let [events-ch (async/chan 16)
+          _ (download/watch-workers! [] events-ch)
+          [_ winner] (async/alts!! [events-ch (async/timeout 3000)])]
+      (is (= events-ch winner)))))
+
+;; Issue #32 acceptance: a worker set that all exit drives the
+;; coordinator to :failed/:no-peers instead of parking. No disconnect
+;; events are enqueued, so only the watcher closing events-ch (the nil?
+;; branch) can end the run — a missing watcher loses the timeout race.
+;; Raced against a timeout so a regression fails instead of hanging.
+(deftest run-coordinator-worker-exits-fail-no-peers-test
+  (testing "an exited worker set ends the download with :no-peers"
+    (let [disk (mock-disk/create)
+          torrent (two-piece-torrent)
+          info (:info torrent)
+          events-ch (async/chan 16)
+          worker-a (async/chan 1)
+          worker-b (async/chan 1)
+          _ (download/watch-workers! [worker-a worker-b] events-ch)
+          env {:message-ctx {:piece-hashes (:pieces info)
+                             :piece-length (:piece-length info)
+                             :total-length (:length info)
+                             :total-pieces (count (:pieces info))}
+               :ports {:network-port (mock-net/create)
+                       :disk-port disk
+                       :time-port (mock-time/create)}
+               :conn-stats (atom {:connected 0 :failed 0})
+               :total-attempted 2}
+          state {:download (loop-download)
+                 :active-peers {}
+                 :blocks-received {}
+                 :expected-blocks {}
+                 :pending-dials #{"peer-a" "peer-b"}}
+          result-ch (async/thread (download/run-coordinator state events-ch env))]
+      ;; Workers exit without producing events: only the watcher can end this.
+      (async/close! worker-a)
+      (async/close! worker-b)
+      (let [[result winner] (async/alts!! [result-ch (async/timeout 5000)])]
+        (is (= result-ch winner) "coordinator must win the race; a timeout means it parked")
+        (is (= :failed (:state result)))
+        (is (= :no-peers (get-in result [:error :reason])))
+        (is (= "All peers disconnected" (get-in result [:error :message])))))))
+
 ;; Issue #11: the first refused dial must not fail the download while
 ;; other dials are still in flight; failure waits until every dial has
 ;; resolved with zero connections.
@@ -1102,7 +1186,8 @@
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
 ;; calculate-rate, update-stats-bytes, initial-stats, initial-download,
 ;; progress (time port); start-download, run-coordinator, run-download,
-;; load-persisted-state, persist-download-state (ports, channels, workers).
+;; load-persisted-state, persist-download-state (ports, channels, workers);
+;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------
 
 (deftest fdef-specs-hold-generatively-test

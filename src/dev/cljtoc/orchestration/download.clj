@@ -927,6 +927,21 @@
            :error {:reason :no-peers
                    :message (str "No peers available (" connected "/" total-attempted " connected)")})))
 
+(defn watch-workers!
+  "Close events-ch once every worker channel has closed.
+   run-peer returns its thread channel, which closes when the worker
+   exits — so all-closed means every worker is done. With zero workers
+   the channel closes immediately instead of parking the coordinator."
+  [worker-chs events-ch]
+  (async/thread
+    (doseq [worker-ch worker-chs]
+      (async/<!! worker-ch))
+    (async/close! events-ch)))
+
+(s/fdef watch-workers!
+  :args (s/cat :worker-chs coll? :events-ch any?)
+  :ret any?)
+
 (defn run-coordinator
   "Drive one download from events-ch to completion or swarm exhaustion.
    Handlers plan state transitions, the edge performs effects.
@@ -1030,11 +1045,14 @@
    Connects to peers, requests pieces, writes verified pieces.
    Returns the final Download record."
   [manager download]
-  (let [{:keys [disk-port]} manager
+  (let [{:keys [disk-port config]} manager
         init-result (async/<!! (disk/initialize-output-layout
                                 disk-port
                                 (:info (:torrent download))
-                                (:output-dir download)))]
+                                (:output-dir download)))
+        ;; Dial candidates capped exactly as the spawn below reads them,
+        ;; so the empty guard and the worker spawn cannot drift apart.
+        peer-addresses (capped-peer-addresses (map :address (:peers download)) config)]
     (cond
       (:error init-result)
       (assoc download :state :failed
@@ -1047,14 +1065,13 @@
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.
-      (empty? (:peers download))
+      (empty? peer-addresses)
       (assoc download :state :failed
              :error {:reason :no-peers
                      :message "No peers available: nothing to connect to"})
 
       :else
       (let [{:keys [network-port disk-port time-port]} manager
-            config (:config manager)
             torrent (:torrent download)
             info (:info torrent)
             info-hash (:info-hash torrent)
@@ -1065,7 +1082,6 @@
             peer-id (let [b (byte-array 20)]
                       (.nextBytes (SecureRandom.) b)
                       b)
-            peer-addresses (capped-peer-addresses (map :address (:peers download)) config)
             events-ch (async/chan 256)
             total-attempted (count peer-addresses)
             conn-stats (atom {:connected 0 :failed 0})]
@@ -1073,9 +1089,13 @@
         (println (str "  Connecting to " total-attempted " peers..."))
         (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
-      ;; Spawn peer workers
-        (doseq [addr peer-addresses]
-          (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
+      ;; Spawn peer workers; their channels close on worker exit,
+      ;; so watching them tells the coordinator when all peers are gone.
+        (let [worker-chs (mapv (fn [addr]
+                                 (peer-worker/run-peer network-port info-hash peer-id
+                                                       addr total-pieces events-ch))
+                               peer-addresses)]
+          (watch-workers! worker-chs events-ch))
 
       ;; Hand the event channel to the coordinator loop
         (run-coordinator (initial-coordinator-state download peer-addresses)

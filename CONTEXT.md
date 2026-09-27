@@ -42,7 +42,7 @@ A peer's network location: a host plus a port, written canonically as `host:port
 _Avoid_: peer string, endpoint, peer ID
 
 **Swarm exhaustion**:
-No live peer connections, no dials still in flight, and pieces still incomplete — the only condition under which the coordinator fails a download for lack of peers. Connected-but-choking peers and tracker re-announce are deliberately outside this definition.
+No live peer connections, no dials still in flight, and pieces still incomplete — the counter-based condition under which the coordinator fails a download for lack of peers. A closed event channel (every peer worker exited) fails the download the same way. Connected-but-choking peers and tracker re-announce are deliberately outside this definition.
 
 ## Peer exchange
 
