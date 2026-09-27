@@ -298,6 +298,26 @@
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
+(deftest write-output-piece-rejects-alias-with-untouched-target-test
+  ;; The alias check must see the whole layout, not just the piece's paths:
+  ;; with piece-length 4, piece 0 touches only a, but a is a symlink to b —
+  ;; validating [a] alone finds no collision, and the write corrupts b.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-alias-partial-")
+        target (io/file output-dir "t" "b")]
+    (.mkdirs (.getParentFile target))
+    (spit target "SENTINEL")
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath (io/file output-dir "t" "a"))
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          result (<!! (disk/write-output-piece port info output-dir 0
+                                               (byte-array [1 2 3 4])))]
+      (is (:error result))
+      (is (= "SENTINEL" (slurp target))))))
+
 (deftest filesystem-root-is-detected-by-shape-not-spelling-test
   ;; The root policy must not depend on how a platform spells a root.
   ;; Comparing against File/separator matches the Unix root only: a Windows

@@ -113,13 +113,15 @@
           {:ok files})))))
 
 (defn- write-layout!
-  "Blocking write of one piece into the torrent file layout. Only files this
-   piece overlaps are opened; each is resolved (symlink-contained, alias-free
-   across the piece's paths), truncated to its declared length, then the
-   spans land. Returns {:ok :written} or {:error ...}."
+  "Blocking write of one piece into the torrent file layout. Every declared
+   target is validated (symlink-contained, alias-free across the whole
+   layout — an alias between a touched path and an untouched one corrupts
+   just the same), but only files this piece overlaps are opened, truncated
+   to their declared length, and written. Returns {:ok :written} or
+   {:error ...}."
   [output-dir sizes spans bytes]
   (let [touched (group-by :path spans)
-        layout-result (resolve-layout output-dir (keys touched))]
+        layout-result (resolve-layout output-dir (keys sizes))]
     (if (:error layout-result)
       layout-result
       (try

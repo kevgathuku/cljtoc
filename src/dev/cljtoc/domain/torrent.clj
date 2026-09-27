@@ -197,18 +197,24 @@
 
 (defn- layout-error
   "The one layout guard shared by output-file-sizes and piece-file-spans: the
-   layout needs a :name, every declared path component must stay inside the
+   layout needs a :name, carries exactly one of :length (single-file) or
+   :files (multi-file), every declared path component must stay inside the
    output directory, and no two entries may claim the same path. A duplicate
    is fatal because the two derivations disagree about it — sizes collapse the
    entries into one map entry while spans keep them as distinct byte ranges,
-   and both ranges then land in the same physical file. Returns the error map,
-   or nil when the layout is usable.
+   and both ranges then land in the same physical file. So is carrying both
+   fields: total-size prefers :length while file-layout prefers :files, and
+   the two representations silently cover different bytes. Returns the error
+   map, or nil when the layout is usable.
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
   (let [components (cons (:name info) (mapcat :path (:files info)))
         layout (file-layout info)]
     (cond
+      (and (some? (:length info)) (some? (:files info)))
+      (bencode/torrent-error "info must not carry both :length and :files" {})
+
       (nil? (:name info))
       (bencode/torrent-error "info must carry :name for output paths" {})
 

@@ -412,6 +412,27 @@
               :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
     (is (:error (torrent/output-file-sizes info)))))
 
+(deftest mutually-exclusive-layout-fields-are-rejected-test
+  ;; An info carrying both :length (single-file) and :files (multi-file)
+  ;; derives two layouts at once: total-size prefers :length while
+  ;; file-layout prefers :files, so spans cover a different byte range from
+  ;; the initialized files — e.g. :length 4 with files totaling 8 leaves
+  ;; half the declared layout unwritten. The wire format leaves no room for
+  ;; both; reject the shape in the shared guard.
+  (let [info {:name "t" :piece-length 4 :length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}]
+    (testing "output-file-sizes refuses the two-layout info"
+      (let [result (torrent/output-file-sizes info)]
+        (is (:error result))
+        (is (re-find #"both :length and :files" (:message result)))))
+    (testing "piece-file-spans refuses it too"
+      (let [result (torrent/piece-file-spans info 0 4)]
+        (is (:error result))
+        (is (re-find #"both :length and :files" (:message result))))))
+  (testing "an empty :files beside :length is the same clash, not an empty layout"
+    (is (:error (torrent/output-file-sizes {:name "t" :piece-length 4
+                                            :length 4 :files []})))))
+
 (defspec piece-file-spans-cover-exactly-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)
