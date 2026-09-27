@@ -298,6 +298,38 @@
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
+(deftest initialize-output-layout-rejects-hardlink-alias-test
+  ;; Canonical strings cannot see hard links: t/a and t/b resolve
+  ;; differently yet share one inode, so both pass containment and the
+  ;; canonical collision check — then two ranges overwrite one file.
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-hardlink-")
+        target (io/file output-dir "t" "b")]
+    (.mkdirs (.getParentFile target))
+    (spit target "SENTINEL")
+    (java.nio.file.Files/createLink (.toPath (io/file output-dir "t" "a"))
+                                    (.toPath target))
+    (let [info {:name "t" :piece-length 8
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          result (<!! (disk/initialize-output-layout port info output-dir))]
+      (is (:error result))
+      (is (= "SENTINEL" (slurp target))))))
+
+(deftest write-output-piece-rejects-hardlink-alias-test
+  (let [port (make-port (temp-dir "disk-state-"))
+        output-dir (temp-dir "output-hardlink-write-")
+        target (io/file output-dir "t" "b")]
+    (.mkdirs (.getParentFile target))
+    (spit target "SENTINEL")
+    (java.nio.file.Files/createLink (.toPath (io/file output-dir "t" "a"))
+                                    (.toPath target))
+    (let [info {:name "t" :piece-length 8
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          result (<!! (disk/write-output-piece port info output-dir 0
+                                               (byte-array [1 2 3 4 5 6 7 8])))]
+      (is (:error result))
+      (is (= "SENTINEL" (slurp target))))))
+
 (deftest write-output-piece-rejects-alias-with-untouched-target-test
   ;; The alias check must see the whole layout, not just the piece's paths:
   ;; with piece-length 4, piece 0 touches only a, but a is a symlink to b —

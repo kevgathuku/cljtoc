@@ -10,7 +10,8 @@
             [clojure.spec.alpha :as s]
             [clojure.core.async :as async])
   (:import [java.io File FileInputStream FileOutputStream RandomAccessFile]
-           [java.nio.file Files Paths]
+           [java.nio.file Files LinkOption Paths]
+           [java.nio.file.attribute BasicFileAttributes]
            [java.util Arrays]))
 
 (defn- containment-prefix
@@ -76,17 +77,38 @@
           {:ok out-file}
           (escape))))))
 
+(defn- file-identity
+  "Filesystem identity of an existing target for alias detection: the
+   store-qualified fileKey, which sees what canonical strings cannot — hard
+   links (two names, one inode) and case-folded spellings of an existing
+   file. Nil when the target does not exist (nothing to alias yet), when
+   the filesystem provides no key, or when the attributes cannot be read;
+   unknown identities never group, so this fails open toward the canonical
+   check rather than refusing distinct files. Never throws."
+  [out-file]
+  (try
+    (when (.exists ^File out-file)
+      (let [path (.toPath ^File out-file)
+            key (-> (Files/readAttributes path BasicFileAttributes
+                                          (into-array LinkOption []))
+                    (.fileKey))]
+        (when (some? key)
+          [(.name (Files/getFileStore path)) key])))
+    (catch Exception _
+      nil)))
+
 (defn- resolve-layout
   "Resolve every declared path under output-dir for writing. Each path is
    containment-checked (see resolve-contained), then the resolved targets
-   are rejected when two declared paths share one canonical file. Per-path
-   containment cannot see that alias — an in-tree symlink passes for both
-   entries alone, after which their independent ranges overwrite one target.
-   Nothing is truncated or written by this step.
-   ponytail: compared as canonical strings, so two spellings one filesystem
-   folds onto one file (A/a on a case-insensitive FS) still slip through —
-   realpath keeps the spelling as given. Catching those needs inode identity
-   on existing files, which is a bigger creation-then-verify dance.
+   are rejected when two declared paths share one canonical file or one
+   filesystem identity. Per-path containment cannot see those aliases — an
+   in-tree symlink or hard link passes for both entries alone, after which
+   their independent ranges overwrite one target. Nothing is truncated or
+   written by this step.
+   ponytail: identity needs an existing file, so two spellings one
+   filesystem folds onto a not-yet-created file (A/a, neither present)
+   still slip through — realpath keeps the spelling as given and there is
+   no inode to compare. Closed the moment either spelling exists.
    Returns {:ok {declared-path File}} or {:error ...}."
   [output-dir declared-paths]
   (let [resolved (into {} (map (fn [declared-path]
@@ -98,19 +120,31 @@
       (let [files (into {} (map (fn [[declared-path envelope]]
                                   [declared-path (:ok envelope)])
                                 resolved))
-            collision (->> files
-                           (map (fn [[declared-path out-file]]
-                                  [declared-path (.getCanonicalPath ^File out-file)]))
-                           (group-by second)
-                           (filter #(> (count (second %)) 1))
-                           first)]
-        (if collision
-          (let [[target entries] collision]
+            canonical-collision (->> files
+                                     (map (fn [[declared-path out-file]]
+                                            [declared-path (.getCanonicalPath ^File out-file)]))
+                                     (group-by second)
+                                     (filter #(> (count (second %)) 1))
+                                     first)]
+        (if canonical-collision
+          (let [[target entries] canonical-collision]
             {:error :unsafe-path
              :message (str "Output paths " (pr-str (mapv first entries))
                            " resolve to the same file " target
                            " under " output-dir)})
-          {:ok files})))))
+          (let [identity-collision (->> files
+                                        (map (fn [[declared-path out-file]]
+                                               [declared-path (file-identity out-file)]))
+                                        (filter (comp some? second))
+                                        (group-by second)
+                                        (filter #(> (count (second %)) 1))
+                                        first)]
+            (if identity-collision
+              (let [[_ entries] identity-collision]
+                {:error :unsafe-path
+                 :message (str "Output paths " (pr-str (mapv first entries))
+                               " refer to the same file on disk under " output-dir)})
+              {:ok files})))))))
 
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Every declared
