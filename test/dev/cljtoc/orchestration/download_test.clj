@@ -980,6 +980,42 @@
           [_ winner] (async/alts!! [events-ch (async/timeout 3000)])]
       (is (= events-ch winner)))))
 
+;; Issue #32 acceptance: a worker set that all exit drives the
+;; coordinator to :failed/:no-peers instead of parking. The result
+;; channel races a timeout, so a regression fails instead of hanging.
+(deftest run-coordinator-worker-exits-fail-no-peers-test
+  (testing "an exited worker set ends the download with :no-peers"
+    (let [disk (mock-disk/create)
+          torrent (two-piece-torrent)
+          info (:info torrent)
+          events-ch (async/chan 16)
+          worker-a (async/chan 1)
+          worker-b (async/chan 1)
+          _ (download/watch-workers! [worker-a worker-b] events-ch)
+          env {:message-ctx {:piece-hashes (:pieces info)
+                             :piece-length (:piece-length info)
+                             :total-length (:length info)
+                             :total-pieces (count (:pieces info))}
+               :ports {:network-port (mock-net/create)
+                       :disk-port disk
+                       :time-port (mock-time/create)}
+               :conn-stats (atom {:connected 0 :failed 0})
+               :total-attempted 2}
+          state {:download (loop-download)
+                 :active-peers {}
+                 :blocks-received {}
+                 :expected-blocks {}
+                 :pending-dials #{"peer-a" "peer-b"}}
+          result-ch (async/thread (download/run-coordinator state events-ch env))]
+      (async/>!! events-ch {:type :peer-disconnected :address "peer-a" :reason "refused"})
+      (async/>!! events-ch {:type :peer-disconnected :address "peer-b" :reason "timeout"})
+      (async/close! worker-a)
+      (async/close! worker-b)
+      (let [[result winner] (async/alts!! [result-ch (async/timeout 5000)])]
+        (is (= result-ch winner) "coordinator must win the race; a timeout means it parked")
+        (is (= :failed (:state result)))
+        (is (= :no-peers (get-in result [:error :reason])))))))
+
 ;; Issue #11: the first refused dial must not fail the download while
 ;; other dials are still in flight; failure waits until every dial has
 ;; resolved with zero connections.
@@ -1148,7 +1184,8 @@
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
 ;; calculate-rate, update-stats-bytes, initial-stats, initial-download,
 ;; progress (time port); start-download, run-coordinator, run-download,
-;; load-persisted-state, persist-download-state (ports, channels, workers).
+;; load-persisted-state, persist-download-state (ports, channels, workers);
+;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------
 
 (deftest fdef-specs-hold-generatively-test
