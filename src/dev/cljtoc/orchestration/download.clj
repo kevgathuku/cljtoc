@@ -927,6 +927,21 @@
            :error {:reason :no-peers
                    :message (str "No peers available (" connected "/" total-attempted " connected)")})))
 
+(defn watch-workers!
+  "Close events-ch once every worker channel has closed.
+   run-peer returns its thread channel, which closes when the worker
+   exits — so all-closed means every worker is done. With zero workers
+   the channel closes immediately instead of parking the coordinator."
+  [worker-chs events-ch]
+  (async/thread
+    (doseq [worker-ch worker-chs]
+      (async/<!! worker-ch))
+    (async/close! events-ch)))
+
+(s/fdef watch-workers!
+  :args (s/cat :worker-chs coll? :events-ch any?)
+  :ret any?)
+
 (defn run-coordinator
   "Drive one download from events-ch to completion or swarm exhaustion.
    Handlers plan state transitions, the edge performs effects.
@@ -1073,9 +1088,13 @@
         (println (str "  Connecting to " total-attempted " peers..."))
         (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
-      ;; Spawn peer workers
-        (doseq [addr peer-addresses]
-          (peer-worker/run-peer network-port info-hash peer-id addr total-pieces events-ch))
+      ;; Spawn peer workers; their channels close on worker exit,
+      ;; so watching them tells the coordinator when all peers are gone.
+        (let [worker-chs (mapv (fn [addr]
+                                 (peer-worker/run-peer network-port info-hash peer-id
+                                                       addr total-pieces events-ch))
+                               peer-addresses)]
+          (watch-workers! worker-chs events-ch))
 
       ;; Hand the event channel to the coordinator loop
         (run-coordinator (initial-coordinator-state download peer-addresses)

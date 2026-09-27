@@ -943,6 +943,27 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (= "All peers disconnected" (get-in result [:error :message]))))))
 
+;; Issue #32: the worker-exit signal must close the event channel, so
+;; the coordinator's nil? branch terminates the download instead of
+;; parking. Raced against a timeout so a regression fails, never hangs.
+
+(deftest watch-workers-closes-events-when-all-done-test
+  (testing "events-ch closes once every worker channel closes"
+    (let [worker-a (async/chan 1)
+          worker-b (async/chan 1)
+          events-ch (async/chan 16)
+          _ (download/watch-workers! [worker-a worker-b] events-ch)]
+      (async/close! worker-a)
+      (async/close! worker-b)
+      (let [[value winner] (async/alts!! [events-ch (async/timeout 3000)])]
+        (is (= events-ch winner))
+        (is (nil? value)))))
+  (testing "zero workers closes immediately instead of parking"
+    (let [events-ch (async/chan 16)
+          _ (download/watch-workers! [] events-ch)
+          [_ winner] (async/alts!! [events-ch (async/timeout 3000)])]
+      (is (= events-ch winner)))))
+
 ;; Issue #11: the first refused dial must not fail the download while
 ;; other dials are still in flight; failure waits until every dial has
 ;; resolved with zero connections.
