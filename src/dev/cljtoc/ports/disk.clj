@@ -28,25 +28,30 @@
   (write-piece [this piece-index bytes]
     "Write verified piece data to the piece cache under piece-index.
      This is not the final file layout — that is write-output-piece's job,
-     which maps the bytes into output-dir via domain.torrent/piece-file-spans.
+     which maps the bytes into output-dir via the compiled output layout.
      Returns a channel that will deliver {:ok :written} or {:error reason}.
 
      Side effects: writes to filesystem")
 
-  (write-output-piece [this info output-dir piece-index bytes]
+  (write-output-piece [this layout output-dir piece-index bytes]
     "Write one verified piece into the torrent file layout under output-dir.
-     Single-file info (:length) lands at output-dir/<name>; multi-file
-     info (:files) lands at output-dir/<name>/<path...>, splitting pieces
-     that cross a file boundary via domain.torrent/piece-file-spans.
-     Returns a channel that will deliver {:ok :written} or {:error reason}.
+     layout is the compiled output layout for the download
+     (domain.torrent/compile-output-layout), derived once at download
+     start so the per-piece path does no layout arithmetic of its own.
+     Single-file layouts land at output-dir/<name>; multi-file layouts
+     at output-dir/<name>/<path...>, splitting pieces that cross a file
+     boundary. Returns a channel that will deliver {:ok :written} or
+     {:error reason}.
 
-     Side effects: writes to filesystem")
+      Side effects: writes to filesystem")
 
-  (initialize-output-layout [this info output-dir]
+  (initialize-output-layout [this layout output-dir]
     "Create every declared output path under output-dir at its declared
-     length, including zero-length files. Runs once at download start so
-     a torrent with no pieces still materializes its empty files, and so
-     piece writes only touch files they overlap.
+     length, including zero-length files. layout is the compiled output
+     layout for the download (domain.torrent/compile-output-layout).
+     Runs once at download start so a torrent with no pieces still
+     materializes its empty files, and so piece writes only touch files
+     they overlap.
      Returns a channel that will deliver {:ok :initialized} or {:error reason}.
 
      Side effects: creates files and directories")

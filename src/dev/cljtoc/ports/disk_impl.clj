@@ -240,16 +240,16 @@
             (async/>! ch {:error :write-error :message (.getMessage e)}))))
       ch))
 
-  (write-output-piece [_ info output-dir piece-index bytes]
+  (write-output-piece [_ layout output-dir piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
         (try
-          (let [spans-result (torrent/piece-file-spans info piece-index (alength ^bytes bytes))
-                sizes-result (torrent/output-file-sizes info)
+          (let [spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))
+                sizes (:sizes layout)
                 declined (declined-output-dir output-dir)]
-            ;; No sizes-error branch: every size error comes from the layout
-            ;; guard piece-file-spans also runs, so spans-result is always
-            ;; the first to fail.
+            ;; No sizes-error branch: a compiled layout carries the sizes
+            ;; the spans were derived from, so spans-result is the only
+            ;; derivation that can fail.
             (cond
               declined
               (async/>! ch declined)
@@ -259,30 +259,35 @@
                             :message (str "Cannot map piece " piece-index ": "
                                           (:message spans-result))})
 
+              (not (map? sizes))
+              (async/>! ch {:error :invalid-info
+                            :message "Invalid output layout: missing file sizes"})
+
               :else
               (async/>! ch (write-layout! output-dir
-                                          (:ok sizes-result)
+                                          sizes
                                           (:ok spans-result)
                                           bytes))))
           (catch Exception error
             (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))
 
-  (initialize-output-layout [_ info output-dir]
+  (initialize-output-layout [_ layout output-dir]
     (let [ch (async/chan 1)]
       (async/go
         (try
-          (let [sizes-result (torrent/output-file-sizes info)
+          (let [sizes (:sizes layout)
                 declined (declined-output-dir output-dir)]
             (cond
               declined
               (async/>! ch declined)
 
-              (:error sizes-result)
-              (async/>! ch {:error :invalid-info :message (:message sizes-result)})
+              (not (map? sizes))
+              (async/>! ch {:error :invalid-info
+                            :message "Invalid output layout: missing file sizes"})
 
               :else
-              (async/>! ch (init-layout! output-dir (:ok sizes-result)))))
+              (async/>! ch (init-layout! output-dir sizes))))
           (catch Exception error
             (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))

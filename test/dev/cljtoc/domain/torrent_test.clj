@@ -612,16 +612,16 @@
 (deftest compile-output-layout-test
   (testing "single-file info compiles to one entry starting at zero"
     (is (= {:ok {:files [{:path ["test.txt"] :length 8 :start 0}]
-                   :sizes {["test.txt"] 8}
-                   :total 8
-                   :piece-length 4}}
+                 :sizes {["test.txt"] 8}
+                 :total 8
+                 :piece-length 4}}
            (torrent/compile-output-layout {:name "test.txt" :piece-length 4 :length 8}))))
   (testing "multi-file entries carry cumulative byte starts"
     (is (= {:ok {:files [{:path ["t" "a"] :length 4 :start 0}
-                               {:path ["t" "b"] :length 6 :start 4}]
-                   :sizes {["t" "a"] 4 ["t" "b"] 6}
-                   :total 10
-                   :piece-length 6}}
+                         {:path ["t" "b"] :length 6 :start 4}]
+                 :sizes {["t" "a"] 4 ["t" "b"] 6}
+                 :total 10
+                 :piece-length 6}}
            (torrent/compile-output-layout {:name "t" :piece-length 6
                                            :files [{:path ["a"] :length 4}
                                                    {:path ["b"] :length 6}]}))))
@@ -637,7 +637,14 @@
                                                 :files [{:path ["a"] :length 8}]})))
     (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
                                                 :files [{:path ["a"] :length 4}
-                                                        {:path ["a"] :length 4}]})))))
+                                                        {:path ["a"] :length 4}]}))))
+  (testing "non-collection :files is an error envelope, never a throw"
+    ;; Every entry point into the shared layout guard must answer, since
+    ;; info is torrent-controlled and callers handle errors as data.
+    (let [info {:name "t" :piece-length 4 :files 42}]
+      (is (:error (torrent/compile-output-layout info)))
+      (is (:error (torrent/output-file-sizes info)))
+      (is (:error (torrent/piece-file-spans info 0 4))))))
 
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"

@@ -288,37 +288,42 @@
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
-  (let [components (cons (:name info) (mapcat :path (:files info)))
-        ;; Top-level :length is legitimately absent on multi-file infos;
-        ;; file entries always carry theirs, so only the top slot tolerates
-        ;; nil. (Single-file infos without :length are caught by the
-        ;; no-layout branch above, before this runs.)
-        layout (file-layout info)]
-    (cond
-      (and (some? (:length info)) (some? (:files info)))
-      (bencode/torrent-error "info must not carry both :length and :files" {})
+  ;; Checked before the layout is derived below: map/mapcat seq :files,
+  ;; so a non-collection there throws instead of answering. info is
+  ;; torrent-controlled, and the namespace contract is errors as data.
+  (if (and (some? (:files info)) (not (sequential? (:files info))))
+    (bencode/torrent-error "info :files must be a collection of file entries" {})
+    (let [components (cons (:name info) (mapcat :path (:files info)))
+          ;; Top-level :length is legitimately absent on multi-file infos;
+          ;; file entries always carry theirs, so only the top slot tolerates
+          ;; nil. (Single-file infos without :length are caught by the
+          ;; no-layout branch above, before this runs.)
+          layout (file-layout info)]
+      (cond
+        (and (some? (:length info)) (some? (:files info)))
+        (bencode/torrent-error "info must not carry both :length and :files" {})
 
-      (and (nil? (:length info)) (nil? (:files info)))
-      (bencode/torrent-error "info must carry either :length or :files" {})
+        (and (nil? (:length info)) (nil? (:files info)))
+        (bencode/torrent-error "info must carry either :length or :files" {})
 
-      (not (and (or (nil? (:length info)) (nat-int? (:length info)))
-                (every? nat-int? (map :length (:files info)))))
-      (bencode/torrent-error "info carries a file length that is not a natural integer" {})
+        (not (and (or (nil? (:length info)) (nat-int? (:length info)))
+                  (every? nat-int? (map :length (:files info)))))
+        (bencode/torrent-error "info carries a file length that is not a natural integer" {})
 
-      (nil? (:name info))
-      (bencode/torrent-error "info must carry :name for output paths" {})
+        (nil? (:name info))
+        (bencode/torrent-error "info must carry :name for output paths" {})
 
-      (not (every? safe-path-component? components))
-      (bencode/torrent-error "info carries a path component that escapes the output directory" {})
+        (not (every? safe-path-component? components))
+        (bencode/torrent-error "info carries a path component that escapes the output directory" {})
 
-      (not= (count layout) (count (distinct (map :path layout))))
-      (bencode/torrent-error "info declares the same output path twice" {})
+        (not= (count layout) (count (distinct (map :path layout))))
+        (bencode/torrent-error "info declares the same output path twice" {})
 
-      (prefix-collision? (map :path layout))
-      (bencode/torrent-error "info declares an output path inside another" {})
+        (prefix-collision? (map :path layout))
+        (bencode/torrent-error "info declares an output path inside another" {})
 
-      :else
-      nil)))
+        :else
+        nil))))
 
 (defn compile-output-layout
   "Derive the output layout of an info dict once per download: every

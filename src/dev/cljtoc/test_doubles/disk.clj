@@ -40,7 +40,7 @@
             (async/>! ch {:ok :written}))))
       ch))
 
-  (write-output-piece [_ _info _output-dir piece-index bytes]
+  (write-output-piece [_ _layout _output-dir piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
         (if-let [err (or (:output-write-error config) (:write-error config))]
@@ -50,13 +50,13 @@
             (async/>! ch {:ok :written}))))
       ch))
 
-  (initialize-output-layout [_ info output-dir]
+  (initialize-output-layout [_ layout output-dir]
     (let [ch (async/chan 1)]
       (async/go
         (if-let [err (:output-init-error config)]
           (async/>! ch err)
           (do
-            (swap! layouts-initialized conj {:info info :output-dir output-dir})
+            (swap! layouts-initialized conj {:layout layout :output-dir output-dir})
             (async/>! ch {:ok :initialized}))))
       ch))
 
