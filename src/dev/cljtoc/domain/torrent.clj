@@ -71,7 +71,8 @@
 
 (s/fdef extract-announce-urls
   :args (s/cat :decoded-dict map?)
-  :ret map?)
+  :ret map?
+  :fn #(= #{:announce :announce-list} (-> % :ret keys set)))
 
 ;; ---------------------------------------------------------------------------
 ;; Piece parsing
@@ -128,7 +129,12 @@
 (s/fdef parse-info-dict
   :args (s/cat :info-map map?)
   :ret map?
-  :fn #(map? (-> % :ret :ok)))
+  :fn #(let [parsed (-> % :ret :ok)
+             keys-found (set (keys parsed))]
+         (and (map? parsed)
+              (every? keys-found [:name :piece-length :pieces])
+              (every? #{:name :piece-length :pieces :length :files :private}
+                      keys-found))))
 
 (defn total-size
   "Total content bytes described by an info dict: :length for single-file
@@ -158,16 +164,52 @@
   :args (s/cat :info ::totalable-info)
   :ret nat-int?)
 
-(s/def ::info map?)
 (s/def ::piece-span-index nat-int?)
 (s/def ::piece-byte-count pos-int?)
 (s/def ::path (s/coll-of string? :kind vector? :min-count 1))
 (s/def ::file-offset nat-int?)
 (s/def ::data-offset nat-int?)
-(s/def ::length pos-int?)
-(s/def ::file-span
-  (s/keys :req-un [::path ::file-offset ::data-offset ::length]))
+
+(defn- span-shaped?
+  "True when span has the file-span shape: a non-empty string path vector,
+   nat-int offsets, positive length. A predicate rather than s/keys:
+   s/keys matches keys by spec name, and :length already means the nat-int
+   file length above — one key, one meaning per namespace — so the pos-int?
+   span length is asserted here instead."
+  [span]
+  (and (map? span)
+       (let [{span-path :path file-offset :file-offset
+              data-offset :data-offset span-length :length} span]
+         (and (vector? span-path)
+              (seq span-path)
+              (every? string? span-path)
+              (nat-int? file-offset)
+              (nat-int? data-offset)
+              (pos-int? span-length)))))
+
+(s/def ::file-span (s/and map? span-shaped?))
 (s/def ::file-span-list (s/coll-of ::file-span :kind vector?))
+
+;; Declared info shapes: single-file carries :length, multi-file carries
+;; :files, never both (layout-error refuses the pair). s/keys matches keys
+;; by spec name, so the nat-int file :length needs its own spec — ::length
+;; used to mean the pos-int? span length, now ::span-length above.
+(s/def ::name string?)
+(s/def ::piece-length pos-int?)
+(s/def ::pieces (s/coll-of bytes?))
+(s/def ::length nat-int?)
+(s/def ::file-entry
+  (s/keys :req-un [::path ::length]))
+(s/def ::files (s/coll-of ::file-entry :kind vector?))
+(s/def ::private boolean?)
+(s/def ::single-info
+  (s/keys :req-un [::name ::piece-length ::length]
+          :opt-un [::pieces ::private]))
+(s/def ::multi-info
+  (s/keys :req-un [::name ::piece-length ::files]
+          :opt-un [::pieces ::private]))
+(s/def ::info
+  (s/or :single ::single-info :multi ::multi-info))
 
 (defn- safe-path-component?
   "True when a torrent-declared path component cannot escape the output
@@ -199,21 +241,28 @@
   "The one layout guard shared by output-file-sizes and piece-file-spans: the
    layout needs a :name, carries exactly one of :length (single-file) or
    :files (multi-file), every declared path component must stay inside the
-   output directory, and no two entries may claim the same path. A duplicate
-   is fatal because the two derivations disagree about it — sizes collapse the
-   entries into one map entry while spans keep them as distinct byte ranges,
-   and both ranges then land in the same physical file. So is carrying both
-   fields: total-size prefers :length while file-layout prefers :files, and
-   the two representations silently cover different bytes. Returns the error
-   map, or nil when the layout is usable.
+   output directory, every present length must be a natural integer, and no
+   two entries may claim the same path. A duplicate is fatal because the two
+   derivations disagree about it — sizes collapse the entries into one map
+   entry while spans keep them as distinct byte ranges, and both ranges then
+   land in the same physical file. So is carrying both fields: total-size
+   prefers :length while file-layout prefers :files, and the two
+   representations silently cover different bytes. So is a non-integer
+   length: spans crash comparing against it while sizes hand the string
+   downstream to explode later, far from the lie. Returns the error map,
+   or nil when the layout is usable.
    ponytail: paths are compared as declared, so a case-insensitive filesystem
    can still map two differently-spelled paths onto one file."
   [info]
   (let [components (cons (:name info) (mapcat :path (:files info)))
+        lengths (cons (:length info) (map :length (:files info)))
         layout (file-layout info)]
     (cond
       (and (some? (:length info)) (some? (:files info)))
       (bencode/torrent-error "info must not carry both :length and :files" {})
+
+      (not (every? #(or (nil? %) (nat-int? %)) lengths))
+      (bencode/torrent-error "info carries a file length that is not a natural integer" {})
 
       (nil? (:name info))
       (bencode/torrent-error "info must carry :name for output paths" {})
@@ -253,7 +302,6 @@
    Returns {:ok spans} or {:error ...}."
   [info piece-index piece-byte-count]
   (let [nominal (:piece-length info)
-        total (total-size info)
         bad-layout (layout-error info)]
     (cond
       (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
@@ -266,39 +314,56 @@
       bad-layout
 
       :else
-      (let [piece-start (* piece-index nominal)]
-        (if (>= piece-start total)
-          (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
-                                 {:piece-index piece-index})
-          (let [piece-end (min total (+ piece-start piece-byte-count))
-                ;; layout is non-nil here: layout-error has already rejected
-                ;; the nil or unsafe :name that is the only way file-layout
-                ;; returns nil.
-                layout (file-layout info)]
-            (let [spans (loop [remaining layout
-                               file-start 0
-                               acc (transient [])]
-                          (if (empty? remaining)
-                            (persistent! acc)
-                            (let [{file-path :path file-length :length} (first remaining)
-                                  file-end (+ file-start file-length)
-                                  overlap-start (max piece-start file-start)
-                                  overlap-end (min piece-end file-end)]
-                              (recur (rest remaining)
-                                     file-end
-                                     (if (< overlap-start overlap-end)
-                                       (conj! acc {:path file-path
-                                                   :file-offset (- overlap-start file-start)
-                                                   :data-offset (- overlap-start piece-start)
-                                                   :length (- overlap-end overlap-start)})
-                                       acc)))))]
-              {:ok spans})))))))
+      ;; Legit lengths can still overflow long arithmetic (a huge nominal
+      ;; times a huge index), and the contract is errors as data — never a
+      ;; throw — so overflow reports like any other unmappable piece. total
+      ;; is computed here, past the guard, for the same reason: summing
+      ;; unvalidated lengths can throw before the guard gets its say.
+      (try
+        (let [total (total-size info)
+              piece-start (* piece-index nominal)]
+          (if (>= piece-start total)
+            (bencode/torrent-error (str "piece " piece-index " starts past total size " total)
+                                   {:piece-index piece-index})
+            (let [piece-end (min total (+ piece-start piece-byte-count))
+                  ;; layout is non-nil here: layout-error has already rejected
+                  ;; the nil or unsafe :name that is the only way file-layout
+                  ;; returns nil.
+                  layout (file-layout info)]
+              (let [spans (loop [remaining layout
+                                 file-start 0
+                                 acc (transient [])]
+                            (if (empty? remaining)
+                              (persistent! acc)
+                              (let [{file-path :path file-length :length} (first remaining)
+                                    file-end (+ file-start file-length)
+                                    overlap-start (max piece-start file-start)
+                                    overlap-end (min piece-end file-end)]
+                                (recur (rest remaining)
+                                       file-end
+                                       (if (< overlap-start overlap-end)
+                                         (conj! acc {:path file-path
+                                                     :file-offset (- overlap-start file-start)
+                                                     :data-offset (- overlap-start piece-start)
+                                                     :length (- overlap-end overlap-start)})
+                                         acc)))))]
+                {:ok spans}))))
+        (catch ArithmeticException _
+          (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
+                                 {:piece-index piece-index}))))))
 
 (s/fdef piece-file-spans
   :args (s/cat :info ::info
                :piece-index ::piece-span-index
                :piece-byte-count ::piece-byte-count)
-  :ret map?)
+  :ret map?
+  ;; Every emitted span conforms ::file-span: paths survive the component
+  ;; guard as string vectors, offsets are ordered differences (nat-int?),
+  ;; and the overlap guard keeps lengths positive. Error envelopes take
+  ;; the other branch, so this also gives ::file-span-list its first use.
+  :fn #(let [ret (:ret %)]
+         (or (:error ret)
+             (s/valid? ::file-span-list (:ok ret)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Validation

@@ -433,6 +433,52 @@
     (is (:error (torrent/output-file-sizes {:name "t" :piece-length 4
                                             :length 4 :files []})))))
 
+(deftest non-integer-lengths-are-rejected-test
+  ;; Lengths the derivations cannot honestly process: a string :length
+  ;; crashes piece-file-spans in (>= piece-start total) instead of erroring,
+  ;; and output-file-sizes happily hands the string downstream, where
+  ;; setLength explodes later, far from the lie. Same guard, same reason.
+  (testing "a non-integer single-file length is an error in both derivations"
+    (let [info {:name "t" :piece-length 4 :length "x"}]
+      (is (:error (torrent/output-file-sizes info)))
+      (is (:error (torrent/piece-file-spans info 0 4)))))
+  (testing "a non-integer file-entry length is an error in both derivations"
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length "x"}]}]
+      (is (:error (torrent/output-file-sizes info)))
+      (is (:error (torrent/piece-file-spans info 0 4)))))
+  (testing "zero stays admitted — it is a length, and empty files are real"
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]}]
+      (is (:ok (torrent/output-file-sizes info)))
+      (is (:ok (torrent/piece-file-spans info 0 4))))))
+
+;; The exclusivity rule, generated rather than hoped for: stest/check over
+;; the derivations can only feed them bare maps, whose generator all but
+;; never emits both keys — so the rule gets its own generator that always
+;; builds the hostile shape, across lengths and file counts.
+(defspec both-layout-fields-always-refused-spec 100
+  (prop/for-all [length gen/nat
+                 file-count (gen/choose 1 3)]
+                (let [info {:name "t" :piece-length 1 :length length
+                            :files (mapv (fn [file-index]
+                                           {:path [(str "f" file-index)]
+                                            :length (inc file-index)})
+                                         (range file-count))}]
+                  (and (:error (torrent/output-file-sizes info))
+                       (:error (torrent/piece-file-spans info 0 1))))))
+
+(deftest piece-arithmetic-overflow-is-an-error-test
+  ;; Found by stest/check once ::info generated realistic shapes: a huge
+  ;; piece-length times a huge index overflows long in (* piece-index
+  ;; nominal). Real torrents cannot reach it, but the contract is errors
+  ;; as data — never a throw — so overflow reports instead of escaping.
+  (testing "overflowing piece arithmetic returns an error, not ArithmeticException"
+    (let [info {:name "t" :piece-length 4611686018427387904 :length 8}
+          result (torrent/piece-file-spans info 2 4)]
+      (is (:error result))
+      (is (re-find #"overflow" (:message result))))))
+
 (defspec piece-file-spans-cover-exactly-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)
