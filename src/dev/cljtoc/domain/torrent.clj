@@ -122,9 +122,10 @@
 
 (defn parse-info-dict
   "Parses a decoded info dictionary into a structured map with keys:
-  :name, :piece-length, :pieces (vector of 20-byte arrays),
-  :length (single-file only), :files (multi-file only), :private (optional).
-  Returns {:ok info-map} or an error map."
+   :name, :piece-length, :pieces (vector of 20-byte arrays),
+   :length (single-file only), :files (multi-file only), :private (optional).
+   Always returns {:ok info-map}; absent fields surface as nils for
+   validate-torrent to report."
   [info-map]
   (let [name-val (bytes->str (get info-map "name"))
         piece-length (get info-map "piece length")
@@ -379,24 +380,23 @@
                   ;; the nil or unsafe :name that is the only way file-layout
                   ;; returns nil.
                   layout (file-layout info)]
-              (let [spans (loop [remaining layout
-                                 file-start 0
-                                 acc (transient [])]
-                            (if (empty? remaining)
-                              (persistent! acc)
-                              (let [{file-path :path file-length :length} (first remaining)
-                                    file-end (+ file-start file-length)
-                                    overlap-start (max piece-start file-start)
-                                    overlap-end (min piece-end file-end)]
-                                (recur (rest remaining)
-                                       file-end
-                                       (if (< overlap-start overlap-end)
-                                         (conj! acc {:path file-path
-                                                     :file-offset (- overlap-start file-start)
-                                                     :data-offset (- overlap-start piece-start)
-                                                     :length (- overlap-end overlap-start)})
-                                         acc)))))]
-                {:ok spans}))))
+              {:ok (loop [remaining layout
+                          file-start 0
+                          acc (transient [])]
+                     (if (empty? remaining)
+                       (persistent! acc)
+                       (let [{file-path :path file-length :length} (first remaining)
+                             file-end (+ file-start file-length)
+                             overlap-start (max piece-start file-start)
+                             overlap-end (min piece-end file-end)]
+                         (recur (rest remaining)
+                                file-end
+                                (if (< overlap-start overlap-end)
+                                  (conj! acc {:path file-path
+                                              :file-offset (- overlap-start file-start)
+                                              :data-offset (- overlap-start piece-start)
+                                              :length (- overlap-end overlap-start)})
+                                  acc)))))})))
         (catch ArithmeticException _
           (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
                                  {:piece-index piece-index}))))))
@@ -542,26 +542,26 @@
               (let [info-map (get decoded "info")]
                 (if-not info-map
                   (bencode/torrent-error "missing info dict" {:keys-found (keys decoded)})
+                  ;; parse-info-dict is total — it always returns {:ok ...} —
+                  ;; so there is no error branch to take here.
                   (let [info-result (parse-info-dict info-map)
-                        announce-urls (extract-announce-urls decoded)]
-                    (if (:error info-result)
-                      info-result
-                      (let [parsed (cond-> {:announce (:announce announce-urls)
-                                            :announce-list (:announce-list announce-urls)
-                                            :info (:ok info-result)
-                                            :info-hash (:ok info-hash-result)}
-                                     (get decoded "comment")
-                                     (assoc :comment (bytes->str (get decoded "comment")))
-                                     (get decoded "created by")
-                                     (assoc :created-by (bytes->str (get decoded "created by")))
-                                     (get decoded "creation date")
-                                     (assoc :creation-date (get decoded "creation date"))
-                                     (get decoded "encoding")
-                                     (assoc :encoding (bytes->str (get decoded "encoding"))))
-                            validation (validate-torrent parsed)]
-                        (if (:ok validation)
-                          {:ok parsed}
-                          validation)))))))))))))
+                        announce-urls (extract-announce-urls decoded)
+                        parsed (cond-> {:announce (:announce announce-urls)
+                                        :announce-list (:announce-list announce-urls)
+                                        :info (:ok info-result)
+                                        :info-hash (:ok info-hash-result)}
+                                 (get decoded "comment")
+                                 (assoc :comment (bytes->str (get decoded "comment")))
+                                 (get decoded "created by")
+                                 (assoc :created-by (bytes->str (get decoded "created by")))
+                                 (get decoded "creation date")
+                                 (assoc :creation-date (get decoded "creation date"))
+                                 (get decoded "encoding")
+                                 (assoc :encoding (bytes->str (get decoded "encoding"))))
+                        validation (validate-torrent parsed)]
+                    (if (:ok validation)
+                      {:ok parsed}
+                      validation)))))))))))
 
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)

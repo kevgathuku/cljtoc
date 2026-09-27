@@ -9,8 +9,8 @@
             [clojure.edn :as edn]
             [clojure.spec.alpha :as s]
             [clojure.core.async :as async])
-  (:import [java.io File FileInputStream FileOutputStream RandomAccessFile]
-           [java.nio.file Files LinkOption Paths]
+  (:import [java.io File RandomAccessFile]
+           [java.nio.file Files LinkOption]
            [java.nio.file.attribute BasicFileAttributes]
            [java.util Arrays]))
 
@@ -198,7 +198,7 @@
             config]
 
   disk/IDiskPort
-  (read-torrent-file [this path]
+  (read-torrent-file [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -214,7 +214,7 @@
             (async/>! ch {:error :read-error :message (.getMessage e)}))))
       ch))
 
-  (read-piece [this piece-index]
+  (read-piece [_ piece-index]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -226,7 +226,7 @@
             (async/>! ch {:error :read-error :message (.getMessage e)}))))
       ch))
 
-  (write-piece [this piece-index bytes]
+  (write-piece [_ piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -240,7 +240,7 @@
             (async/>! ch {:error :write-error :message (.getMessage e)}))))
       ch))
 
-  (write-output-piece [this info output-dir piece-index bytes]
+  (write-output-piece [_ info output-dir piece-index bytes]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -268,7 +268,7 @@
             (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))
 
-  (initialize-output-layout [this info output-dir]
+  (initialize-output-layout [_ info output-dir]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -287,7 +287,7 @@
             (async/>! ch {:error :write-error :message (.getMessage error)}))))
       ch))
 
-  (ensure-directory [this path]
+  (ensure-directory [_ path]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -299,7 +299,7 @@
             (async/>! ch {:error :mkdir-error :message (.getMessage e)}))))
       ch))
 
-  (save-state [this download]
+  (save-state [_ download]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -312,7 +312,7 @@
             (async/>! ch {:error :save-error :message (.getMessage e)}))))
       ch))
 
-  (load-state [this id]
+  (load-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (try
@@ -325,7 +325,7 @@
             (async/>! ch {:error :load-error :message (.getMessage e)}))))
       ch))
 
-  (delete-state [this id]
+  (delete-state [_ id]
     (let [ch (async/chan 1)]
       (async/go
         (try
