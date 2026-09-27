@@ -271,8 +271,8 @@
 
 (defn- layout-error
   "The one layout guard shared by output-file-sizes and piece-file-spans: the
-   layout needs a :name, carries exactly one of :length (single-file) or
-   :files (multi-file), every declared path component must stay inside the
+   layout needs a :name, a positive :piece-length, carries exactly one of
+   :length (single-file) or :files (multi-file), every declared path component must stay inside the
    output directory, every present length must be a natural integer, and no
    two entries may claim the same path. A duplicate is fatal because the two
    derivations disagree about it — sizes collapse the entries into one map
@@ -309,6 +309,14 @@
                                 (and (sequential? entry-path) (seq entry-path)))))))
                (:files info)))
     (bencode/torrent-error "info file entries must be maps with a non-empty path" {})
+
+    ;; A compiled layout without a positive piece length is consumable by
+    ;; nothing: layout-spans and the port contract refuse it while sizes
+    ;; alone would report success. Refuse it here so compile cannot hand
+    ;; out layouts the port cannot accept.
+    (let [nominal (:piece-length info)]
+      (or (not (integer? nominal)) (not (pos? nominal))))
+    (bencode/torrent-error "info must carry a positive :piece-length" {})
 
     :else
     (let [components (cons (:name info) (mapcat :path (:files info)))

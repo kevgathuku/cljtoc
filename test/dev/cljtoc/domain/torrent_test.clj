@@ -668,7 +668,16 @@
       (let [info {:name "t" :piece-length 4 :files [bad-entry]}]
         (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-entry)))
         (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-entry)))
-        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-entry)))))))
+        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-entry))))))
+  (testing "a missing or non-positive piece length is an error in all derivations"
+    ;; The shared guard never validated :piece-length, so compile handed
+    ;; out layouts the port contract cannot accept while sizes reported
+    ;; success (PR #36 r4115308867).
+    (doseq [bad-pl [nil 0 -4 4.5]]
+      (let [info {:name "t" :piece-length bad-pl :length 8}]
+        (is (:error (torrent/compile-output-layout info)) (str "compile " (pr-str bad-pl)))
+        (is (:error (torrent/output-file-sizes info)) (str "sizes " (pr-str bad-pl)))
+        (is (:error (torrent/piece-file-spans info 0 4)) (str "spans " (pr-str bad-pl)))))))
 
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"
