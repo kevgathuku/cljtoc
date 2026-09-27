@@ -261,7 +261,7 @@
 
               (not (disk/valid-output-layout? layout))
               (async/>! ch {:error :invalid-info
-                            :message "Invalid output layout: missing file sizes"})
+                            :message "Invalid output layout: not a compiled output layout"})
 
               :else
               (async/>! ch (write-layout! output-dir
@@ -284,7 +284,7 @@
 
               (not (disk/valid-output-layout? layout))
               (async/>! ch {:error :invalid-info
-                            :message "Invalid output layout: missing file sizes"})
+                            :message "Invalid output layout: not a compiled output layout"})
 
               :else
               (async/>! ch (init-layout! output-dir sizes))))

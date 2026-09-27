@@ -704,7 +704,15 @@
     (is (:error (torrent/layout-spans {:files [] :total 0 :piece-length 4} 0 4)))
     (is (:error (torrent/layout-spans {:files [{}] :total 4 :piece-length 4} 0 4)))
     (is (:error (torrent/layout-spans {:files [42] :total 4 :piece-length 4} 0 4)))
-    (is (:error (torrent/layout-spans {:files [{:path ["a"]}] :total 4 :piece-length 4} 0 4)))))
+    (is (:error (torrent/layout-spans {:files [{:path ["a"]}] :total 4 :piece-length 4} 0 4))))
+  (testing "empty spans for a piece before total are an error, not :ok"
+    ;; A zero-length entry overlaps nothing, so a layout of only such
+    ;; entries yields no spans while the piece starts before :total —
+    ;; and the port would report :written while dropping the bytes
+    ;; (PR #36 r4115264208).
+    (is (:error (torrent/layout-spans {:files [{:path ["a"] :length 0 :start 0}]
+                                       :total 1 :piece-length 4}
+                                      0 1)))))
 
 (defspec layout-spans-agrees-with-piece-file-spans-spec 100
   (prop/for-all

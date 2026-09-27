@@ -83,14 +83,18 @@
 
 (defn valid-output-layout?
   "True when layout has the compiled shape the disk port methods take:
-   a map carrying a sizes map and a files vector. Both DiskPortImpl and
-   MockDiskPort refuse anything else with :invalid-info before recording
-   or opening anything, so orchestration tests cannot miss an invalid
-   layout at either entry point."
+   a map carrying a sizes map, a files vector, a natural total, and a
+   positive piece length. Both DiskPortImpl and MockDiskPort refuse
+   anything else with :invalid-info before recording or opening
+   anything, so orchestration tests cannot miss an invalid layout at
+   either entry point — init accepts exactly what piece writes accept."
   [layout]
   (and (map? layout)
        (map? (:sizes layout))
-       (vector? (:files layout))))
+       (vector? (:files layout))
+       (nat-int? (:total layout))
+       (let [nominal (:piece-length layout)]
+         (and (integer? nominal) (pos? nominal)))))
 
 (s/fdef valid-output-layout?
   :args (s/cat :layout any?)

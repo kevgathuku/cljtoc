@@ -458,24 +458,31 @@
                                    {:piece-index piece-index})
 
             :else
-            (let [piece-end (min total (+ piece-start piece-byte-count))]
-              {:ok (loop [idx (first-overlap-index files piece-start)
-                          acc (transient [])]
-                     (if (>= idx (count files))
-                       (persistent! acc)
-                       (let [{file-path :path file-length :length file-start :start} (nth files idx)]
-                         (if (>= file-start piece-end)
-                           (persistent! acc)
-                           (let [file-end (+ file-start file-length)
-                                 overlap-start (max piece-start file-start)
-                                 overlap-end (min piece-end file-end)]
-                             (recur (inc idx)
-                                    (if (< overlap-start overlap-end)
-                                      (conj! acc {:path file-path
-                                                  :file-offset (- overlap-start file-start)
-                                                  :data-offset (- overlap-start piece-start)
-                                                  :length (- overlap-end overlap-start)})
-                                      acc)))))))})))
+            (let [piece-end (min total (+ piece-start piece-byte-count))
+                  spans (loop [idx (first-overlap-index files piece-start)
+                               acc (transient [])]
+                          (if (>= idx (count files))
+                            (persistent! acc)
+                            (let [{file-path :path file-length :length file-start :start} (nth files idx)]
+                              (if (>= file-start piece-end)
+                                (persistent! acc)
+                                (let [file-end (+ file-start file-length)
+                                      overlap-start (max piece-start file-start)
+                                      overlap-end (min piece-end file-end)]
+                                  (recur (inc idx)
+                                         (if (< overlap-start overlap-end)
+                                           (conj! acc {:path file-path
+                                                       :file-offset (- overlap-start file-start)
+                                                       :data-offset (- overlap-start piece-start)
+                                                       :length (- overlap-end overlap-start)})
+                                           acc)))))))]
+              ;; A piece starting before :total always overlaps a byte of a
+              ;; well-formed layout, so empty spans mean a malformed one
+              ;; (e.g. zero-length-only entries) — and the port would
+              ;; report :written while dropping the bytes. Error, not :ok.
+              (if (empty? spans)
+                (bencode/torrent-error "layout must be a compiled output layout" {})
+                {:ok spans}))))
         (catch ArithmeticException _
           (bencode/torrent-error (str "piece " piece-index " arithmetic overflowed")
                                  {:piece-index piece-index}))

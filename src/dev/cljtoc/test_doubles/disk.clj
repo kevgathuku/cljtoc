@@ -49,7 +49,7 @@
         (if-let [err (or (:output-write-error config) (:write-error config)
                          (when-not (disk/valid-output-layout? layout)
                            {:error :invalid-info
-                            :message "Invalid output layout: missing file sizes"}))]
+                            :message "Invalid output layout: not a compiled output layout"}))]
           (async/>! ch err)
           (do
             (swap! output-layouts conj layout)
@@ -63,7 +63,7 @@
         (if-let [err (or (:output-init-error config)
                          (when-not (disk/valid-output-layout? layout)
                            {:error :invalid-info
-                            :message "Invalid output layout: missing file sizes"}))]
+                            :message "Invalid output layout: not a compiled output layout"}))]
           (async/>! ch err)
           (do
             (swap! layouts-initialized conj {:layout layout :output-dir output-dir})
