@@ -376,6 +376,22 @@
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason]))))))
 
+(deftest run-download-guard-reads-capped-addresses-test
+  (testing "a cap that dials nothing fails fast with the no-peers guard (issue #32)"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 262144 :length 524288}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "capped-empty")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.1:6881"}})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port (mock-disk/create)
+                                         :time-port (mock-time/create)
+                                         :config {:max-peers 0}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason])))
+      (is (= "No peers available: nothing to connect to" (get-in result [:error :message]))))))
+
 (deftest manager-rejects-invalid-config-test
   (let [network (mock-net/create)
         disk (mock-disk/create)
