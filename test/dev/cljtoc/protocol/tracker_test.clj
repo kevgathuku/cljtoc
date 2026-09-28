@@ -1087,7 +1087,7 @@
 (deftest combine-peers-test
   (testing "union of address sets"
     (is (= #{"a:1" "b:2" "c:3"}
-             (tracker/combine-peers #{"a:1" "b:2"} #{"b:2" "c:3"}))))
+           (tracker/combine-peers #{"a:1" "b:2"} #{"b:2" "c:3"}))))
 
   (testing "empty inputs stay empty"
     (is (= #{} (tracker/combine-peers))))

@@ -909,16 +909,16 @@
     (vec (distinct (filter #(and (string? %)
                                  (or (string/starts-with? % "http")
                                      (string/starts-with? % "udp")))
-                            all)))))
+                           all)))))
 
 (s/fdef pick-tracker-order
   :args (s/cat :torrent-metadata map?)
   :ret (s/coll-of string? :kind vector?)
   :fn #(let [metadata (-> % :args :torrent-metadata)
-              order (:ret %)]
+             order (:ret %)]
          (and (if (and (string? (:announce metadata))
-                        (or (string/starts-with? (:announce metadata) "http")
-                            (string/starts-with? (:announce metadata) "udp")))
+                       (or (string/starts-with? (:announce metadata) "http")
+                           (string/starts-with? (:announce metadata) "udp")))
                 (= (:announce metadata) (first order))
                 true)
               (= order (vec (distinct order))))))

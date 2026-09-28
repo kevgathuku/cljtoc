@@ -121,8 +121,7 @@
      :num-want): built once by the caller, reused per URL so a
      coordinator loop can query URLs incrementally and emit
      :tracker-peers as responses land.
-     Returns {:ok #{peer-address}} or {:error reason :message msg}."
-     )
+     Returns {:ok #{peer-address}} or {:error reason :message msg}.")
 
   (announce [this torrent-metadata progress]
     "Announce to the tracker and get a list of peers.
