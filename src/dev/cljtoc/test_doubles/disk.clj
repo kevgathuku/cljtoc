@@ -89,11 +89,11 @@
     {:ok :created})
 
   (save-state [_ download]
-    (swap! state-files assoc (:id download) download)
+    (swap! state-files assoc (:id download) (disk/encode-state download))
     {:ok :saved})
 
   (load-state [_ id]
-    {:ok (get @state-files id)})
+    {:ok (disk/decode-state (get @state-files id))})
 
   (delete-state [_ id]
     (swap! state-files dissoc id)
