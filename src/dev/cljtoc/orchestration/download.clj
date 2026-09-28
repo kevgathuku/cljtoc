@@ -9,6 +9,10 @@
    - Downloading and verifying pieces
    - Writing verified pieces to disk
 
+   Pure [state effects] planning lives in
+   dev.cljtoc.orchestration.coordinator; this namespace keeps lifecycle,
+   the effect edge, and run wiring.
+
    All I/O is performed through injected port protocols, making this
    code testable with mock implementations."
   (:require [clojure.core.async :as async]
