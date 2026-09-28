@@ -19,6 +19,8 @@
           :bitfield (:default-bitfield config)}})
 
   (send-message [_ peer message]
+    (when-let [on-send (:on-send config)]
+      (on-send peer message))
     (get-in @responses [(:id peer) (:type message)] {:ok :sent}))
 
   (receive-message [_ _]
@@ -60,7 +62,9 @@
      or {:error ...} for receive-handshake
    - :receive-responses - atom holding a seq of {:ok ...} / {:error ...}
      returned one per receive-message call; falls back to keep-alive
-     once the queue is empty"
+     once the queue is empty
+   - :on-send - (fn [peer message]) side effect run on every send-message
+     call, so tests can observe effect timing (e.g. advance a mock clock)"
   ([]
    (create {}))
   ([config]

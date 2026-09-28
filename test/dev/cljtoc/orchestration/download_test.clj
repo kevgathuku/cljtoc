@@ -9,6 +9,7 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
+            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.test-utils :as test-utils]
@@ -1494,6 +1495,26 @@
       (is (not= :timed-out result))
       (is (= :failed (:state result)))
       (is (= 7000 (:suspended-at (:stats result)))))))
+
+(deftest run-coordinator-failure-stamp-follows-effect-time-test
+  (testing "the suspension stamp is read after effect handling: with the
+            clock advancing 1ms per send, the failed record's stamp equals
+            the final clock reading rather than the pre-effects time"
+    (let [disk (mock-disk/create)
+          time (mock-time/create {:now 7000})
+          net (mock-net/create {:on-send (fn [_ _] (mock-time/advance-time time 1))})
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}]
+          result (scripted-run events (loop-download) disk {:net net
+                                                            :time time
+                                                            :close? false
+                                                            :timeout 3000})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= (time/now time) (:suspended-at (:stats result)))))))
 
 (deftest run-coordinator-send-error-requeues-through-loop-test
   (testing "a failed block send returns the piece to needed, nothing strands"
