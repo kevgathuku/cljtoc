@@ -1542,6 +1542,55 @@
       (is (not (:error result)))
       (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
 
+(defn- carried-fixture
+  "A 1-piece download with its only piece verified but nothing in the
+    cache, plus that torrent's compiled layout. Returns {:download :layout}."
+  []
+  (let [info {:pieces [(bencode/sha1-hash (test-utils/to-bytes "abcd"))]
+              :piece-length 4
+              :name "carried.bin"
+              :length 4}
+        torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :info info}
+        download (assoc (download/initial-download (mock-time/create)
+                                                   torrent "/out" "carried")
+                        :piece-state (-> (pieces/initial-piece-state 1)
+                                         (#(:ok (pieces/mark-in-flight % 0)))
+                                         (#(:ok (pieces/mark-verified % 0)))))]
+    {:download download
+     :layout (:ok (torrent/compile-output-layout info))}))
+
+(deftest run-download-trusts-a-carried-materialization-test
+  (testing "a run carrying resume-download's materialization does not touch
+            the cache or the output again: the verified set answers complete?
+            as reconciled"
+    (let [{:keys [download layout]} (carried-fixture)
+          disk (mock-disk/create)
+          manager {:network-port (mock-net/create)
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          result (download/run-download manager download {:materialized? true
+                                                          :layout layout})]
+      (is (= :completed (:state result)))
+      (is (empty? (mock-disk/get-output-layouts disk))
+          "no output write happened in this run"))))
+
+(deftest run-download-materializes-despite-the-flag-without-a-layout-test
+  (testing "the carried flag without a compiled layout runs the full pass:
+            an unverifiable claim goes back to :needed instead of completing
+            over an empty cache"
+    (let [{:keys [download]} (carried-fixture)
+          disk (mock-disk/create)
+          manager {:network-port (mock-net/create)
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          result (download/run-download manager download {:materialized? true
+                                                          :layout nil})]
+      (is (= :failed (:state result)))
+      (is (= #{0} (:needed (:piece-state result)))))))
+
 (deftest materialize-fails-when-the-layout-rejects-a-write-test
   (testing "a refused write fails the resume rather than reporting a
             download whose bytes never landed"

@@ -165,8 +165,11 @@
    would otherwise be saved and printed as :downloading with nothing
    downloading it. A record the cache already completes skips the run: the
    swarm has nothing to fetch, and re-running it would only redo the
-   materialization run-download just proved unnecessary. Returns the refusal
-   envelope when the record cannot be resumed, else the final Download record."
+   materialization run-download just proved unnecessary. Otherwise the
+   reconciled materialization travels into run-download, so the cached
+   pieces are not read, verified, and written a second time before the
+   swarm is dialed. Returns the refusal envelope when the record cannot be
+   resumed, else the final Download record."
   [manager state]
   (let [{:keys [disk-port network-port]} manager
         resumed (download/resume-download disk-port network-port state)]
@@ -175,7 +178,8 @@
       (let [revived (:ok resumed)]
         (if (= :completed (:state revived))
           revived
-          (download/run-download manager revived))))))
+          (download/run-download manager revived {:materialized? true
+                                                  :layout (:layout resumed)}))))))
 
 (defn- refusal?
   "True when result is a refusal envelope rather than a Download record.

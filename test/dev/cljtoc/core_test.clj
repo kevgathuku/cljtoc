@@ -91,6 +91,34 @@
       (is (= :completed (:state result)))
       (is (nil? @captured) "neither announce nor swarm was touched"))))
 
+(deftest resume-and-run-materializes-cached-pieces-once-test
+  (testing "an incomplete resume reconciles the cache before announcing and
+            run-download does not repeat it: each cached piece reaches the
+            output layout once across the whole resume-to-run flow"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:pieces [(bencode/sha1-hash piece-0)
+                         (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+                :piece-length 4
+                :name "once.bin"
+                :length 8}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          paused (assoc (download/initial-download (mock-time/create)
+                                                   torrent "/out" "once")
+                        :state :paused
+                        :peers #{}
+                        :piece-state (-> (pieces/initial-piece-state 2)
+                                         (#(:ok (pieces/mark-in-flight % 0)))
+                                         (#(:ok (pieces/mark-verified % 0)))))
+          disk (mock-disk/create)
+          _ (disk/write-piece disk 0 piece-0)
+          manager (assoc (mock-manager) :disk-port disk)
+          result (#'core/resume-and-run manager paused)]
+      (is (= :failed (:state result))
+          "the mock swarm fails every dial, so the run still ends there")
+      (is (= 1 (count (mock-disk/get-output-layouts disk)))
+          "one output write per cached piece across resume and run"))))
+
 (deftest refusal-distinguishes-envelopes-from-records-test
   (testing "resume-and-run returns either a refusal envelope (:error, no
             :state) or a Download record (always has :state). Checking
