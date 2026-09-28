@@ -182,6 +182,30 @@
       (is (= 1 (count @logged)))
       (is (re-find #"Attempting to connect" (first @logged))))))
 
+(deftest configured-timeouts-land-on-the-socket-test
+  (testing "connect-peer applies :socket-timeout-ms to the live socket"
+    ;; 4321 matches no literal in the implementation, so equality proves
+    ;; the configured value (not a default) reached the socket object.
+    (with-open [server (java.net.ServerSocket. 0)]
+      (let [address (str "127.0.0.1:" (.getLocalPort server))
+            net (network-impl/create {:socket-timeout-ms 4321
+                                      :connect-timeout-ms 2000})
+            result (network/connect-peer net address)]
+        (if (:error result)
+          (is (nil? (:error result)) (str "loopback connect failed: " (pr-str result)))
+          (try
+            (is (= 4321 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
+            (finally (network/close-peer net (:ok result))))))))
+  (testing "and the default is the historical 10000ms"
+    (with-open [server (java.net.ServerSocket. 0)]
+      (let [address (str "127.0.0.1:" (.getLocalPort server))
+            result (network/connect-peer (network-impl/create) address)]
+        (if (:error result)
+          (is (nil? (:error result)) (str "loopback connect failed: " (pr-str result)))
+          (try
+            (is (= 10000 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
+            (finally (network/close-peer (network-impl/create) (:ok result)))))))))
+
 (deftest a-full-length-message-is-parsed-test
   (testing "a non-zero length prefix reads exactly its declared payload and parses it.
             Per BEP 3 a 1-byte body of 2 is an Interested, so the oracle is the
