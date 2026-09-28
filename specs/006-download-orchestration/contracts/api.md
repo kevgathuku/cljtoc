@@ -62,7 +62,7 @@ Returns current download progress.
      :pieces-complete nat-int    ; verified pieces
      :pieces-total nat-int       ; total pieces
      :bytes-downloaded nat-int  ; verified bytes
-     :rate-bytes-per-sec nat-int ; current download rate
+     :rate-bytes-per-sec nat-int ; run-average download rate
      :peers-connected nat-int   ; active peers
      :state keyword}            ; :downloading :paused :completed :failed
 ```
