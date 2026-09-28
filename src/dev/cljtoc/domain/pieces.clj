@@ -346,10 +346,7 @@
       (piece-error :invalid-input
                    (str "Piece index " piece-index
                         " is out of range [0, " total-pieces ")"))
-      (let [piece-start  (* piece-index standard-piece-length)
-            piece-end    (min (* (long (inc piece-index)) standard-piece-length)
-                              total-length)
-            piece-length (- piece-end piece-start)
+      (let [piece-length (piece-length piece-index standard-piece-length total-length)
             blocks       (loop [offset 0
                                 acc    (transient [])]
                            (if (>= offset piece-length)
