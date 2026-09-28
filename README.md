@@ -2,6 +2,8 @@
 
 A pure-functional BitTorrent client implementation in Clojure, built with a focus on correctness, testability, and clean architecture.
 
+[![codecov](https://codecov.io/gh/kevgathuku/cljtoc/graph/badge.svg?token=69TNO95GSC)](https://codecov.io/gh/kevgathuku/cljtoc)
+
 ## Status
 
 🚧 **In Development** - This is an educational/experimental project implementing the BitTorrent protocol from scratch.

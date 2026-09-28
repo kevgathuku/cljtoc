@@ -31,5 +31,12 @@ jobs:
           key: ${{ runner.os }}-maven-${{ hashFiles('project.clj') }}
           restore-keys: ${{ runner.os }}-maven-
 
-      - name: Run tests
-        run: lein test
+      - name: Run tests with coverage
+        run: lein cloverage --codecov --lcov
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: target/coverage/codecov.json,target/coverage/lcov.info
+          fail_ci_if_error: true
