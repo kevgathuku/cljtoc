@@ -78,7 +78,7 @@
    its cache holds, so a drifting path here would resume against a cache
    that is not the one the download wrote."
   []
-  (let [disk-port (disk-impl/create {:state-dir "./torrent-state"
+  (let [disk-port (disk-impl/create {:state-dir cli-state/default-state-dir
                                      :piece-cache-dir "./torrent-cache"})
         network-port (network-impl/create)
         time-port (time-port/->RealTimePort)]
@@ -151,9 +151,10 @@
 
 (defn- cmd-torrent-pause
   [args]
-  (let [state (if (seq args)
-                (cli-state/load-state (first args))
-                (cli-state/load-most-recent))]
+  (let [{:keys [manager]} (make-ports)
+        state (load-command-state (:disk-port manager)
+                                  cli-state/default-state-dir
+                                  args)]
     (if (nil? state)
       (do
         (println "No active download found.")
@@ -207,15 +208,15 @@
 
 (defn- cmd-torrent-resume
   [args]
-  (let [state (if (seq args)
-                (cli-state/load-state (first args))
-                (cli-state/load-most-recent))]
+  (let [{:keys [manager time-port]} (make-ports)
+        state (load-command-state (:disk-port manager)
+                                  cli-state/default-state-dir
+                                  args)]
     (if (nil? state)
       (do
         (println "No paused download found.")
         (System/exit 1))
-      (let [{:keys [manager time-port]} (make-ports)
-            result (resume-and-run manager state)]
+      (let [result (resume-and-run manager state)]
         (if (refusal? result)
           (do
             (println "Failed to resume: " (:message result))
@@ -229,9 +230,10 @@
 
 (defn- cmd-torrent-status
   [args]
-  (let [state (if (seq args)
-                (cli-state/load-state (first args))
-                (cli-state/load-most-recent))]
+  (let [{:keys [manager]} (make-ports)
+        state (load-command-state (:disk-port manager)
+                                  cli-state/default-state-dir
+                                  args)]
     (if (nil? state)
       (do
         (println "No download found.")
@@ -244,9 +246,10 @@
 
 (defn- cmd-torrent-stop
   [args]
-  (let [state (if (seq args)
-                (cli-state/load-state (first args))
-                (cli-state/load-most-recent))]
+  (let [{:keys [manager]} (make-ports)
+        state (load-command-state (:disk-port manager)
+                                  cli-state/default-state-dir
+                                  args)]
     (if (nil? state)
       (do
         (println "No download found.")
