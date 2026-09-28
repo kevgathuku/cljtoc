@@ -34,16 +34,24 @@
              (get-in (mock-disk/get-state port "bytes-torrent")
                      [:torrent :info-hash]))))))
 
+(deftest mock-save-invalid-stored-bytes-test
+  (testing "saving a download with an invalid :cljtoc/bytes tag returns a
+            :save-error instead of throwing, like the real port"
+    (let [port (mock-disk/create)]
+      (is (= :save-error
+             (:error (disk/save-state port {:id "bad"
+                                            :torrent {:info-hash {:cljtoc/bytes "zz"}}})))))))
+
 (deftest mock-load-missing-returns-nil-ok-test
   (testing "loading an unknown id returns {:ok nil}, like the real port"
     (let [port (mock-disk/create)]
       (is (= {:ok nil} (disk/load-state port "nope"))))))
 
-(deftest mock-load-invalid-stored-bytes-test
-  (testing "a pre-existing :cljtoc/bytes tag with invalid hex loads as a
-            :load-error instead of throwing, like the real port
-            (encode-state passes such tags through unvalidated)"
+(deftest mock-refused-save-stores-nothing-test
+  (testing "a refused save stores nothing: the id still loads {:ok nil}
+            (fail fast at the write; there is no bad tag left for load
+            to trip over — supersedes load-side refusal)"
     (let [port (mock-disk/create)]
       (disk/save-state port {:id "bad"
                              :torrent {:info-hash {:cljtoc/bytes "zz"}}})
-      (is (= :load-error (:error (disk/load-state port "bad")))))))
+      (is (= {:ok nil} (disk/load-state port "bad"))))))

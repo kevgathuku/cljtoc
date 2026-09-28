@@ -89,17 +89,17 @@
     {:ok :created})
 
   (save-state [_ download]
-    (swap! state-files assoc (:id download) (disk/encode-state download))
-    {:ok :saved})
+    ;; Mirrors DiskPortImpl: an encode refusal (e.g. an invalid pre-existing
+    ;; {:cljtoc/bytes ...} tag) comes back as {:error :save-error}, never an
+    ;; uncaught throw — fail fast at the write, identically on both ports.
+    (try
+      (swap! state-files assoc (:id download) (disk/encode-state download))
+      {:ok :saved}
+      (catch Exception error
+        {:error :save-error :message (.getMessage error)})))
 
   (load-state [_ id]
-    ;; Mirrors DiskPortImpl: bytes this port did not encode (a pre-existing
-    ;; {:cljtoc/bytes ...} tag encode-state passes through unvalidated)
-    ;; come back as {:error :load-error}, never an uncaught throw.
-    (try
-      {:ok (disk/decode-state (get @state-files id))}
-      (catch Exception error
-        {:error :load-error :message (.getMessage error)})))
+    {:ok (disk/decode-state (get @state-files id))})
 
   (delete-state [_ id]
     (swap! state-files dissoc id)
