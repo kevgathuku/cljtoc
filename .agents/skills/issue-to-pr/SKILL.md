@@ -16,7 +16,12 @@ Check `git status` is clean and `git branch --show-current` is `main`, then crea
 
 ## 3. Recall prior decisions
 
-Search the palace (wing `torrent_client_clj`, room `decisions`) for verdicts touching this issue's area — prior approaches, reverted attempts, naming choices — via the `mempalace-recall` skill. Fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body.
+Via the `mempalace-recall` skill, run four lookups on the issue's area and fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body:
+
+- `mempalace_search` (wing `torrent_client_clj`, room `decisions`): verdicts — prior approaches, reverted attempts, naming choices, plus per-thread false-positive proofs on the touched files (do not re-file a refuted claim).
+- `mempalace_search` (same wing, room `lessons`): recurring failure modes for this area — mock drift from real envelopes, guard-before-call-site, inferred-vs-observed termination.
+- `mempalace_kg_timeline` on the touched file / issue entity: what already fixes / causes what, in order.
+- `mempalace_diary_read` (last 3): unfinished work from recent sessions, plus any diagnosed-but-unfixed P0 gap the PR must not claim to close.
 
 ## 4. Implement with /tdd
 
@@ -62,13 +67,6 @@ Stage only intended files, commit with a message describing what changed and why
 
 Return the PR URL.
 
-## 10. Request Copilot review
-
-Once the PR is open, request a review from Copilot at Lite effort:
-
-- `gh pr edit <number> --add-reviewer @copilot` (Lite is the default effort level; pick Balanced in the PR UI under Reviewers only if the change is security-sensitive or cross-service).
-- Confirm the request landed: `gh pr view <number> --json reviewRequests -q '.reviewRequests[].login'`.
-
-## 11. File the decision
+## 10. File the decision
 
 Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
