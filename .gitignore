@@ -21,3 +21,6 @@ torrent-cache/
 # MemPalace per-project files (issue #185)
 mempalace.yaml
 entities.json
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
