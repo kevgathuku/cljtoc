@@ -41,6 +41,49 @@
   (prop/for-all [file-name (gen/such-that (comp not empty?) gen/string-alphanumeric)]
                 (= file-name (disk/id-from-path (str "/dl/" file-name ".torrent")))))
 
+(def tag-mutations
+  "One-way breaks of a valid {:cljtoc/bytes \"00ff\"} tag; every one
+   must make encode-state throw instead of storing a tag the next load
+   cannot restore. Each targets a different failure: non-hex chars (the
+   load-time NumberFormatException), odd length (decode would silently
+   drop the trailing nibble), and non-string values."
+  [(fn [tag] (assoc tag :cljtoc/bytes "zz"))
+   (fn [tag] (assoc tag :cljtoc/bytes "00ff0"))
+   (fn [tag] (assoc tag :cljtoc/bytes 42))
+   (fn [tag] (assoc tag :cljtoc/bytes nil))
+   (fn [tag] (assoc tag :cljtoc/bytes [0 1]))])
+
+(defn- encode-throws?
+  "True when encoding download throws (fail-closed on hostile input)."
+  [download]
+  (try
+    (disk/encode-state download)
+    false
+    (catch clojure.lang.ExceptionInfo _ true)))
+
+(defspec invalid-tags-are-rejected-spec 100
+  (prop/for-all [mutation-idx (gen/choose 0 (dec (count tag-mutations)))]
+                (encode-throws?
+                 {:id "m"
+                  :hash ((nth tag-mutations mutation-idx)
+                         {:cljtoc/bytes "00ff"})})))
+
+(defspec encode-is-idempotent-spec 100
+  (prop/for-all [original bytes-gen]
+                (let [once (disk/encode-state {:hash original})]
+                  (= once (disk/encode-state once)))))
+
+(deftest valid-tags-pass-through-test
+  (testing "a pre-existing valid tag is already encoded: stored untouched"
+    (is (= {:id "t" :hash {:cljtoc/bytes "00ff"}}
+           (disk/encode-state {:id "t" :hash {:cljtoc/bytes "00ff"}})))
+    (is (= {:id "t" :hash {:cljtoc/bytes "00FF"}}
+           (disk/encode-state {:id "t" :hash {:cljtoc/bytes "00FF"}}))))
+  (testing "a map merely carrying the key among others is plain data,
+            not the tag shape decode restores: stored untouched"
+    (is (= {:id "t" :hash {:cljtoc/bytes "zz" :other 1}}
+           (disk/encode-state {:id "t" :hash {:cljtoc/bytes "zz" :other 1}})))))
+
 (deftest id-from-path-fdef-check-test
   (testing "id-from-path conforms to fdef spec"
     (let [check-result (stest/check 'dev.cljtoc.ports.disk/id-from-path
