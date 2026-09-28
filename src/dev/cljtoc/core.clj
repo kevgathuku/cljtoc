@@ -3,6 +3,7 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
+            [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.ports.time :as time-port]
             [dev.cljtoc.cli.state :as cli-state]
@@ -83,6 +84,16 @@
         time-port (time-port/->RealTimePort)]
     {:manager (download/manager network-port disk-port time-port {})
      :time-port time-port}))
+
+(defn- load-command-state
+  "Load the record a command should act on: the named id, else the most
+   recent. Returns the record or nil when nothing is there. A corrupt file
+   reads as nil — the CLI's long-standing missing-state story (commands
+   print not-found); the port still reports :load-error in its own contract."
+  [disk-port state-dir args]
+  (if (seq args)
+    (:ok (disk/load-state disk-port (first args)))
+    (cli-state/load-most-recent state-dir)))
 
 (defn- cmd-torrent-download
   [args]
