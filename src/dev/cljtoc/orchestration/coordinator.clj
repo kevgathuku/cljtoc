@@ -42,6 +42,16 @@
                    ::expected-blocks
                    ::pending-dials]))
 
+;; initial-state always builds all five keys, so its return says so
+;; structurally. Other handlers merely thread the state through (absent
+;; keys stay absent), so they keep the tolerant shape above.
+(s/def ::complete-coordinator-state
+  (s/keys :req-un [::download
+                   ::active-peers
+                   ::blocks-received
+                   ::expected-blocks
+                   ::pending-dials]))
+
 (s/def ::address any?)
 
 (s/def ::addressed-event
@@ -63,7 +73,10 @@
 
 (s/fdef initial-state
   :args (s/cat :download map? :peer-addresses coll?)
-  :ret ::coordinator-state
+  :ret ::complete-coordinator-state
+  ;; :fn now pins values only; key presence is structural above. The
+  ;; pending-dials equality is the half with proven bite (M4: emptying
+  ;; the set fails the check; req-keys alone would not catch it).
   :fn #(let [{:keys [download peer-addresses]} (:args %)
              state (:ret %)]
          (and (= (:download state) download)
