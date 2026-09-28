@@ -43,9 +43,9 @@
     nil)
 
   network/ITrackerPort
-  (announce-to-url [_ tracker-url _request]
+  (announce-to-url [_ tracker-url request]
     (when-let [capture (:announce-to-url-capture config)]
-      (swap! capture conj tracker-url))
+      (swap! capture conj {:url tracker-url :request request}))
     (if-let [global-error (:announce-to-url-error config)]
       global-error
       (get (:announce-to-url-responses config) tracker-url
@@ -56,21 +56,35 @@
       (reset! capture {:torrent torrent-metadata :progress progress}))
     (if-let [announce-error (:announce-error config)]
       announce-error
-      (let [tracker-urls (tracker/pick-tracker-order torrent-metadata)]
+      ;; One request built upstream and forwarded per URL, mirroring the
+      ;; real port -- never reconstructed (or nil) at each call.
+      (let [request {:info-hash (:info-hash torrent-metadata)
+                     :peer-id (byte-array 20)
+                     :port 6881
+                     :uploaded 0
+                     :downloaded (:downloaded progress)
+                     :left (:left progress)
+                     :event :started
+                     :compact true
+                     :num-want 200}
+            tracker-urls (tracker/pick-tracker-order torrent-metadata)]
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
+          ;; Success tracks separately from the peer count, mirroring
+          ;; the real port: empty answers are an empty swarm, not failure.
           (loop [urls tracker-urls
                  all-peers #{}
+                 succeeded? false
                  last-error nil]
             (if (empty? urls)
-              (if (empty? all-peers)
+              (if succeeded?
+                {:ok all-peers}
                 (or last-error
-                    {:error :all-trackers-failed :message "All trackers failed"})
-                {:ok all-peers})
-              (let [result (network/announce-to-url this (first urls) nil)]
+                    {:error :all-trackers-failed :message "All trackers failed"}))
+              (let [result (network/announce-to-url this (first urls) request)]
                 (if (:ok result)
-                  (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) last-error)
-                  (recur (rest urls) all-peers result))))))))))
+                  (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) true last-error)
+                  (recur (rest urls) all-peers succeeded? result))))))))))
 
 (defn create
   "Create a mock network port for testing.
@@ -82,7 +96,7 @@
    - :announce-to-url-responses - {tracker-url result} per-URL scripts,
      overriding :mock-peers for that URL only
    - :announce-to-url-error - error map every per-URL query returns
-   - :announce-to-url-capture - atom conjed with each queried URL, in order
+   - :announce-to-url-capture - atom conjed with {:url _ :request _} per query, in order
    - :announce-error - error map to return from announce instead of peers
    - :announce-capture - atom reset to {:torrent _ :progress _} on announce,
      so tests can assert the reported downloaded/left

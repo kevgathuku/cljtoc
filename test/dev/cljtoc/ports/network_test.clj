@@ -365,13 +365,20 @@
                                    {:downloaded 0 :left 1000})]
       (is (= :boom (:error result)))))
   (testing "with distinct per-URL failures, the LAST one wins"
-    ;; exodus is the final fallback URL, so its error must surface;
-    ;; an implementation returning the first failure answers :first.
+    ;; Every URL in the order fails, each differently; exodus is the
+    ;; final fallback URL, so its error must surface. Unscripted URLs
+    ;; would answer successful-empty and dominate failures, so all seven
+    ;; are scripted. An implementation returning the first failure
+    ;; answers :first.
     (let [mock (mock-network/create
-                {:mock-peers []
-                 :announce-to-url-responses
+                {:announce-to-url-responses
                  {"http://a.example.com" {:error :first :message "1"}
-                  "udp://exodus.desync.com:6969" {:error :last :message "2"}}})
+                  "udp://tracker.opentrackr.org:1337" {:error :e2 :message "2"}
+                  "udp://open.demonii.com:1337" {:error :e3 :message "3"}
+                  "udp://open.stealth.si:80" {:error :e4 :message "4"}
+                  "udp://tracker.torrent.eu.org:451" {:error :e5 :message "5"}
+                  "udp://explodie.org:6969" {:error :e6 :message "6"}
+                  "udp://exodus.desync.com:6969" {:error :last :message "7"}}})
           result (network/announce mock {:announce "http://a.example.com"}
                                    {:downloaded 0 :left 1000})]
       (is (= :last (:error result)) (pr-str result))))
@@ -383,11 +390,18 @@
                                    {:announce "http://a.example.com"
                                     :announce-list [["http://b.example.com"]]}
                                    {:downloaded 0 :left 1000})]
-      ;; Every URL answers empty, so the all-failed fallback fires.
-      (is (= :all-trackers-failed (:error result)) (pr-str result))
+      ;; Every URL answers empty but successfully, so the swarm is
+      ;; genuinely empty -- not a tracker outage.
+      (is (= {:ok #{}} result) (pr-str result))
       (is (= ["http://a.example.com" "http://b.example.com"]
-             (take 2 @captured)))
-      (is (= 8 (count @captured)) "2 declared + 6 public fallbacks"))))
+             (take 2 (map :url @captured))))
+      (is (= 8 (count @captured)) "2 declared + 6 public fallbacks")
+      ;; The request is built once upstream and forwarded per URL,
+      ;; not reconstructed (or nil) at each call.
+      (is (every? #(= {:downloaded 0 :left 1000}
+                      (select-keys (:request %) [:downloaded :left]))
+                  @captured))
+      (is (every? #(= 200 (:num-want (:request %))) @captured)))))
 
 (deftest real-announce-to-url-never-throws-test
   (testing "a malformed URL is an error envelope, with no socket touched"

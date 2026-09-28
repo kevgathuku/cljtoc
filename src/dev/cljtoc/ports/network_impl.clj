@@ -281,28 +281,31 @@
                          :event :started
                          :compact true
                          :num-want 200}]
-            ;; Query all trackers and combine peers
+            ;; Query all trackers and combine peers. Success tracks
+            ;; separately from the peer count: an announce that answers
+            ;; with zero peers is a genuinely empty swarm, not an outage.
             (loop [urls tracker-urls
                    all-peers #{}
+                   succeeded? false
                    last-error nil]
               (if (empty? urls)
-                (if (empty? all-peers)
-                  (or last-error
-                      {:error :all-trackers-failed
-                       :message "All trackers failed"})
+                (if succeeded?
                   (do
                     (log! network (str "  Collected " (count all-peers) " unique peers from trackers"))
-                    {:ok all-peers}))
+                    {:ok all-peers})
+                  (or last-error
+                      {:error :all-trackers-failed
+                       :message "All trackers failed"}))
                 (let [url (first urls)
                       _ (log! network (str "  Trying tracker: " url))
                       result (try-single-tracker network url request)]
                   (if (:ok result)
                     (do
                       (log! network (str "    Got " (count (:ok result)) " peers"))
-                      (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) last-error))
+                      (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) true last-error))
                     (do
                       (log! network (str "    Failed: " (:message result)))
-                      (recur (rest urls) all-peers result)))))))))
+                      (recur (rest urls) all-peers succeeded? result)))))))))
       (catch Exception e
         {:error :tracker-error :message (.getMessage e)}))))
 
