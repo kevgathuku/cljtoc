@@ -272,10 +272,14 @@
   "Average transfer rate over the run: total bytes downloaded divided by
    seconds since :started-at. Averaging over the run (instead of the gap
    since :last-update) keeps the reported speed stable: right after the
-   final block the last-gap quotient explodes into fantasy GB/s. Records
-   predating started-at tracking report 0."
+   final block the last-gap quotient explodes into fantasy GB/s. Once
+   :completed-at is stamped the rate freezes there, so late status calls
+   agree with the persisted record instead of decaying toward zero.
+   Records predating started-at tracking report 0."
   [time-port stats]
-  (rate-at (time/now time-port) stats))
+  (if-let [completed (:completed-at stats)]
+    (rate-at completed stats)
+    (rate-at (time/now time-port) stats)))
 
 (s/fdef calculate-rate
   :args (s/cat :time-port any? :stats map?)

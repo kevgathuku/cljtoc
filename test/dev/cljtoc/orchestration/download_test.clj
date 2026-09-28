@@ -117,6 +117,16 @@
                        :started-at nil)]
       (is (= 0 (download/calculate-rate time stats))))))
 
+(deftest calculate-rate-freezes-at-completion-test
+  (testing "once completed-at is stamped, the rate stops decaying: a status
+            call long after completion reports the finishing average, in
+            agreement with the persisted record"
+    (let [time (mock-time/create {:now 9000})
+          stats (assoc (download/->DownloadStats 1000 nil 20000 0 4500)
+                       :completed-at 5000
+                       :rate 5000)]
+      (is (= 5000 (download/calculate-rate time stats))))))
+
 (deftest complete-download-finalizes-stats-test
   (testing "completion stamps completed-at, refreshes last-update, and pins
             the rate at the run average instead of the last block's
