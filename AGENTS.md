@@ -253,5 +253,8 @@ needed detail, and then at the exact file:line the node points to — never
 re-read whole files.
 
 After big code changes, refresh the graph with `graft build` (deterministic,
-no API key, $0).
+no API key, $0). Freshness: `ask`/`grep`/`skeleton` read live files, but
+`callers` edges come from the last build — rebuild before trusting them
+after moves or renames, and expect no callers for a symbol defined in two
+files mid-refactor (ambiguous names are dropped, not guessed).
 <!-- graft:end -->
