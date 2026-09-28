@@ -189,8 +189,8 @@ INetworkPort
 
 IDiskPort
 ├── read-torrent-file(path) → {:ok metadata} | {:error reason}
-├── read-piece(piece-index) → {:ok bytes | nil}
-├── write-piece(piece-index, bytes) → {:ok :written} | {:error reason}
+├── read-piece(info-hash, piece-index) → {:ok bytes | nil}
+├── write-piece(info-hash, piece-index, bytes) → {:ok :written} | {:error reason}
 ├── write-output-piece(layout, output-dir, piece-index, bytes) → {:ok :written} | {:error reason}
 ├── initialize-output-layout(layout, output-dir) → {:ok :initialized} | {:error reason}
 ├── ensure-directory(path) → {:ok :created} | {:error reason}

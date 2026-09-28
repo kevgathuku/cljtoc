@@ -96,6 +96,17 @@
     (catch Exception _
       nil)))
 
+(defn- cache-file
+  "File for one torrent's cached piece: <cache-dir>/<info-hash-hex>/piece-<index>.dat.
+   Scoping by content is what keeps concurrent downloads from overwriting
+   each other's cached bytes. A missing or malformed hash fails closed here
+   (see disk/cache-scope) — and nothing is created before the check runs.
+   Returns {:ok File} or disk/invalid-info-hash-error."
+  [piece-cache-dir info-hash piece-index]
+  (if-let [scope (disk/cache-scope info-hash)]
+    {:ok (io/file piece-cache-dir scope (str "piece-" piece-index ".dat"))}
+    disk/invalid-info-hash-error))
+
 (defn- resolve-layout
   "Resolve every declared path under output-dir for writing. Each path is
    containment-checked (see resolve-contained), then the resolved targets
@@ -210,25 +221,31 @@
       (catch Exception e
         {:error :read-error :message (.getMessage e)})))
 
-  (read-piece [_ piece-index]
-    (try
-      (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))]
-        (if (.exists piece-file)
-          {:ok (Files/readAllBytes (.toPath piece-file))}
-          {:ok nil}))
-      (catch Exception e
-        {:error :read-error :message (.getMessage e)})))
+  (read-piece [_ info-hash piece-index]
+    (let [file-result (cache-file piece-cache-dir info-hash piece-index)]
+      (if (:error file-result)
+        file-result
+        (try
+          (let [piece-file (:ok file-result)]
+            (if (.exists piece-file)
+              {:ok (Files/readAllBytes (.toPath piece-file))}
+              {:ok nil}))
+          (catch Exception e
+            {:error :read-error :message (.getMessage e)})))))
 
-  (write-piece [_ piece-index bytes]
-    (try
-      (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
-            parent (.getParentFile piece-file)]
-        (when-not (.exists parent)
-          (.mkdirs parent))
-        (clojure.java.io/copy bytes piece-file)
-        {:ok :written})
-      (catch Exception e
-        {:error :write-error :message (.getMessage e)})))
+  (write-piece [_ info-hash piece-index bytes]
+    (let [file-result (cache-file piece-cache-dir info-hash piece-index)]
+      (if (:error file-result)
+        file-result
+        (try
+          (let [piece-file (:ok file-result)
+                parent (.getParentFile piece-file)]
+            (when-not (.exists parent)
+              (.mkdirs parent))
+            (clojure.java.io/copy bytes piece-file)
+            {:ok :written})
+          (catch Exception e
+            {:error :write-error :message (.getMessage e)})))))
 
   (write-output-piece [_ layout output-dir piece-index bytes]
     (try

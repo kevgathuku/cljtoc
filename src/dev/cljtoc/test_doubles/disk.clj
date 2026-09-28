@@ -24,22 +24,27 @@
       {:ok data}
       {:error :file-not-found :message (str "File not found: " path)}))
 
-  (read-piece [_ piece-index]
+  (read-piece [_ info-hash piece-index]
     ;; Mirrors DiskPortImpl: a cache hit and a miss are both {:ok ...},
     ;; the miss carrying nil, and an unreadable cache file is an
-    ;; {:error :read-error}. Returning the bare bytes (or nil) instead
-    ;; is a contract drift no caller can see, because read-piece has no
-    ;; caller yet to catch it.
+    ;; {:error :read-error}. Entries are keyed [hash-scope piece-index]
+    ;; on both ports, and a missing hash is refused on both ports — a mock
+    ;; that stored flat or accepted hashless reads would pass tests the
+    ;; real port fails.
     (if-let [err (:read-error config)]
       err
-      {:ok (get @piece-cache piece-index)}))
+      (if-let [scope (disk/cache-scope info-hash)]
+        {:ok (get @piece-cache [scope piece-index])}
+        disk/invalid-info-hash-error)))
 
-  (write-piece [_ piece-index bytes]
+  (write-piece [_ info-hash piece-index bytes]
     (if-let [err (:write-error config)]
       err
-      (do
-        (swap! piece-cache assoc piece-index bytes)
-        {:ok :written})))
+      (if-let [scope (disk/cache-scope info-hash)]
+        (do
+          (swap! piece-cache assoc [scope piece-index] bytes)
+          {:ok :written})
+        disk/invalid-info-hash-error)))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
@@ -136,11 +141,11 @@
   :args (s/cat :mock-disk any? :path string? :torrent-metadata any?)
   :ret map?)
 
-(defn get-piece [mock-disk piece-index]
-  (get @(:piece-cache mock-disk) piece-index))
+(defn get-piece [mock-disk info-hash piece-index]
+  (get @(:piece-cache mock-disk) [(disk/cache-scope info-hash) piece-index]))
 
 (s/fdef get-piece
-  :args (s/cat :mock-disk any? :piece-index nat-int?)
+  :args (s/cat :mock-disk any? :info-hash any? :piece-index nat-int?)
   :ret any?)
 
 (defn get-output-piece [mock-disk piece-index]

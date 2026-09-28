@@ -24,17 +24,21 @@
      
      Side effects: reads file from filesystem")
 
-  (read-piece [this piece-index]
-    "Read cached piece data from disk.
-     Returns {:ok bytes} or {:ok nil} when not cached.
-     
+  (read-piece [this info-hash piece-index]
+    "Read one torrent's cached piece data from disk.
+     The cache is scoped by content (see cache-scope), so concurrent
+     downloads never share entries unless their bytes verify identically.
+     Returns {:ok bytes}, {:ok nil} when not cached, or {:error ...} when
+     the info hash cannot name a cache entry.
+
      Side effects: reads from piece cache")
 
-  (write-piece [this piece-index bytes]
-    "Write verified piece data to the piece cache under piece-index.
+  (write-piece [this info-hash piece-index bytes]
+    "Write verified piece data to the torrent's piece cache under piece-index.
      This is not the final file layout — that is write-output-piece's job,
      which maps the bytes into output-dir via the compiled output layout.
-     Returns {:ok :written} or {:error reason :message msg}.
+     Returns {:ok :written} or {:error ...} when the info hash cannot
+     name a cache entry.
 
      Side effects: writes to filesystem")
 
@@ -238,9 +242,36 @@
   (let [file-name (.getName (io/file torrent-path))
         [_ ext] (re-find #"\.([^.]+)$" file-name)]
     (if (and ext (not (empty? ext)))
-      (subs file-name 0 (- (count file-name) (inc (count ext))))
+      (let [stripped (subs file-name 0 (- (count file-name) (inc (count ext))))]
+        ;; A dotfile torrent would otherwise id as "" (.torrent) or "."
+        ;; (..torrent): unusable as a state filename, and the download would
+        ;; fail on its first verified piece. Fall back to the full filename,
+        ;; which always names one entry.
+        (if (contains? #{"" "." ".."} stripped)
+          file-name
+          stripped))
       file-name)))
 
 (s/fdef id-from-path
   :args (s/cat :torrent-path string?)
   :ret string?)
+
+(defn cache-scope
+  "Filesystem-safe cache scope for one torrent: lowercase hex of its info-hash.
+   Content-addressed, so identical torrents share entries (their bytes verify
+   identically) while distinct torrents never collide — including names that
+   differ only by case, which share a directory on case-insensitive
+   filesystems, and Windows-reserved spellings, which hex cannot produce.
+   Returns the scope string, or nil when the hash is not a non-empty byte array."
+  [info-hash]
+  (when (and (bytes? info-hash)
+             (pos? (alength ^bytes info-hash)))
+    (bencode/bytes->hex-string info-hash)))
+
+(s/fdef cache-scope
+  :args (s/cat :info-hash any?)
+  :ret (s/nilable string?))
+
+(def invalid-info-hash-error
+  {:error :invalid-info-hash
+   :message "Cannot name a piece-cache entry without a torrent info-hash."})
