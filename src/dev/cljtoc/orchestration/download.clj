@@ -204,8 +204,30 @@
       (download-error :invalid-torrent (:message result))
       {:ok (:ok result)})))
 
-(defn- announce-to-tracker [network-port torrent]
-  (let [result (network/announce network-port torrent)]
+(defn- announce-progress
+  "The progress a tracker (re-)announce must report for download:
+   :downloaded is the verified bytes already on disk, :left the rest.
+   Announcing zero on resume tells the tracker nothing was fetched and
+   skews its leecher accounting. The tail piece counts at its real
+   length; missing size metadata announces zero rather than throwing."
+  [download]
+  (let [info (get-in download [:torrent :info] {})
+        total (torrent/total-size info)
+        piece-length (or (:piece-length info) 0)
+        piece-count (count (:pieces info))
+        downloaded (reduce + 0
+                           (map (fn [piece-index]
+                                  (if (= piece-index (dec piece-count))
+                                    (- total (* piece-index piece-length))
+                                    piece-length))
+                                (:verified (:piece-state download))))]
+    {:downloaded downloaded
+     :left (max 0 (- total downloaded))}))
+
+(defn- announce-to-tracker [network-port download]
+  (let [result (network/announce network-port
+                                 (:torrent download)
+                                 (announce-progress download))]
     (if (:error result)
       (download-error :tracker-error (:message result))
       {:ok (:ok result)})))
@@ -296,7 +318,7 @@
       parse-result
       (let [torrent (:ok parse-result)
             download (initial-download time-port torrent output-dir (disk/id-from-path torrent-path))
-            announce-result (announce-to-tracker network-port torrent)]
+            announce-result (announce-to-tracker network-port download)]
         (if (:error announce-result)
           (assoc download :state :failed
                  :error (:error announce-result)
@@ -356,28 +378,123 @@
   :ret (s/or :ok (s/keys :req-un [::state])
              :error map?))
 
+(def ^:private resumable-states
+  "States a saved record can be revived from.
+
+   :failed joins :paused because a record that died with the swarm
+   exhausted is exactly the case with work left to do. :downloading is not
+   one of them -- a record in that state is either this process's own run
+   or a crash with no peers to reconcile -- and :completed has nothing
+   left to fetch."
+  #{:paused :failed})
+
+(defn- requeue-stranded-pieces
+  "Return piece-state with every in-flight piece back in :needed.
+
+   A run that died mid-piece left that piece in flight: no peer is
+   requesting it and nothing will verify it, so a resumed swarm would skip
+   it forever and the download could never complete. Returns the updated
+   piece state, leaving a piece that already moved alone."
+  [piece-state]
+  (reduce (fn [state piece-index]
+            (let [requeued (pieces/requeue-piece state piece-index)]
+              (if (:ok requeued) (:ok requeued) state)))
+          piece-state
+          (:in-flight piece-state)))
+
+(declare materialize-verified-pieces)
+
+(defn- reconcile-verified-pieces
+  "Reconcile the record's verified set against the piece cache before any
+   tracker announce.
+
+    The announce below would otherwise report stale verified bytes and fail
+    a download the cache already completes. Returns {:ok download} carrying
+    the reconciled record, plus :layout holding the compiled output layout
+    (nil when there is nothing to reconcile against: no disk port, an
+    uncompilable layout, or a failed materialization). Those fall through
+    to the announce path, where run-download reports the layout failure
+    exactly as before."
+  [disk-port download]
+  (if (nil? disk-port)
+    {:ok download :layout nil}
+    (let [compiled (torrent/compile-output-layout (:info (:torrent download)))]
+      (if (:error compiled)
+        {:ok download :layout nil}
+        (let [materialized (materialize-verified-pieces
+                            download disk-port (:ok compiled))]
+          (if (:error materialized)
+            {:ok download :layout nil}
+            (assoc materialized :layout (:ok compiled))))))))
+
 (defn resume-download
-  "Resume a paused download.
-   - Loads persisted state from disk
-   - Re-announces to the tracker when a network port is given, since
-     pause clears :peers and run-download derives every worker from them
-   - Returns download in :downloading state"
+  "Resume a paused or failed download.
+
+   - Loads persisted state from disk when a disk port is given
+   - Reconciles verified pieces against the piece cache before
+     announcing: a record the cache already completes comes back
+     :completed without contacting the tracker, and the announce
+     otherwise reports the corrected progress
+   - Re-announces to the tracker when a network port is given: the saved
+     peer set is the one that just failed (pause clears it outright), and
+     run-download derives every worker from :peers
+   - Requeues pieces the dead run left in flight
+   - Returns the download in :downloading state, or :completed when the
+     cache already holds every verified piece (with the output layout
+     initialized: the skipped run never initializes it, and the piece
+     writer alone would leave a declared zero-length file absent)"
   ([download]
    (resume-download nil nil download))
   ([disk-port network-port download]
-   (if (= :paused (:state download))
+   (if (contains? resumable-states (:state download))
      (let [stored (when disk-port
                     (:ok (disk/load-state disk-port (:id download))))
-           restored (or stored download)]
+           restored (or stored download)
+           revived (assoc restored
+                          :state :downloading
+                          ;; Starts empty whatever the record carried. The
+                          ;; announce below fills it in; without a network
+                          ;; port it stays empty, so run-download refuses
+                          ;; instead of redialing peers already known dead.
+                          :peers #{})
+           revived (assoc revived
+                          :error nil
+                          :piece-state (requeue-stranded-pieces
+                                        (:piece-state revived)))]
        (if network-port
-         (let [announce-result (announce-to-tracker network-port (:torrent restored))]
-           (if (:error announce-result)
-             announce-result
-             {:ok (assoc restored
-                         :state :downloading
-                         :peers (build-peers (:ok announce-result)))}))
-         {:ok (assoc restored :state :downloading)}))
-     {:error :not-paused :message "Download is not paused"})))
+          ;; Announce the reconciled record, not the revived one: pieces
+          ;; the cache no longer holds went back to :needed above, so the
+          ;; tracker hears the corrected progress. A reconciled-complete
+          ;; record skips the announce and the swarm outright: there is
+          ;; nothing left to fetch, and gating completion on a tracker
+          ;; answer stranded fully-cached resumes on a dead tracker.
+         (let [{reconciled :ok layout :layout}
+               (reconcile-verified-pieces disk-port revived)
+                ;; The swarm is skipped, so run-download never initializes
+                ;; the output layout -- and the piece writer only opens
+                ;; files piece bytes touch. Initialize here so a declared
+                ;; zero-length file exists before the :completed report.
+                ;; An init failure falls through to the announce path,
+                ;; where run-download reports it exactly as before.
+               initialized (when (and (pieces/complete? (:piece-state reconciled))
+                                      (some? layout))
+                             (disk/initialize-output-layout
+                              disk-port layout (:output-dir reconciled)))]
+           (if (and (some? initialized) (not (:error initialized)))
+             {:ok (assoc reconciled :state :completed)}
+             (let [announce-result (announce-to-tracker network-port reconciled)]
+               (if (:error announce-result)
+                 announce-result
+                  ;; :layout travels at the envelope level (never inside
+                  ;; the record): resume-and-run hands it to run-download
+                  ;; so the reconciled materialization is not repeated.
+                 {:ok (assoc reconciled
+                             :peers (build-peers (:ok announce-result)))
+                  :layout layout}))))
+         {:ok revived}))
+     {:error :not-paused
+      :message (str "Download is not resumable from state "
+                    (:state download))})))
 
 (s/fdef resume-download
   :args (s/cat :disk-port (s/? any?) :network-port (s/? any?) :download map?)
@@ -1036,89 +1153,212 @@
   :args (s/cat :state map? :events-ch any? :env map?)
   :ret map?)
 
+(defn- fail-disk
+  "Mark the download :failed with a :disk-error, naming the stage that
+   refused. The stage leads the message so a truncated message still says
+   whether the layout, its initialization or a piece write gave up.
+   Returns the updated record."
+  [download stage message]
+  (assoc download
+         :state :failed
+         :error {:reason :disk-error
+                 :message (str stage ": " message)}))
+
+(defn- materialize-verified-pieces
+  "Write every piece the record claims is verified out of the piece cache
+   and into the output layout.
+
+   A resumed record's verified bytes live in the piece cache, not in the
+   output files, and initialize-output-layout only creates those files at
+   their declared length. Copying them here is what makes :completed mean
+   the content is on disk rather than that the files exist.
+
+   A verified piece the cache no longer holds cannot be written, so it
+   returns to :needed and the swarm fetches it again, as does a piece
+   whose cached bytes fail their torrent hash -- the port returns
+   whatever the cache file holds, so a truncated file would otherwise
+   land in the output while the piece stays verified. Leaving either
+   verified would let complete? answer true and report a finished
+   download with a hole in it.
+
+   Returns {:ok download} with the piece state updated, or the refusing
+   port envelope {:error reason :message msg} unchanged. The envelope
+   carries the in-progress :download, so a write that fails after earlier
+   pieces were requeued does not discard that progress: the failed record
+   keeps it instead of re-claiming the holey pieces as verified."
+  [download disk-port output-layout]
+  (loop [download download
+         remaining (sort (:verified (:piece-state download)))]
+    (if (empty? remaining)
+      {:ok download}
+      (let [piece-index (first remaining)
+            rest-pieces (rest remaining)
+            cached (disk/read-piece disk-port piece-index)]
+        (cond
+          (:error cached)
+          (assoc cached :download download)
+
+          ;; Bytes the cache can no longer vouch for go back to the swarm:
+          ;; missing bytes, or bytes failing their torrent hash (the real
+          ;; port returns whatever the cache file holds, so a truncated
+          ;; file would otherwise land in the output while the piece stays
+          ;; verified). Without hashes there is nothing to check against.
+          (let [cached-bytes (:ok cached)
+                expected (nth (get-in download [:torrent :info :pieces])
+                              piece-index nil)]
+            (or (nil? cached-bytes)
+                (and (some? expected)
+                     (not (:ok (pieces/verify-piece
+                                piece-index cached-bytes expected))))))
+          (let [requeued (pieces/requeue-verified (:piece-state download)
+                                                  piece-index)]
+            (if (:ok requeued)
+              (recur (assoc download :piece-state (:ok requeued)) rest-pieces)
+              ;; The index came out of the verified set this loop is walking,
+              ;; so the transition cannot legitimately fail. Surface it
+              ;; anyway: assoc'ing a nil piece state would strand the record.
+              (assoc requeued :download download)))
+
+          :else
+          (let [written (disk/write-output-piece disk-port
+                                                 output-layout
+                                                 (:output-dir download)
+                                                 piece-index
+                                                 (:ok cached))]
+            (if (:error written)
+              (assoc written :download download)
+              (recur download rest-pieces))))))))
+
 (defn run-download
   "Run the download to completion. Blocking call.
    Connects to peers, requests pieces, writes verified pieces.
    The output layout is compiled once up front and handed to the port
    and the coordinator; a layout that cannot be compiled fails the
    download before any peer is dialed or file created.
+   opts is optional: {:materialized? true :layout layout} carries a
+   materialization resume-download already completed into this run, so
+   the cached pieces are not read, verified, and written a second time.
+   The caller guarantees the layout was compiled from this download's
+   own info and the materialization ran after its last piece-state
+   change -- only resume-and-run sets this, immediately after its own
+   reconcile, over the untouched record. Anything else (missing flag,
+   missing or invalid layout) runs the full pass exactly as before.
    Returns the final Download record."
-  [manager download]
-  (let [{:keys [disk-port config]} manager
-        compiled (torrent/compile-output-layout (:info (:torrent download)))]
-    (if (:error compiled)
-      (assoc download :state :failed
-             :error {:reason :disk-error
-                     :message (str "Failed to compile output layout: "
-                                   (:message compiled))})
-      (let [layout (:ok compiled)
-            init-result (disk/initialize-output-layout
-                         disk-port
-                         layout
-                         (:output-dir download))
+  ([manager download]
+   (run-download manager download nil))
+  ([manager download opts]
+   (let [{:keys [disk-port config]} manager
+         carried (:layout opts)
+         ;; The O(1) shape gate, not the O(files) invariant check: the
+         ;; layout came out of compile-output-layout in this same process,
+         ;; so this only refuses a caller that forged the opts map.
+         use-carried? (and (:materialized? opts)
+                           (some? carried)
+                           (disk/valid-output-layout? carried))
+         compiled (if use-carried?
+                    {:ok carried}
+                    (torrent/compile-output-layout (:info (:torrent download))))]
+     (if (:error compiled)
+       (fail-disk download "Failed to compile output layout" (:message compiled))
+       (let [layout (:ok compiled)
+             init-result (disk/initialize-output-layout
+                          disk-port
+                          layout
+                          (:output-dir download))
+             ;; Materialize before asking whether the download is complete: a
+             ;; resumed record's verified bytes are in the piece cache, and
+             ;; initialize-output-layout only created the files at their
+             ;; declared length. Asking first is what let :completed mean "the
+             ;; files exist" instead of "the content is on disk". Skipped when
+             ;; the layout was never created, so nothing is written into a
+             ;; layout that failed to initialize -- and skipped wholesale
+             ;; when the caller carried a completed materialization in.
+             materialized (cond
+                            (:error init-result)
+                            init-result
+
+                            use-carried?
+                            {:ok download}
+
+                            :else
+                            (materialize-verified-pieces download
+                                                         disk-port
+                                                         layout))
+            ;; Read only where materialization succeeded; the two failure
+            ;; branches below still report on the original record.
+             revived (:ok materialized)
             ;; Dial candidates capped exactly as the spawn below reads them,
             ;; so the empty guard and the worker spawn cannot drift apart.
-            peer-addresses (capped-peer-addresses (map :address (:peers download)) config)]
-        (cond
-          (:error init-result)
-          (assoc download :state :failed
-                 :error {:reason :disk-error
-                         :message (str "Failed to initialize output layout: "
-                                       (:message init-result))})
+            ;; From the original record: materialization only edits
+            ;; :piece-state, never :peers, so this is identical on the
+            ;; success path and well-defined on the failure paths, where
+            ;; revived is nil and the cond returns before using it.
+             peer-addresses (capped-peer-addresses (map :address (:peers download))
+                                                   config)]
+         (cond
+           (:error init-result)
+           (fail-disk download
+                      "Failed to initialize output layout"
+                      (:message init-result))
 
-          (pieces/complete? (:piece-state download))
-          (assoc download :state :completed)
+           (:error materialized)
+           (fail-disk (:download materialized)
+                      "Failed to materialize verified pieces"
+                      (:message materialized))
+
+           (pieces/complete? (:piece-state revived))
+           (assoc revived :state :completed)
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.
-          (empty? peer-addresses)
-          (assoc download :state :failed
-                 :error {:reason :no-peers
-                         :message "No peers available: nothing to connect to"})
+           (empty? peer-addresses)
+           (assoc revived :state :failed
+                  :error {:reason :no-peers
+                          :message "No peers available: nothing to connect to"})
 
-          :else
-          (let [{:keys [network-port disk-port time-port]} manager
-                torrent (:torrent download)
-                info (:info torrent)
-                info-hash (:info-hash torrent)
-                total-pieces (count (:pieces info))
-                piece-hashes (:pieces info)
-                piece-length (:piece-length info)
+           :else
+           (let [{:keys [network-port disk-port time-port]} manager
+                 torrent (:torrent revived)
+                 info (:info torrent)
+                 info-hash (:info-hash torrent)
+                 total-pieces (count (:pieces info))
+                 piece-hashes (:pieces info)
+                 piece-length (:piece-length info)
                 ;; The compiled layout already carries the content length:
                 ;; one derivation, no second walk of the declared files.
-                total-length (:total layout)
-                peer-id (let [b (byte-array 20)]
-                          (.nextBytes (SecureRandom.) b)
-                          b)
-                events-ch (async/chan 256)
-                total-attempted (count peer-addresses)
-                conn-stats (atom {:connected 0 :failed 0})]
+                 total-length (:total layout)
+                 peer-id (let [b (byte-array 20)]
+                           (.nextBytes (SecureRandom.) b)
+                           b)
+                 events-ch (async/chan 256)
+                 total-attempted (count peer-addresses)
+                 conn-stats (atom {:connected 0 :failed 0})]
 
-            (println (str "  Connecting to " total-attempted " peers..."))
-            (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+             (println (str "  Connecting to " total-attempted " peers..."))
+             (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
 
       ;; Spawn peer workers; their channels close on worker exit,
       ;; so watching them tells the coordinator when all peers are gone.
-            (let [worker-chs (mapv (fn [addr]
-                                     (peer-worker/run-peer network-port info-hash peer-id
-                                                           addr total-pieces events-ch))
-                                   peer-addresses)]
-              (watch-workers! worker-chs events-ch))
+             (let [worker-chs (mapv (fn [addr]
+                                      (peer-worker/run-peer network-port info-hash peer-id
+                                                            addr total-pieces events-ch))
+                                    peer-addresses)]
+               (watch-workers! worker-chs events-ch))
 
       ;; Hand the event channel to the coordinator loop
-            (run-coordinator (initial-coordinator-state download peer-addresses)
-                             events-ch
-                             {:message-ctx {:piece-hashes piece-hashes
-                                            :piece-length piece-length
-                                            :total-length total-length
-                                            :total-pieces total-pieces}
-                              :output-layout layout
-                              :ports {:network-port network-port
-                                      :disk-port disk-port
-                                      :time-port time-port}
-                              :conn-stats conn-stats
-                              :total-attempted total-attempted})))))))
+             (run-coordinator (initial-coordinator-state revived peer-addresses)
+                              events-ch
+                              {:message-ctx {:piece-hashes piece-hashes
+                                             :piece-length piece-length
+                                             :total-length total-length
+                                             :total-pieces total-pieces}
+                               :output-layout layout
+                               :ports {:network-port network-port
+                                       :disk-port disk-port
+                                       :time-port time-port}
+                               :conn-stats conn-stats
+                               :total-attempted total-attempted}))))))))
 
 (s/fdef run-download
-  :args (s/cat :manager ::download-manager :download map?)
+  :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))
   :ret map?)

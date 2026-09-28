@@ -10,7 +10,7 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
-            [dev.cljtoc.test-utils :refer [an-envelope? channel?]]
+            [dev.cljtoc.test-utils :as test-utils :refer [an-envelope? channel?]]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
@@ -25,21 +25,15 @@
   [info]
   (:ok (torrent/compile-output-layout info)))
 
-(defn- temp-dir [prefix]
-  (let [dir (io/file (System/getProperty "java.io.tmpdir")
-                     (str prefix (System/nanoTime)))]
-    (.mkdirs dir)
-    (.getAbsolutePath dir)))
-
 (defn- make-port [state-dir]
   (disk-impl/create {:state-dir state-dir
-                     :piece-cache-dir (temp-dir "piece-cache-")}))
+                     :piece-cache-dir (test-utils/temp-dir "piece-cache-")}))
 
 (deftest disk-port-returns-envelopes-not-channels-test
   (testing "every IDiskPort method hands back its envelope, not a channel,
             on the real port and on the mock alike"
-    (let [torrent-dir (temp-dir "torrent-")
-          output-dir (temp-dir "output-contract-")
+    (let [torrent-dir (test-utils/temp-dir "torrent-")
+          output-dir (test-utils/temp-dir "output-contract-")
           torrent-path (str torrent-dir "/contract.torrent")
           layout (compile-layout {:name "t" :piece-length 4 :length 4})
           piece-bytes (byte-array [0 1 2 3])
@@ -52,7 +46,7 @@
                  :save-state #(disk/save-state % {:id "contract"})
                  :load-state #(disk/load-state % "contract")
                  :delete-state #(disk/delete-state % "contract")}
-          ports {:real (make-port (temp-dir "disk-state-"))
+          ports {:real (make-port (test-utils/temp-dir "disk-state-"))
                  :mock (mock-disk/create {})}]
       (doseq [[port-name port] ports
               [method call] calls]
@@ -65,7 +59,7 @@
 
 (deftest save-load-round-trip-with-bytes-test
   (testing "a download containing byte arrays round-trips through the disk port"
-    (let [state-dir (temp-dir "disk-state-")
+    (let [state-dir (test-utils/temp-dir "disk-state-")
           port (make-port state-dir)
           download {:id "bytes-torrent"
                     :torrent {:info-hash (byte-array [0 1 15 16 127 -1])}
@@ -80,7 +74,7 @@
 
 (deftest saved-bytes-decode-to-bytes-test
   (testing "byte arrays come back as byte arrays, so a resumed download can handshake and verify"
-    (let [state-dir (temp-dir "disk-state-")
+    (let [state-dir (test-utils/temp-dir "disk-state-")
           port (make-port state-dir)
           info-hash (byte-array [0 1 15 16 127 -1])
           piece-hash (byte-array (repeat 20 (byte 7)))
@@ -99,7 +93,7 @@
 
 (deftest saved-file-is-plain-edn-test
   (testing "the state file parses with edn/read-string (no reader tags, no #object)"
-    (let [state-dir (temp-dir "disk-state-")
+    (let [state-dir (test-utils/temp-dir "disk-state-")
           port (make-port state-dir)
           download {:id "edn-safe"
                     :torrent {:info-hash (byte-array [1 2 3])}
@@ -112,7 +106,7 @@
 
 (deftest seams-interoperate-test
   (testing "state saved via the disk port loads via cli-state and vice versa"
-    (let [state-dir (temp-dir "disk-state-")
+    (let [state-dir (test-utils/temp-dir "disk-state-")
           port (make-port state-dir)
           via-disk {:id "interop" :state :paused :note "from-disk"}]
       (disk/save-state port via-disk)
@@ -123,12 +117,12 @@
 
 (deftest load-missing-returns-nil-ok-test
   (testing "loading an unknown id returns {:ok nil}"
-    (let [port (make-port (temp-dir "disk-state-"))]
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))]
       (is (= {:ok nil} (disk/load-state port "nope"))))))
 
 (deftest pause-resume-cycle-through-disk-port-test
   (testing "pause persists and resume restores the same download id"
-    (let [port (make-port (temp-dir "disk-state-"))
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
           started (assoc (download/initial-download (time/->RealTimePort)
                                                     {:info {:pieces ["h1" "h2"]}}
                                                     "/out" "cycle")
@@ -141,8 +135,8 @@
 
 (deftest write-output-piece-assembles-single-file-test
   (testing "N pieces written through the port assemble byte-identical under output-dir"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-single-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-single-")
           info {:name "data.bin" :piece-length 4 :length 10}
           piece-bytes [(byte-array [0 1 2 3]) (byte-array [4 5 6 7]) (byte-array [8 9])]]
       (doseq [[piece-index piece-data] (map-indexed vector piece-bytes)]
@@ -154,8 +148,8 @@
 
 (deftest write-output-piece-spans-file-boundary-test
   (testing "a piece crossing a file boundary lands split across both files"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-multi-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-multi-")
           info {:name "t" :piece-length 6
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
       (is (= {:ok :written}
@@ -171,8 +165,8 @@
 
 (deftest write-output-piece-truncates-stale-file-test
   (testing "a longer file left by an earlier run comes out byte-identical"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-stale-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-stale-")
           info {:name "data.bin" :piece-length 4 :length 10}
           stale (io/file output-dir "data.bin")]
       (.mkdirs (.getParentFile stale))
@@ -188,9 +182,9 @@
 
 (deftest write-output-piece-rejects-symlink-escape-test
   (testing "a symlink inside output-dir cannot redirect a write outside it"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-link-")
-          outside-dir (temp-dir "outside-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-link-")
+          outside-dir (test-utils/temp-dir "outside-")
           target (io/file outside-dir "victim.bin")]
       (spit target "original")
       (java.nio.file.Files/createSymbolicLink
@@ -204,9 +198,9 @@
 
 (deftest initialize-output-layout-rejects-symlink-escape-test
   (testing "layout init refuses a symlinked declared path, so no write is redirected"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-init-link-")
-          outside-dir (temp-dir "outside-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-init-link-")
+          outside-dir (test-utils/temp-dir "outside-")
           target (io/file outside-dir "victim.bin")]
       (spit target "original")
       (java.nio.file.Files/createSymbolicLink
@@ -220,9 +214,9 @@
 
 (deftest initialize-output-layout-rejects-symlinked-nested-dir-test
   (testing "a symlinked parent directory cannot redirect the layout init either"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-init-parent-link-")
-          outside-dir (temp-dir "outside-")]
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-init-parent-link-")
+          outside-dir (test-utils/temp-dir "outside-")]
       (java.nio.file.Files/createSymbolicLink
        (.toPath (io/file output-dir "t"))
        (.toPath (io/file outside-dir))
@@ -236,7 +230,7 @@
 
 (deftest initialize-output-layout-refuses-the-filesystem-root-test
   (testing "assembling a torrent into / is a mistake, not a download to attempt"
-    (let [port (make-port (temp-dir "disk-state-"))
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
           info {:name "t" :piece-length 4 :files [{:path ["a"] :length 4}]}
           result (disk/initialize-output-layout port (compile-layout info) File/separator)]
       (is (= :unsafe-output-dir (:error result)))
@@ -245,7 +239,7 @@
 
 (deftest write-output-piece-refuses-the-filesystem-root-test
   (testing "the piece writer refuses / too, not just layout init"
-    (let [port (make-port (temp-dir "disk-state-"))
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
           info {:name "t" :piece-length 4 :files [{:path ["a"] :length 4}]}
           result (disk/write-output-piece port (compile-layout info) File/separator 0 (byte-array 4))]
       (is (= :unsafe-output-dir (:error result)))
@@ -267,8 +261,8 @@
   ;; Two entries for one path: the size map keeps one length, the spans hand
   ;; out two ranges for it, and both land in the same physical file. The
   ;; layout must be refused before anything is created.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-dup-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-dup-")
         info {:name "t" :piece-length 4
               :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
     (is (= :invalid-info (:error (disk/initialize-output-layout port (compile-layout info) output-dir))))
@@ -282,9 +276,9 @@
   ;; one level deeper, mkdirs follows the link and creates that directory
   ;; outside the output dir before any containment check runs — the write is
   ;; then correctly refused, but the directory it created is not.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-init-deep-link-")
-        outside-dir (temp-dir "outside-")]
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-init-deep-link-")
+        outside-dir (test-utils/temp-dir "outside-")]
     (java.nio.file.Files/createSymbolicLink
      (.toPath (io/file output-dir "t"))
      (.toPath (io/file outside-dir))
@@ -300,8 +294,8 @@
   ;; in-tree symlink to t/b, so each path passes containment on its own —
   ;; but truncating and writing both lands two independent torrent ranges in
   ;; the same target, the aliasing twin of the duplicate-path collapse.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-alias-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-alias-")
         target (io/file output-dir "t" "b")]
     (.mkdirs (.getParentFile target))
     (spit target "SENTINEL")
@@ -319,8 +313,8 @@
   ;; Same alias through the piece writer: without init, both spans of one
   ;; piece resolve contained and the second range overwrites the first in
   ;; the shared target.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-alias-write-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-alias-write-")
         target (io/file output-dir "t" "b")]
     (.mkdirs (.getParentFile target))
     (spit target "SENTINEL")
@@ -339,8 +333,8 @@
   ;; Canonical strings cannot see hard links: t/a and t/b resolve
   ;; differently yet share one inode, so both pass containment and the
   ;; canonical collision check — then two ranges overwrite one file.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-hardlink-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-hardlink-")
         target (io/file output-dir "t" "b")]
     (.mkdirs (.getParentFile target))
     (spit target "SENTINEL")
@@ -353,8 +347,8 @@
       (is (= "SENTINEL" (slurp target))))))
 
 (deftest write-output-piece-rejects-hardlink-alias-test
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-hardlink-write-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-hardlink-write-")
         target (io/file output-dir "t" "b")]
     (.mkdirs (.getParentFile target))
     (spit target "SENTINEL")
@@ -371,8 +365,8 @@
   ;; The alias check must see the whole layout, not just the piece's paths:
   ;; with piece-length 4, piece 0 touches only a, but a is a symlink to b —
   ;; validating [a] alone finds no collision, and the write corrupts b.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-alias-partial-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-alias-partial-")
         target (io/file output-dir "t" "b")]
     (.mkdirs (.getParentFile target))
     (spit target "SENTINEL")
@@ -391,8 +385,8 @@
   ;; A layout with neither :length nor :files must be refused as
   ;; :invalid-info before anything is created — not attempted until
   ;; setLength explodes on nil and reports :write-error.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-no-length-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-no-length-")
         info {:name "t" :piece-length 4}
         result (disk/initialize-output-layout port (compile-layout info) output-dir)]
     (is (= :invalid-info (:error result)))
@@ -402,8 +396,8 @@
   ;; t/a cannot be both a file and t/a/b's directory. Pre-fix this created
   ;; the file, then failed opening the child through it as :write-error;
   ;; refuse the layout as :invalid-info with nothing created instead.
-  (let [port (make-port (temp-dir "disk-state-"))
-        output-dir (temp-dir "output-prefix-")
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prefix-")
         info {:name "t" :piece-length 4
               :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}
         result (disk/initialize-output-layout port (compile-layout info) output-dir)]
@@ -414,7 +408,7 @@
   ;; Unreachable through the guarded derivations (every layout path carries
   ;; the root), but the primitive itself must refuse: [] resolves to the
   ;; output dir, which is not contained under itself.
-  (let [output-dir (temp-dir "output-empty-path-")
+  (let [output-dir (test-utils/temp-dir "output-empty-path-")
         result (#'disk-impl/resolve-contained output-dir [])]
     (is (= :unsafe-path (:error result)))
     (is (empty? (seq (.listFiles (io/file output-dir)))))))
@@ -432,10 +426,10 @@
       (is (true? (root? File/separator))))
     (testing "an ordinary canonical directory is not a root, and neither is an unresolvable path"
       (is (false? (root? (str "tmp" File/separator "out"))))
-      (is (false? (root? (temp-dir "not-a-root-"))))
+      (is (false? (root? (test-utils/temp-dir "not-a-root-"))))
       (is (false? (root? nil)))))
   (testing "the guard still declines the Unix root end to end"
-    (let [port (make-port (temp-dir "disk-state-"))
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
           result (disk/initialize-output-layout port
                                                 {:name "t" :piece-length 4
                                                  :files [{:path ["a"] :length 4}]}
@@ -446,8 +440,8 @@
   (testing "layout init refuses the hostile components the piece write refuses"
     ;; The escape is now reported where the layout is derived (compile),
     ;; and the port refuses the uncompilable info with :invalid-info.
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-init-escape-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-init-escape-")
           info {:name "a/b" :piece-length 4 :length 4}
           compiled (torrent/compile-output-layout info)
           result (disk/initialize-output-layout port (compile-layout info) output-dir)]
@@ -457,8 +451,8 @@
       (is (not (.exists (io/file output-dir "a"))))))
 
   (testing "a nested multi-file path is still accepted"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-init-nested-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-init-nested-")
           info {:name "t" :piece-length 4
                 :files [{:path ["sub" "deep" "a"] :length 4}]}]
       (is (= {:ok :initialized} (disk/initialize-output-layout port (compile-layout info) output-dir)))
@@ -466,8 +460,8 @@
 
 (deftest write-output-piece-creates-zero-length-file-test
   (testing "a declared zero-length file exists empty after its neighbors land"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-empty-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-empty-")
           info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4}
                         {:path ["empty"] :length 0}
@@ -489,8 +483,8 @@
 
 (deftest initialize-output-layout-creates-empty-files-test
   (testing "a torrent with no pieces still materializes its empty files"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-empty-only-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-empty-only-")
           info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 0} {:path ["b"] :length 0}]}]
       (is (= {:ok :initialized} (disk/initialize-output-layout port (compile-layout info) output-dir)))
@@ -500,8 +494,8 @@
 
 (deftest initialize-output-layout-write-error-test
   (testing "a regular file where a parent directory is needed surfaces :write-error"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-init-blocked-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-init-blocked-")
           info {:name "t" :piece-length 4
                 :files [{:path ["nested" "a"] :length 4}]}]
       (spit (io/file output-dir "t") "not a directory")
@@ -511,8 +505,8 @@
 
 (deftest write-output-piece-write-error-test
   (testing "a piece write into an unwritable path surfaces :write-error"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-write-blocked-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-write-blocked-")
           info {:name "t" :piece-length 4
                 :files [{:path ["nested" "a"] :length 4}]}]
       (spit (io/file output-dir "t") "not a directory")
@@ -524,8 +518,8 @@
   (testing "a torrent-controlled path that escapes the output dir is refused"
     ;; The escape is reported where the layout is derived (compile);
     ;; the port refuses the uncompilable info with :invalid-info.
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-escape-info-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-escape-info-")
           info {:name "t" :piece-length 4
                 :files [{:path [".."] :length 4}]}
           compiled (torrent/compile-output-layout info)
@@ -538,8 +532,8 @@
   (testing "layout init refuses info that cannot produce a layout"
     ;; The missing :name is reported where the layout is derived;
     ;; the port refuses the uncompilable info with :invalid-info.
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-init-no-name-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-init-no-name-")
           info {:piece-length 4 :length 4}
           compiled (torrent/compile-output-layout info)
           result (disk/initialize-output-layout port (compile-layout info) output-dir)]
@@ -549,8 +543,8 @@
 
 (deftest write-output-piece-catches-non-byte-input-test
   (testing "a piece that is not a byte array surfaces the port's error envelope"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-bad-input-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-bad-input-")
           info {:name "t" :piece-length 4 :length 4}
           result (disk/write-output-piece port (compile-layout info) output-dir 0 "not-bytes")]
       (is (= :write-error (:error result)))
@@ -561,8 +555,8 @@
     ;; Non-collection :files is refused where the layout is derived
     ;; (an error envelope, never a throw), and the port refuses the
     ;; uncompilable info with :invalid-info.
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-bad-files-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-bad-files-")
           info {:name "t" :piece-length 4 :files 42}
           compiled (torrent/compile-output-layout info)
           result (disk/initialize-output-layout port (compile-layout info)
@@ -576,22 +570,22 @@
     ;; Every entry point must agree on what a valid layout is: these shapes
     ;; span fine but have no sizes to truncate to, or starts no compile
     ;; could emit (PR #36 round 6).
-    (let [port (make-port (temp-dir "disk-state-"))]
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))]
       (doseq [layout [{:sizes {}
                        :files [{:path ["t" "a"] :length 4 :start 0}]
                        :total 4 :piece-length 4}
                       {:sizes {["t" "a"] 4}
                        :files [{:path ["t" "a"] :length 4 :start 4}]
                        :total 8 :piece-length 4}]]
-        (let [output-dir (temp-dir "output-inconsistent-")
+        (let [output-dir (test-utils/temp-dir "output-inconsistent-")
               result (disk/initialize-output-layout port layout output-dir)]
           (is (= :invalid-info (:error result)) (str "init " (pr-str layout)))
           (is (not (.exists (io/file output-dir "t")))))))))
 
 (deftest write-output-piece-rejects-inconsistent-layout-test
   (testing "the same shape is refused on the write path, not a :write-error"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-inconsistent-write-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-inconsistent-write-")
           layout {:sizes {}
                   :files [{:path ["t" "a"] :length 4 :start 0}]
                   :total 4 :piece-length 4}
@@ -600,8 +594,8 @@
 
 (deftest write-output-piece-leaves-untouched-files-alone-test
   (testing "writing one piece does not re-truncate a file it does not touch"
-    (let [port (make-port (temp-dir "disk-state-"))
-          output-dir (temp-dir "output-untouched-")
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-untouched-")
           info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
           sentinel (io/file output-dir "t" "b")]
@@ -691,8 +685,8 @@
          info (generated-info piece-length file-lengths single?)
          layout (file-layout-oracle single? file-lengths)
          source-bytes (generated-bytes total)
-         output-dir (temp-dir "assembly-")
-         port (make-port (temp-dir "disk-state-"))
+         output-dir (test-utils/temp-dir "assembly-")
+         port (make-port (test-utils/temp-dir "disk-state-"))
          piece-count (int (Math/ceil (/ total (double piece-length))))]
      (when prefill? (prefill-with-junk! output-dir layout))
      (and (= {:ok :initialized}

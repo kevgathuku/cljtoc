@@ -94,6 +94,24 @@
   [error-kw message]
   {:error error-kw :message message})
 
+(defn- partition-sum-valid?
+  "Returns true if the partition invariant holds: needed + in-flight + verified = total-pieces."
+  [state]
+  (= (:total-pieces state)
+     (+ (count (:needed state))
+        (count (:in-flight state))
+        (count (:verified state)))))
+
+(defn- transition-fn-valid?
+  "Validates the :fn contract for the piece-state transitions:
+  on success, total-pieces is unchanged and partition invariant holds."
+  [%]
+  (let [result (:ret %)
+        original-total (-> % :args :piece-state :total-pieces)]
+    (or (keyword? (:error result))
+        (and (= (:total-pieces (:ok result)) original-total)
+             (partition-sum-valid? (:ok result))))))
+
 ;; ============================================================================
 ;; State Initialization (US1)
 ;; ============================================================================
@@ -161,8 +179,8 @@
 
 (defn requeue-piece
   "Moves piece-index from in-flight → needed (on download failure or cancellation).
-  Returns {:ok new-state} or {:error :invalid-transition :message string}
-  if piece-index is not in-flight."
+   Returns {:ok new-state} or {:error :invalid-transition :message string}
+   if piece-index is not in-flight."
   [piece-state piece-index]
   (if (contains? (:in-flight piece-state) piece-index)
     {:ok (-> piece-state
@@ -170,6 +188,28 @@
              (update :needed conj piece-index))}
     (piece-error :invalid-transition
                  (str "Piece " piece-index " is not in-flight; cannot requeue"))))
+
+(defn requeue-verified
+  "Moves piece-index from verified → needed.
+
+   A resumed record can claim a piece is verified whose bytes the piece
+   cache no longer holds, which makes the claim unwritable. Keeping it
+   verified would let complete? answer true and report a finished download
+   with a hole in it, so the piece returns to :needed and the swarm fetches
+   it again. Returns {:ok new-state} or {:error :invalid-transition
+   :message string} if piece-index is not verified."
+  [piece-state piece-index]
+  (if (contains? (:verified piece-state) piece-index)
+    {:ok (-> piece-state
+             (update :verified disj piece-index)
+             (update :needed conj piece-index))}
+    (piece-error :invalid-transition
+                 (str "Piece " piece-index " is not verified; cannot requeue"))))
+
+(s/fdef requeue-verified
+  :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)
+  :ret  map?
+  :fn   transition-fn-valid?)
 
 ;; ============================================================================
 ;; Function Specs (US1)
@@ -203,24 +243,6 @@
   :ret  boolean?
   :fn   #(= (:ret %) (= (-> % :args :piece-state :total-pieces)
                         (count (-> % :args :piece-state :verified)))))
-
-(defn- partition-sum-valid?
-  "Returns true if the partition invariant holds: needed + in-flight + verified = total-pieces."
-  [state]
-  (= (:total-pieces state)
-     (+ (count (:needed state))
-        (count (:in-flight state))
-        (count (:verified state)))))
-
-(defn- transition-fn-valid?
-  "Validates the :fn contract for mark-* and requeue-piece:
-  on success, total-pieces is unchanged and partition invariant holds."
-  [%]
-  (let [result (:ret %)
-        original-total (-> % :args :piece-state :total-pieces)]
-    (or (keyword? (:error result))
-        (and (= (:total-pieces (:ok result)) original-total)
-             (partition-sum-valid? (:ok result))))))
 
 (s/fdef mark-in-flight
   :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)

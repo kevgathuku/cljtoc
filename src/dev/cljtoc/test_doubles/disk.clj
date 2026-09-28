@@ -26,10 +26,13 @@
 
   (read-piece [_ piece-index]
     ;; Mirrors DiskPortImpl: a cache hit and a miss are both {:ok ...},
-    ;; the miss carrying nil. Returning the bare bytes (or nil) instead
+    ;; the miss carrying nil, and an unreadable cache file is an
+    ;; {:error :read-error}. Returning the bare bytes (or nil) instead
     ;; is a contract drift no caller can see, because read-piece has no
     ;; caller yet to catch it.
-    {:ok (get @piece-cache piece-index)})
+    (if-let [err (:read-error config)]
+      err
+      {:ok (get @piece-cache piece-index)}))
 
   (write-piece [_ piece-index bytes]
     (if-let [err (:write-error config)]
@@ -102,6 +105,7 @@
    Options:
    - :torrent-data - map of path -> torrent metadata to return
    - :write-error - error map returned from write-piece instead of storing
+   - :read-error - error map returned from read-piece (an unreadable cache)
    - :output-write-error - error map from write-output-piece (falls back to :write-error)"
   ([]
    (create {}))

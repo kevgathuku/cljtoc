@@ -69,6 +69,21 @@
       (when bs
         (print-torrent (torrent/parse-torrent bs))))))
 
+(defn- make-ports
+  "Build the ports both torrent.download and torrent.resume run with.
+
+   Both commands read the same state dir and the same piece cache: resume
+   loads the record cmd-torrent-download saved and materializes the pieces
+   its cache holds, so a drifting path here would resume against a cache
+   that is not the one the download wrote."
+  []
+  (let [disk-port (disk-impl/create {:state-dir "./torrent-state"
+                                     :piece-cache-dir "./torrent-cache"})
+        network-port (network-impl/create)
+        time-port (time-port/->RealTimePort)]
+    {:manager (download/manager network-port disk-port time-port {})
+     :time-port time-port}))
+
 (defn- cmd-torrent-download
   [args]
   (if (empty? args)
@@ -99,13 +114,9 @@
               (when (:error space-check)
                 (println "WARNING: " (:message space-check))
                 (println "Continuing anyway..."))
-              (let [disk-port (disk-impl/create {:state-dir "./torrent-state"
-                                                 :piece-cache-dir "./torrent-cache"})
-                    network-port (network-impl/create)
-                    time-port (time-port/->RealTimePort)
-                    m (download/manager network-port disk-port time-port {})
+              (let [{:keys [manager time-port]} (make-ports)
                     _ (println "Starting download to: " output-dir)
-                    result (download/start-download m torrent-path output-dir)]
+                    result (download/start-download manager torrent-path output-dir)]
                 (if (:error result)
                   (do
                     (println "Failed to start download:")
@@ -120,7 +131,7 @@
                     (println)
                     (print-progress (download/progress time-port result))
                     (println)
-                    (let [final-download (download/run-download m result)]
+                    (let [final-download (download/run-download manager result)]
                       (cli-state/save-state (assoc final-download
                                                    :torrent-path torrent-path
                                                    :output-dir output-dir))
@@ -146,6 +157,39 @@
             (println "Download paused.")
             (print-progress (download/progress (time-port/->RealTimePort) (get result :ok)))))))))
 
+(defn- resume-and-run
+  "Resume a saved record, then run the download to completion.
+
+   Hands the record to run-download rather than returning the resumed
+   record: a resumed record is peerless until the announce fills it in, and
+   would otherwise be saved and printed as :downloading with nothing
+   downloading it. A record the cache already completes skips the run: the
+   swarm has nothing to fetch, and re-running it would only redo the
+   materialization run-download just proved unnecessary. Otherwise the
+   reconciled materialization travels into run-download, so the cached
+   pieces are not read, verified, and written a second time before the
+   swarm is dialed. Returns the refusal envelope when the record cannot be
+   resumed, else the final Download record."
+  [manager state]
+  (let [{:keys [disk-port network-port]} manager
+        resumed (download/resume-download disk-port network-port state)]
+    (if (:error resumed)
+      resumed
+      (let [revived (:ok resumed)]
+        (if (= :completed (:state revived))
+          revived
+          (download/run-download manager revived {:materialized? true
+                                                  :layout (:layout resumed)}))))))
+
+(defn- refusal?
+  "True when result is a refusal envelope rather than a Download record.
+
+   resume-and-run returns either: a refusal carries :error but no :state,
+   while even a :failed record carries both. Testing :error alone mistook
+   failed records for refusals and returned without saving them."
+  [result]
+  (boolean (and (:error result) (nil? (:state result)))))
+
 (defn- cmd-torrent-resume
   [args]
   (let [state (if (seq args)
@@ -155,15 +199,18 @@
       (do
         (println "No paused download found.")
         (System/exit 1))
-      (let [result (download/resume-download state)]
-        (if (:error result)
+      (let [{:keys [manager time-port]} (make-ports)
+            result (resume-and-run manager state)]
+        (if (refusal? result)
           (do
-            (println "Failed to resume: " (get-in result [:error :message]))
+            (println "Failed to resume: " (:message result))
             (System/exit 1))
           (do
-            (cli-state/save-state (get result :ok))
-            (println "Download resumed.")
-            (print-progress (download/progress (time-port/->RealTimePort) (get result :ok)))))))))
+            (cli-state/save-state result)
+            (println (if (= :failed (:state result))
+                       (str "Download failed: " (get-in result [:error :message]))
+                       "Download resumed."))
+            (print-progress (download/progress time-port result))))))))
 
 (defn- cmd-torrent-status
   [args]
@@ -208,7 +255,7 @@
    "torrent.pause" {:fn cmd-torrent-pause
                     :desc "Pause an active download"}
    "torrent.resume" {:fn cmd-torrent-resume
-                     :desc "Resume a paused download"}
+                     :desc "Resume a paused or failed download"}
    "torrent.status" {:fn cmd-torrent-status
                      :desc "Show download status"}
    "torrent.stop" {:fn cmd-torrent-stop

@@ -1,8 +1,19 @@
 (ns dev.cljtoc.test-utils
   "Shared test utilities and helper functions."
-  (:require [clojure.spec.test.alpha :as stest]
+  (:require [clojure.java.io :as io]
+            [clojure.spec.test.alpha :as stest]
             [clojure.core.async.impl.protocols :as chan]
             [dev.cljtoc.domain.torrent :as torrent]))
+
+(defn temp-dir
+  "A fresh directory under the system temp dir, returned as a path string.
+   Lives here rather than in each test namespace so the real-port tests
+   share one shape."
+  [prefix]
+  (let [dir (io/file (System/getProperty "java.io.tmpdir")
+                     (str prefix (System/nanoTime)))]
+    (.mkdirs dir)
+    (.getAbsolutePath dir)))
 
 (defn channel?
   "True when x is something a blocking take could read from. A port method

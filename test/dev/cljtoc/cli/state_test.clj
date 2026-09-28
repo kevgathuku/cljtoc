@@ -4,13 +4,7 @@
    through real temp dirs (no mocks — file system is the seam)."
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.cli.state :as state]
-            [clojure.java.io :as io]))
-
-(defn- temp-dir []
-  (let [dir (io/file (System/getProperty "java.io.tmpdir")
-                     (str "cli-state-test-" (System/nanoTime)))]
-    (.mkdirs dir)
-    (.getAbsolutePath dir)))
+            [dev.cljtoc.test-utils :as test-utils]))
 
 (deftest id-from-path-test
   (testing "derives a human-readable id from the torrent filename"
@@ -20,7 +14,7 @@
 
 (deftest save-load-round-trip-test
   (testing "save then load returns the same id and state"
-    (let [dir (temp-dir)
+    (let [dir (test-utils/temp-dir "cli-state-test-")
           download {:id "my-torrent"
                     :torrent-path "/downloads/my-torrent.torrent"
                     :output-dir "/output"
@@ -35,7 +29,7 @@
 
 (deftest save-load-with-byte-arrays-test
   (testing "byte arrays round-trip as bytes through the CLI seam (EDN-safe on disk)"
-    (let [dir (temp-dir)
+    (let [dir (test-utils/temp-dir "cli-state-test-")
           info-hash (byte-array [0 1 15 16 127 -1])
           download {:id "bytes-torrent"
                     :torrent {:info-hash info-hash}
@@ -48,14 +42,14 @@
 
 (deftest load-missing-returns-nil-test
   (testing "loading an unknown id returns nil (resume can detect fresh start)"
-    (let [dir (temp-dir)]
+    (let [dir (test-utils/temp-dir "cli-state-test-")]
       (is (nil? (state/load-state "does-not-exist" dir))))))
 
 (deftest get-or-create-download-id-test
   (testing "returns the human-readable id for a fresh torrent"
-    (let [dir (temp-dir)]
+    (let [dir (test-utils/temp-dir "cli-state-test-")]
       (is (= "fresh" (state/get-or-create-download-id "/dl/fresh.torrent" dir)))))
   (testing "returns the same id when state already exists (resume path)"
-    (let [dir (temp-dir)]
+    (let [dir (test-utils/temp-dir "cli-state-test-")]
       (state/save-state {:id "existing" :state :paused} dir)
       (is (= "existing" (state/get-or-create-download-id "/dl/existing.torrent" dir))))))

@@ -48,7 +48,7 @@
           (is (an-envelope? result)
               (str method " returned neither :ok nor :error: " (pr-str result)))))))
   (testing "and the mock mirrors the real port's contract, method for method"
-    (doseq [[method call] (assoc peer-calls :announce #(network/announce % {}))]
+    (doseq [[method call] (assoc peer-calls :announce #(network/announce % {} {:downloaded 0 :left 0}))]
       (let [result (call (mock-network/create))]
         (is (not (channel? result))
             (str "mock " method " returned a channel, not a result"))

@@ -4,7 +4,6 @@
    Provides functions for TCP peer connections and tracker communication."
   (:require [clojure.string :as str]
             [dev.cljtoc.domain.peer-address :as peer-address]
-            [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker])
@@ -253,20 +252,20 @@
 (defn tracker-announce
   "Announce to trackers and get a list of peers.
    Queries ALL tracker URLs and combines peers for maximum coverage.
+   progress is {:downloaded bytes-on-disk :left bytes-remaining}, computed
+   by the caller from the download record -- this port only transmits it.
    Returns {:ok #{peer-address}} or {:error reason :message msg}."
-  [network torrent-metadata]
+  [network torrent-metadata progress]
   (try
     (let [tracker-urls (collect-tracker-urls torrent-metadata)]
       (if (empty? tracker-urls)
         {:error :no-tracker :message "No tracker URL available"}
-        (let [info (:info torrent-metadata)
-              total-size (torrent/total-size info)
-              request {:info-hash (:info-hash torrent-metadata)
+        (let [request {:info-hash (:info-hash torrent-metadata)
                        :peer-id (generate-peer-id)
                        :port 6881
                        :uploaded 0
-                       :downloaded 0
-                       :left total-size
+                       :downloaded (:downloaded progress)
+                       :left (:left progress)
                        :event :started
                        :compact true
                        :num-want 200}]
@@ -309,8 +308,8 @@
     (close-peer this peer))
 
   network/ITrackerPort
-  (announce [this torrent-metadata]
-    (tracker-announce this torrent-metadata)))
+  (announce [this torrent-metadata progress]
+    (tracker-announce this torrent-metadata progress)))
 
 (defn create
   "Create a NetworkPort instance."

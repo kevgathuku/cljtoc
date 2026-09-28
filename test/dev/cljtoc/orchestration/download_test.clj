@@ -1,12 +1,14 @@
 (ns dev.cljtoc.orchestration.download-test
   "Unit tests for download orchestration."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.java.io :as io]
             [clojure.core.async :as async]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.test-utils :as test-utils]
@@ -442,6 +444,121 @@
                                                :message "tracker down"}})
         result (download/resume-download nil net paused)]
     (is (= :tracker-error (:error result)))))
+
+(defn- progress-fixture
+  "A 2-piece single-file download (pieces of 4+4, total 8) with piece 0
+   verified. Returns {:download :torrent}."
+  []
+  (let [torrent {:info-hash (byte-array 20)
+                 :info {:pieces ["h1" "h2"] :piece-length 4 :length 8 :name "p.bin"}}
+        piece-state (-> (pieces/initial-piece-state 2)
+                        (#(:ok (pieces/mark-in-flight % 0)))
+                        (#(:ok (pieces/mark-verified % 0))))]
+    {:torrent torrent
+     :download (assoc (download/initial-download (mock-time/create) torrent "/out" "prog")
+                      :piece-state piece-state)}))
+
+(deftest announce-progress-reports-verified-bytes-test
+  (testing "a fresh download announces nothing downloaded, all bytes left"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 4 :length 8 :name "p.bin"}}
+          download (download/initial-download (mock-time/create) torrent "/out" "fresh")]
+      (is (= {:downloaded 0 :left 8} (#'download/announce-progress download)))))
+  (testing "a verified piece counts toward downloaded"
+    (let [{:keys [download]} (progress-fixture)]
+      (is (= {:downloaded 4 :left 4} (#'download/announce-progress download)))))
+  (testing "the short tail piece counts at its real length, not a full piece"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 4 :length 6 :name "p.bin"}}
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 1)))
+                          (#(:ok (pieces/mark-verified % 1))))
+          download (assoc (download/initial-download (mock-time/create) torrent "/out" "tail")
+                          :piece-state piece-state)]
+      (is (= {:downloaded 2 :left 4} (#'download/announce-progress download)))))
+  (testing "records without size metadata announce zero without throwing"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"]}}
+          download (download/initial-download (mock-time/create) torrent "/out" "bare")]
+      (is (= {:downloaded 0 :left 0} (#'download/announce-progress download))))))
+
+(deftest resume-download-announces-verified-progress-test
+  (testing "the tracker re-announce on resume reports verified bytes as
+            downloaded instead of zero, so the tracker stops counting a
+            resumed leecher as empty"
+    (let [{:keys [download]} (progress-fixture)
+          paused (assoc download
+                        :state :failed
+                        :peers #{}
+                        :error {:reason :no-peers :message "gone"})
+          captured (atom nil)
+          net (mock-net/create {:mock-peers ["10.9.9.1:6881"]
+                                :announce-capture captured})
+          result (download/resume-download nil net paused)]
+      (is (= :downloading (get-in result [:ok :state])))
+      (is (= {:downloaded 4 :left 4} (:progress @captured))))))
+
+(defn- complete-resume-fixture
+  "A 2-piece single-file download with both pieces verified and both bytes
+    in the piece cache: a resume with nothing left to fetch.
+    Returns {:download :disk}."
+  []
+  (let [piece-0 (test-utils/to-bytes "abcd")
+        piece-1 (test-utils/to-bytes "efgh")
+        info {:pieces [(bencode/sha1-hash piece-0)
+                       (bencode/sha1-hash piece-1)]
+              :piece-length 4
+              :name "done.bin"
+              :length 8}
+        torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :info info}
+        piece-state (-> (pieces/initial-piece-state 2)
+                        (#(:ok (pieces/mark-in-flight % 0)))
+                        (#(:ok (pieces/mark-verified % 0)))
+                        (#(:ok (pieces/mark-in-flight % 1)))
+                        (#(:ok (pieces/mark-verified % 1))))
+        download (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   "/out"
+                                                   "done")
+                        :state :paused
+                        :peers #{}
+                        :piece-state piece-state)
+        disk (mock-disk/create)]
+    (disk/write-piece disk 0 piece-0)
+    (disk/write-piece disk 1 piece-1)
+    {:download download :disk disk}))
+
+(deftest resume-download-completes-from-cache-without-announcing-test
+  (testing "an all-verified resume reconciles the piece cache before the
+            tracker announce: with every cached piece valid the download is
+            already complete, so no announce is attempted even when the
+            tracker is down"
+    (let [{:keys [download disk]} (complete-resume-fixture)
+          captured (atom nil)
+          net (mock-net/create {:announce-error {:error :tracker-error
+                                                 :message "tracker down"}
+                                :announce-capture captured})
+          result (download/resume-download disk net download)]
+      (is (nil? @captured) "no tracker announce was attempted")
+      (is (= :completed (get-in result [:ok :state])))
+      (is (pieces/complete? (get-in result [:ok :piece-state]))))))
+
+(deftest resume-download-announces-reconciled-progress-test
+  (testing "a verified piece the cache no longer holds is requeued before
+            the announce, so the tracker hears the corrected progress
+            instead of the stale verified set"
+    (let [{:keys [download]} (complete-resume-fixture)
+          ;; Fresh port: the record still claims both pieces verified, but
+          ;; the cache holds neither.
+          disk (mock-disk/create)
+          captured (atom nil)
+          net (mock-net/create {:mock-peers ["10.9.9.1:6881"]
+                                :announce-capture captured})
+          result (download/resume-download disk net download)]
+      (is (= :downloading (get-in result [:ok :state])))
+      (is (= {:downloaded 0 :left 8} (:progress @captured)))
+      (is (= #{0 1} (:needed (get-in result [:ok :piece-state])))))))
 
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
@@ -1333,3 +1450,496 @@
                     50)]
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))
+
+;; ============================================================================
+;; Resume: materializing verified pieces (issue #30)
+;; ============================================================================
+;;
+;; A saved record carries a verified piece set whose bytes live in the piece
+;; cache, not in the output files. Declaring :completed on that record alone
+;; hands back files that initialize-output-layout only truncated to length.
+
+(defn- materialize-fixture
+  "A 2-piece single-file download with piece 0 verified, its bytes in the
+   cache, and piece 1 still needed. Returns {:download :layout :disk}."
+  []
+  (let [piece-0 (test-utils/to-bytes "abcd")
+        info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+        info {:pieces [(bencode/sha1-hash piece-0)
+                       (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+              :piece-length 4
+              :name "mat.bin"
+              :length 8}
+        torrent {:info-hash info-hash :info info}
+        ;; mark-in-flight takes 0 out of :needed, mark-verified puts it in
+        ;; :verified, so :needed is left holding just piece 1.
+        piece-state (-> (pieces/initial-piece-state 2)
+                        (#(:ok (pieces/mark-in-flight % 0)))
+                        (#(:ok (pieces/mark-verified % 0))))
+        download (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   "/out"
+                                                   "mat")
+                        :piece-state piece-state)
+        disk (mock-disk/create)]
+    (disk/write-piece disk 0 piece-0)
+    {:download download
+     :layout (:ok (torrent/compile-output-layout info))
+     :disk disk
+     :piece-0 piece-0}))
+(deftest materialize-copies-verified-pieces-out-of-the-cache-test
+  (testing "a verified piece reaches the output layout on resume"
+    (let [{:keys [download layout disk piece-0]}
+          (materialize-fixture)
+          result (#'download/materialize-verified-pieces
+                  download disk layout)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
+
+(deftest materialize-keeps-the-verified-set-test
+  (testing "materializing does not un-verify the pieces it wrote"
+    (let [{:keys [download layout disk]} (materialize-fixture)
+          result (#'download/materialize-verified-pieces download disk layout)
+          piece-state (:piece-state (:ok result))]
+      (is (= #{0} (:verified piece-state)))
+      (is (= #{1} (:needed piece-state))))))
+
+(deftest materialize-requeues-a-verified-piece-with-no-cached-bytes-test
+  (testing "a record claiming a piece is verified that the cache no longer
+            holds cannot be written out. Leaving it verified would let
+            complete? answer true and declare a download finished with a
+            hole in it, so it goes back to :needed and the swarm re-fetches it"
+    (let [{:keys [download layout]} (materialize-fixture)
+          ;; A fresh port: the record still claims piece 0 verified, but the
+          ;; cache no longer has its bytes.
+          disk (mock-disk/create)
+          result (#'download/materialize-verified-pieces download disk layout)
+          piece-state (:piece-state (:ok result))]
+      (is (= #{} (:verified piece-state)))
+      (is (= #{0 1} (:needed piece-state)))
+      (is (false? (pieces/complete? piece-state))))))
+
+(deftest materialize-requeues-a-verified-piece-with-corrupt-cached-bytes-test
+  (testing "cache bytes that fail their torrent hash go back to :needed
+            instead of being written into the output. The real port returns
+            whatever the cache file holds with no length or hash check, so
+            trusting the verified set alone would complete the download with
+            corrupt content on disk"
+    (let [{:keys [download layout disk]} (materialize-fixture)
+          _ (disk/write-piece disk 0 (test-utils/to-bytes "XXXX"))
+          result (#'download/materialize-verified-pieces download disk layout)
+          piece-state (:piece-state (:ok result))]
+      (is (= #{} (:verified piece-state)))
+      (is (= #{0 1} (:needed piece-state)))
+      (is (nil? (mock-disk/get-output-piece disk 0))))))
+
+(deftest materialize-trusts-the-cache-when-the-record-carries-no-hashes-test
+  (testing "without piece hashes there is nothing to verify against, so the
+            piece writes through exactly as before the verification step"
+    (let [{:keys [download layout disk piece-0]} (materialize-fixture)
+          result (#'download/materialize-verified-pieces
+                  (dissoc download :torrent) disk layout)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
+
+(defn- carried-fixture
+  "A 1-piece download with its only piece verified but nothing in the
+    cache, plus that torrent's compiled layout. Returns {:download :layout}."
+  []
+  (let [info {:pieces [(bencode/sha1-hash (test-utils/to-bytes "abcd"))]
+              :piece-length 4
+              :name "carried.bin"
+              :length 4}
+        torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :info info}
+        download (assoc (download/initial-download (mock-time/create)
+                                                   torrent "/out" "carried")
+                        :piece-state (-> (pieces/initial-piece-state 1)
+                                         (#(:ok (pieces/mark-in-flight % 0)))
+                                         (#(:ok (pieces/mark-verified % 0)))))]
+    {:download download
+     :layout (:ok (torrent/compile-output-layout info))}))
+
+(deftest run-download-trusts-a-carried-materialization-test
+  (testing "a run carrying resume-download's materialization does not touch
+            the cache or the output again: the verified set answers complete?
+            as reconciled"
+    (let [{:keys [download layout]} (carried-fixture)
+          disk (mock-disk/create)
+          manager {:network-port (mock-net/create)
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          result (download/run-download manager download {:materialized? true
+                                                          :layout layout})]
+      (is (= :completed (:state result)))
+      (is (empty? (mock-disk/get-output-layouts disk))
+          "no output write happened in this run"))))
+
+(deftest run-download-materializes-despite-the-flag-without-a-layout-test
+  (testing "the carried flag without a compiled layout runs the full pass:
+            an unverifiable claim goes back to :needed instead of completing
+            over an empty cache"
+    (let [{:keys [download]} (carried-fixture)
+          disk (mock-disk/create)
+          manager {:network-port (mock-net/create)
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          result (download/run-download manager download {:materialized? true
+                                                          :layout nil})]
+      (is (= :failed (:state result)))
+      (is (= #{0} (:needed (:piece-state result)))))))
+
+(deftest materialize-fails-when-the-layout-rejects-a-write-test
+  (testing "a refused write fails the resume rather than reporting a
+            download whose bytes never landed"
+    (let [{:keys [download layout]} (materialize-fixture)
+          disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "disk full"}})
+          _ (disk/write-piece disk 0 (test-utils/to-bytes "abcd"))
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (= :write-error (:error result)))
+      (is (= "disk full" (:message result))))))
+
+(deftest materialize-fails-when-the-cache-cannot-be-read-test
+  (testing "an unreadable piece cache fails the resume instead of reporting
+            the piece as verified and moving on"
+    (let [{:keys [download layout]} (materialize-fixture)
+          disk (mock-disk/create {:read-error {:error :read-error
+                                               :message "permission denied"}})
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (= :read-error (:error result)))
+      (is (= "permission denied" (:message result))))))
+
+(deftest resume-of-a-fully-verified-download-writes-the-real-content-test
+  (testing "a record whose pieces are all verified materializes them from the
+            cache into the output file. initialize-output-layout only creates
+            the file at its declared length, so before this the download
+            reported :completed over an empty file -- the one resume case
+            that looks successful and is not (issue #30, PR #24 review)"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          piece-1 (test-utils/to-bytes "efgh")
+          content (byte-array 8)
+          info {:pieces [(bencode/sha1-hash piece-0) (bencode/sha1-hash piece-1)]
+                :piece-length 4
+                :name "whole.bin"
+                :length 8}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          output-dir (test-utils/temp-dir "resume-out-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "resume-state-")
+                                  :piece-cache-dir (test-utils/temp-dir "resume-cache-")})
+          _ (System/arraycopy piece-0 0 content 0 4)
+          _ (System/arraycopy piece-1 0 content 4 4)
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0)))
+                          (#(:ok (pieces/mark-in-flight % 1)))
+                          (#(:ok (pieces/mark-verified % 1))))
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent
+                                                     output-dir
+                                                     "whole")
+                          :piece-state piece-state
+                          :state :downloading)
+          _ (disk/write-piece port 0 piece-0)
+          _ (disk/write-piece port 1 piece-1)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port port
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        download)
+          on-disk (slurp (io/file output-dir "whole.bin"))]
+      (is (= :completed (:state result)))
+      (is (= (seq content) (seq (test-utils/to-bytes on-disk)))
+          "the completed file carries the verified content, not its length"))))
+
+(deftest resume-of-a-completed-download-initializes-every-declared-file-test
+  (testing "an all-verified resume returns :completed without run-download,
+            which is the only other caller of initialize-output-layout. The
+            piece writer only opens files piece bytes touch, so a declared
+            zero-length file would stay absent under a :completed report --
+            the layout must be initialized on the fast path too"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:name "multi"
+                :piece-length 4
+                :pieces [(bencode/sha1-hash piece-0)]
+                :files [{:path ["data.bin"] :length 4}
+                        {:path ["empty.bin"] :length 0}]}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          output-dir (test-utils/temp-dir "resume-empty-out-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "resume-empty-state-")
+                                  :piece-cache-dir (test-utils/temp-dir "resume-empty-cache-")})
+          piece-state (-> (pieces/initial-piece-state 1)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent
+                                                     output-dir
+                                                     "empty")
+                          :piece-state piece-state
+                          :state :paused
+                          :peers #{})
+          _ (disk/write-piece port 0 piece-0)
+          captured (atom nil)
+          net (mock-net/create {:announce-error {:error :tracker-error
+                                                 :message "tracker down"}
+                                :announce-capture captured})
+          result (download/resume-download port net download)]
+      (is (nil? @captured) "no tracker announce was attempted")
+      (is (= :completed (get-in result [:ok :state])))
+      (is (= (seq piece-0)
+             (seq (test-utils/to-bytes
+                   (slurp (io/file output-dir "multi" "data.bin"))))))
+      (is (.exists (io/file output-dir "multi" "empty.bin"))
+          "the declared zero-length file exists under a :completed report"))))
+
+;; ============================================================================
+;; Resume: letting a failed download back in (issue #30)
+;; ============================================================================
+
+(defn- stranded-download
+  "The live run in issue #30: 57 of 2180 pieces verified, one piece left
+   in-flight by the run that died, the swarm exhausted, :error set."
+  [total-pieces verified in-flight]
+  (let [piece-hashes (mapv #(bencode/sha1-hash (test-utils/to-bytes (str "piece-" %)))
+                           (range total-pieces))
+        piece-length 4
+        torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :info {:pieces piece-hashes
+                        :piece-length piece-length
+                        :name "stranded.bin"
+                        :length (* total-pieces piece-length)}}
+        piece-state (reduce (fn [state piece-index]
+                              (if (contains? verified piece-index)
+                                (-> state
+                                    (#(:ok (pieces/mark-in-flight % piece-index)))
+                                    (#(:ok (pieces/mark-verified % piece-index))))
+                                (if (contains? in-flight piece-index)
+                                  (:ok (pieces/mark-in-flight state piece-index))
+                                  state)))
+                            (pieces/initial-piece-state total-pieces)
+                            (range total-pieces))]
+    (assoc (download/initial-download (mock-time/create) torrent "/out" "stranded")
+           :state :failed
+           :piece-state piece-state
+           :peers #{{:address "10.0.0.9:6881" :port 6881}}
+           :error {:reason :no-peers :message "All peers disconnected"})))
+
+(deftest resume-download-accepts-a-failed-download-test
+  (testing "a download that failed with the swarm exhausted is resumable, so
+            the record on disk is not a dead end"
+    (let [failed (stranded-download 4 #{0 1} #{})
+          result (download/resume-download nil nil failed)]
+      (is (= :downloading (get-in result [:ok :state]))))))
+
+(deftest resume-download-keeps-the-verified-pieces-test
+  (testing "resuming does not re-request what already verified -- those bytes
+            are in the cache and run-download materializes them"
+    (let [failed (stranded-download 4 #{0 1 2} #{})
+          piece-state (get-in (download/resume-download nil nil failed)
+                              [:ok :piece-state])]
+      (is (= #{0 1 2} (:verified piece-state)))
+      (is (= #{3} (:needed piece-state))))))
+
+(deftest resume-download-requeues-pieces-the-dead-run-left-in-flight-test
+  (testing "a piece the previous run had in flight is requested nowhere and
+            verified by nobody, so complete? could never reach it. It goes
+            back to :needed or the resumed swarm skips it forever"
+    (let [failed (stranded-download 4 #{0 1} #{2})
+          piece-state (get-in (download/resume-download nil nil failed)
+                              [:ok :piece-state])]
+      (is (= #{} (:in-flight piece-state)))
+      (is (= #{2 3} (:needed piece-state)))
+      (is (= 2 (pieces/verified-count piece-state))))))
+
+(deftest resume-download-never-reuses-the-exhausted-peer-set-test
+  (testing "the peers on a failed record are the ones that just failed. With
+            no network port to re-announce there is nothing fresh to dial, so
+            the set is dropped and run-download fails fast on :no-peers
+            instead of redialing known-dead addresses"
+    (let [failed (stranded-download 4 #{0} #{})
+          result (download/resume-download nil nil failed)]
+      (is (= #{} (get-in result [:ok :peers]))))))
+
+(deftest resume-download-clears-the-failed-error-test
+  (testing "the record leaves :error behind: it is resuming, not failed, and a
+            stale :no-peers would be saved over the new run"
+    (let [failed (stranded-download 4 #{0} #{})
+          result (download/resume-download nil nil failed)]
+      (is (nil? (get-in result [:ok :error]))))))
+
+(deftest resume-download-rejects-a-completed-download-test
+  (testing "a finished download has nothing to resume"
+    (let [done (assoc (stranded-download 4 #{0 1 2 3} #{}) :state :completed)]
+      (is (= :not-paused (:error (download/resume-download nil nil done)))))))
+
+(deftest resume-download-re-announces-for-failed-downloads-test
+  (testing "a failed download gets a fresh peer list from the tracker, never
+            the exhausted one it was saved with"
+    (let [failed (stranded-download 4 #{0 1} #{})
+          net (mock-net/create {:mock-peers ["10.9.9.1:6881"]})
+          result (download/resume-download nil net failed)]
+      (is (= :downloading (get-in result [:ok :state])))
+      (is (= #{["10.9.9.1:6881" 6881]}
+             (set (map (juxt :address :port) (get-in result [:ok :peers]))))))))
+
+(deftest resume-at-one-verified-piece-completes-through-the-swarm-with-real-files-test
+  (testing "the issue #30 cycle end to end: a failed record with piece 0
+            verified resumes through the mock swarm, pieces 1 and 2 arrive
+            over the wire, and every output file is byte-identical to the
+            declared content. The real DiskPortImpl proves the bytes, not
+            the mock's recording. Piece 1 straddles the file boundary, so
+            the assertion also covers span writes during a resumed run"
+    (let [piece-bytes [(test-utils/to-bytes "abcd")
+                       (test-utils/to-bytes "efgh")
+                       (test-utils/to-bytes "ijkl")]
+          info {:pieces (mapv bencode/sha1-hash piece-bytes)
+                :piece-length 4
+                :name "cycle"
+                :files [{:path ["a.bin"] :length 6}
+                        {:path ["b.bin"] :length 6}]}
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+          torrent {:info-hash info-hash :info info}
+          output-dir (test-utils/temp-dir "cycle-out-")
+          disk-port (disk-impl/create {:state-dir (test-utils/temp-dir "cycle-state-")
+                                       :piece-cache-dir (test-utils/temp-dir "cycle-cache-")})
+          piece-state (-> (pieces/initial-piece-state 3)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          failed (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   output-dir
+                                                   "cycle")
+                        :state :failed
+                        :piece-state piece-state
+                        :peers #{{:address "10.0.0.9:6881" :port 6881}}
+                        :error {:reason :no-peers :message "swarm exhausted"})
+          _ (disk/write-piece disk-port 0 (nth piece-bytes 0))
+          net (mock-net/create
+               {:mock-peers ["10.0.0.9:6881"]
+                :handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x60)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 1 0 (nth piece-bytes 1))}
+                                          {:ok (peer/->Piece 2 0 (nth piece-bytes 2))}])})
+          resumed (:ok (download/resume-download nil net failed))
+          result (deref (future (download/run-download {:network-port net
+                                                        :disk-port disk-port
+                                                        :time-port (mock-time/create)
+                                                        :config {}}
+                                                       resumed))
+                        15000 :timed-out)
+          read-file (fn [name]
+                      (seq (java.nio.file.Files/readAllBytes
+                            (.toPath (io/file output-dir "cycle" name)))))]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 3 (pieces/verified-count (:piece-state result))))
+      (is (= (seq (test-utils/to-bytes "abcdef")) (read-file "a.bin")))
+      (is (= (seq (test-utils/to-bytes "ghijkl")) (read-file "b.bin"))))))
+
+(deftest run-download-fails-when-verified-pieces-cannot-be-materialized-test
+  (testing "a layout that refuses the write during resume fails the download
+            with :disk-error instead of reporting the pieces as safe"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:pieces [(bencode/sha1-hash piece-0)
+                         (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+                :piece-length 4
+                :name "matfail.bin"
+                :length 8}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent
+                                                     "/out"
+                                                     "matfail")
+                          :piece-state piece-state
+                          :state :downloading)
+          disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "disk full"}})
+          _ (disk/write-piece disk 0 piece-0)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        download)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (re-find #"^Failed to materialize verified pieces"
+                   (get-in result [:error :message]))))))
+
+(deftest materialize-keeps-requeue-progress-when-a-later-write-fails-test
+  (testing "a write that fails after an earlier piece was requeued carries
+            the in-progress record. Failing with the original would re-claim
+            the holey piece as verified, and the next resume would repeat
+            the same dance instead of fetching it"
+    (let [{:keys [download layout]} (materialize-fixture)
+          both-verified (assoc download :piece-state
+                               (-> (:piece-state download)
+                                   (#(:ok (pieces/mark-in-flight % 1)))
+                                   (#(:ok (pieces/mark-verified % 1)))))
+          disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "disk full"}})
+          _ (disk/write-piece disk 1 (test-utils/to-bytes "efgh"))
+          result (#'download/materialize-verified-pieces both-verified disk layout)
+          failed-record (:download result)]
+      (is (= :write-error (:error result)))
+      (is (= #{0} (:needed (:piece-state failed-record))))
+      (is (= #{1} (:verified (:piece-state failed-record)))))))
+
+(deftest paused-download-resumes-through-the-swarm-with-real-files-test
+  (testing "the same cycle from a :paused record: one piece verified, the
+            other arrives over the wire, both files byte-identical. Pause
+            and failure share the resume path past the entry guard, so this
+            pins the spec's paused/failed wording rather than assuming it"
+    (let [piece-bytes [(test-utils/to-bytes "abcd")
+                       (test-utils/to-bytes "efgh")]
+          info {:pieces (mapv bencode/sha1-hash piece-bytes)
+                :piece-length 4
+                :name "resumed"
+                :length 8}
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+          torrent {:info-hash info-hash :info info}
+          output-dir (test-utils/temp-dir "paused-out-")
+          disk-port (disk-impl/create {:state-dir (test-utils/temp-dir "paused-state-")
+                                       :piece-cache-dir (test-utils/temp-dir "paused-cache-")})
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          paused (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   output-dir
+                                                   "paused")
+                        :state :paused
+                        :piece-state piece-state
+                        :peers #{})
+          _ (disk/write-piece disk-port 0 (nth piece-bytes 0))
+          net (mock-net/create
+               {:mock-peers ["10.0.0.9:6881"]
+                :handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x40)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 1 0 (nth piece-bytes 1))}])})
+          resumed (:ok (download/resume-download nil net paused))
+          result (deref (future (download/run-download {:network-port net
+                                                        :disk-port disk-port
+                                                        :time-port (mock-time/create)
+                                                        :config {}}
+                                                       resumed))
+                        15000 :timed-out)
+          on-disk (seq (java.nio.file.Files/readAllBytes
+                        (.toPath (io/file output-dir "resumed"))))]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 2 (pieces/verified-count (:piece-state result))))
+      (is (= (seq (test-utils/to-bytes "abcdefgh")) on-disk)))))
