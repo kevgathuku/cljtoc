@@ -1613,8 +1613,8 @@
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
 ;; calculate-rate, complete-download, accumulate-downtime,
 ;; update-stats-bytes, initial-stats, initial-download, progress (time
-;; port); start-download, run-coordinator, run-download,
-;; load-persisted-state, persist-download-state (ports, channels, workers);
+;; port); start-download, run-coordinator, run-download
+;; (ports, channels, workers);
 ;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------
 

@@ -171,18 +171,42 @@
   :args (s/cat :hex-string ::hex-string)
   :ret bytes?)
 
+(defn- encoded-bytes-tag?
+  "True when node already wears the encoded-bytes tag in restorable form:
+   exactly {:cljtoc/bytes hex} over an even-length hex string.
+   decode-state restores exactly these nodes, so encode-state passes them
+   through untouched (idempotent) and refuses anything else in the tag's
+   shape — a bad tag stored now is a throw (or, on odd-length input, a
+   silently dropped nibble) at the next load."
+  [node]
+  (and (map? node)
+       (= #{:cljtoc/bytes} (set (keys node)))
+       (let [hex (:cljtoc/bytes node)]
+         (and (string? hex)
+              (even? (count hex))
+              (boolean (re-matches #"[0-9a-fA-F]*" hex))))))
+
 (defn encode-state
   "Convert a download to EDN-safe data: records become plain maps and
    byte arrays become {:cljtoc/bytes hex} tagged maps. The tag keeps the
    encoding self-describing so decode-state can restore bytes without a
    schema (raw pr-str of byte arrays does not round-trip — it emits
-   #object tags that edn/read-string rejects)."
+   #object tags that edn/read-string rejects). A pre-existing tag in
+   restorable form passes through untouched; anything else wearing the
+   tag's shape throws, failing fast at the trust boundary instead of
+   storing a value the next load cannot restore."
   [download]
   (walk/postwalk
    (fn [node]
      (cond
        (record? node) (into {} node)
        (bytes? node) {:cljtoc/bytes (bencode/bytes->hex-string node)}
+       (encoded-bytes-tag? node) node
+       (and (map? node) (= #{:cljtoc/bytes} (set (keys node))))
+       (throw (ex-info (str "Invalid :cljtoc/bytes tag "
+                            "(even-length hex required): "
+                            (pr-str node))
+                       {:tag node}))
        :else node))
    download))
 

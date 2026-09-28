@@ -41,6 +41,65 @@
   (prop/for-all [file-name (gen/such-that (comp not empty?) gen/string-alphanumeric)]
                 (= file-name (disk/id-from-path (str "/dl/" file-name ".torrent")))))
 
+(def hex-char-gen
+  "Generator for single lowercase hex chars."
+  (gen/elements [\0 \1 \2 \3 \4 \5 \6 \7 \8 \9 \a \b \c \d \e \f]))
+
+(def valid-hex-gen
+  "Generator for even-length hex strings: valid tag content by
+   construction (paired chars can never come out odd-length)."
+  (gen/fmap (fn [pairs] (apply str (mapcat (fn [[first-char second-char]]
+                                             [first-char second-char])
+                                           pairs)))
+            (gen/vector (gen/tuple hex-char-gen hex-char-gen) 0 16)))
+
+(def hostile-tag-value-gen
+  "Generator for tag values that are invalid by construction, each class
+   violating a different clause of the contract independent of how the
+   implementation checks it: a \"zz\" suffix can never match the hex
+   alphabet; forcing odd length can never satisfy evenness; non-strings
+   can never satisfy stringness."
+  (gen/one-of [(gen/fmap #(str % "zz") gen/string-alphanumeric)
+               (gen/fmap (fn [text] (if (even? (count text)) (str text "0") text))
+                         gen/string-alphanumeric)
+               gen/int
+               (gen/return nil)
+               (gen/vector gen/int 0 4)
+               (gen/fmap #(into {} %) (gen/vector (gen/tuple gen/keyword gen/int) 0 3))]))
+
+(defn- encode-throws?
+  "True when encoding download throws (fail-closed on hostile input)."
+  [download]
+  (try
+    (disk/encode-state download)
+    false
+    (catch clojure.lang.ExceptionInfo _ true)))
+
+(defspec hostile-tag-values-are-rejected-spec 100
+  (prop/for-all [bad-value hostile-tag-value-gen]
+                (encode-throws? {:id "h" :hash {:cljtoc/bytes bad-value}})))
+
+(defspec valid-tags-pass-through-spec 100
+  (prop/for-all [hex valid-hex-gen]
+                (= {:cljtoc/bytes hex}
+                   (:hash (disk/encode-state {:id "h" :hash {:cljtoc/bytes hex}})))))
+
+(defspec encode-is-idempotent-spec 100
+  (prop/for-all [original bytes-gen]
+                (let [once (disk/encode-state {:hash original})]
+                  (= once (disk/encode-state once)))))
+
+(deftest valid-tags-pass-through-test
+  (testing "a pre-existing valid tag is already encoded: stored untouched"
+    (is (= {:id "t" :hash {:cljtoc/bytes "00ff"}}
+           (disk/encode-state {:id "t" :hash {:cljtoc/bytes "00ff"}})))
+    (is (= {:id "t" :hash {:cljtoc/bytes "00FF"}}
+           (disk/encode-state {:id "t" :hash {:cljtoc/bytes "00FF"}}))))
+  (testing "a map merely carrying the key among others is plain data,
+            not the tag shape decode restores: stored untouched"
+    (is (= {:id "t" :hash {:cljtoc/bytes "zz" :other 1}}
+           (disk/encode-state {:id "t" :hash {:cljtoc/bytes "zz" :other 1}})))))
+
 (deftest id-from-path-fdef-check-test
   (testing "id-from-path conforms to fdef spec"
     (let [check-result (stest/check 'dev.cljtoc.ports.disk/id-from-path

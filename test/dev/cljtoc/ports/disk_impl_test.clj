@@ -72,6 +72,14 @@
         (is (bytes? loaded-hash))
         (is (java.util.Arrays/equals (byte-array [0 1 15 16 127 -1]) loaded-hash))))))
 
+(deftest save-invalid-tag-returns-save-error-test
+  (testing "saving a download with an invalid :cljtoc/bytes tag fails fast
+            with :save-error on the real port too (parity with the mock)"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))]
+      (is (= :save-error
+             (:error (disk/save-state port {:id "bad"
+                                            :torrent {:info-hash {:cljtoc/bytes "zz"}}})))))))
+
 (deftest saved-bytes-decode-to-bytes-test
   (testing "byte arrays come back as byte arrays, so a resumed download can handshake and verify"
     (let [state-dir (test-utils/temp-dir "disk-state-")

@@ -1,16 +1,11 @@
 (ns dev.cljtoc.cli.state-test
   "Tests for CLI download state persistence.
-   Seam: save-state / load-state / id-from-path / get-or-create-download-id
-   through real temp dirs (no mocks — file system is the seam)."
+   Seam: save-state / load-state through real temp dirs
+   (no mocks — file system is the seam). ID derivation lives in
+   dev.cljtoc.ports.disk/id-from-path, pinned generatively in disk-test."
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.cli.state :as state]
             [dev.cljtoc.test-utils :as test-utils]))
-
-(deftest id-from-path-test
-  (testing "derives a human-readable id from the torrent filename"
-    (is (= "ubuntu-24.04" (state/id-from-path "/downloads/ubuntu-24.04.torrent")))
-    (is (= "my-torrent" (state/id-from-path "my-torrent.torrent")))
-    (is (= "no-extension" (state/id-from-path "/tmp/no-extension")))))
 
 (deftest save-load-round-trip-test
   (testing "save then load returns the same id and state"
@@ -45,11 +40,3 @@
     (let [dir (test-utils/temp-dir "cli-state-test-")]
       (is (nil? (state/load-state "does-not-exist" dir))))))
 
-(deftest get-or-create-download-id-test
-  (testing "returns the human-readable id for a fresh torrent"
-    (let [dir (test-utils/temp-dir "cli-state-test-")]
-      (is (= "fresh" (state/get-or-create-download-id "/dl/fresh.torrent" dir)))))
-  (testing "returns the same id when state already exists (resume path)"
-    (let [dir (test-utils/temp-dir "cli-state-test-")]
-      (state/save-state {:id "existing" :state :paused} dir)
-      (is (= "existing" (state/get-or-create-download-id "/dl/existing.torrent" dir))))))
