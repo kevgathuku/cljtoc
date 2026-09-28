@@ -96,6 +96,21 @@
     (catch Exception _
       nil)))
 
+(defn- cache-file
+  "File for one download's cached piece: <cache-dir>/<download-id>/piece-<index>.dat.
+   Scoping by download id is what keeps concurrent downloads from overwriting
+   each other's cached bytes. A hostile id fails closed here (see
+   disk/valid-cache-id?) so it can neither escape the cache directory nor
+   collapse to the flat shared layout — and nothing is created before the
+   check runs.
+   Returns {:ok File} or {:error :invalid-download-id ...}."
+  [piece-cache-dir download-id piece-index]
+  (if (disk/valid-cache-id? download-id)
+    {:ok (io/file piece-cache-dir download-id (str "piece-" piece-index ".dat"))}
+    {:error :invalid-download-id
+     :message (str "Download id cannot name a piece-cache entry: "
+                    (pr-str download-id))}))
+
 (defn- resolve-layout
   "Resolve every declared path under output-dir for writing. Each path is
    containment-checked (see resolve-contained), then the resolved targets
@@ -210,25 +225,31 @@
       (catch Exception e
         {:error :read-error :message (.getMessage e)})))
 
-  (read-piece [_ piece-index]
-    (try
-      (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))]
-        (if (.exists piece-file)
-          {:ok (Files/readAllBytes (.toPath piece-file))}
-          {:ok nil}))
-      (catch Exception e
-        {:error :read-error :message (.getMessage e)})))
+  (read-piece [_ download-id piece-index]
+    (let [file-result (cache-file piece-cache-dir download-id piece-index)]
+      (if (:error file-result)
+        file-result
+        (try
+          (let [piece-file (:ok file-result)]
+            (if (.exists piece-file)
+              {:ok (Files/readAllBytes (.toPath piece-file))}
+              {:ok nil}))
+          (catch Exception e
+            {:error :read-error :message (.getMessage e)})))))
 
-  (write-piece [_ piece-index bytes]
-    (try
-      (let [piece-file (io/file piece-cache-dir (str "piece-" piece-index ".dat"))
-            parent (.getParentFile piece-file)]
-        (when-not (.exists parent)
-          (.mkdirs parent))
-        (clojure.java.io/copy bytes piece-file)
-        {:ok :written})
-      (catch Exception e
-        {:error :write-error :message (.getMessage e)})))
+  (write-piece [_ download-id piece-index bytes]
+    (let [file-result (cache-file piece-cache-dir download-id piece-index)]
+      (if (:error file-result)
+        file-result
+        (try
+          (let [piece-file (:ok file-result)
+                parent (.getParentFile piece-file)]
+            (when-not (.exists parent)
+              (.mkdirs parent))
+            (clojure.java.io/copy bytes piece-file)
+            {:ok :written})
+          (catch Exception e
+            {:error :write-error :message (.getMessage e)})))))
 
   (write-output-piece [_ layout output-dir piece-index bytes]
     (try

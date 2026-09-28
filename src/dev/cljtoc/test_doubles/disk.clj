@@ -24,22 +24,31 @@
       {:ok data}
       {:error :file-not-found :message (str "File not found: " path)}))
 
-  (read-piece [_ piece-index]
+  (read-piece [_ download-id piece-index]
     ;; Mirrors DiskPortImpl: a cache hit and a miss are both {:ok ...},
     ;; the miss carrying nil, and an unreadable cache file is an
-    ;; {:error :read-error}. Returning the bare bytes (or nil) instead
-    ;; is a contract drift no caller can see, because read-piece has no
-    ;; caller yet to catch it.
+    ;; {:error :read-error}. Entries are keyed [download-id piece-index]
+    ;; on both ports, and a hostile id is refused on both ports — a mock
+    ;; that stored flat or accepted hostile ids would pass tests the real
+    ;; port fails.
     (if-let [err (:read-error config)]
       err
-      {:ok (get @piece-cache piece-index)}))
+      (if (disk/valid-cache-id? download-id)
+        {:ok (get @piece-cache [download-id piece-index])}
+        {:error :invalid-download-id
+         :message (str "Download id cannot name a piece-cache entry: "
+                        (pr-str download-id))})))
 
-  (write-piece [_ piece-index bytes]
+  (write-piece [_ download-id piece-index bytes]
     (if-let [err (:write-error config)]
       err
-      (do
-        (swap! piece-cache assoc piece-index bytes)
-        {:ok :written})))
+      (if (disk/valid-cache-id? download-id)
+        (do
+          (swap! piece-cache assoc [download-id piece-index] bytes)
+          {:ok :written})
+        {:error :invalid-download-id
+         :message (str "Download id cannot name a piece-cache entry: "
+                        (pr-str download-id))})))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,

@@ -24,17 +24,21 @@
      
      Side effects: reads file from filesystem")
 
-  (read-piece [this piece-index]
-    "Read cached piece data from disk.
-     Returns {:ok bytes} or {:ok nil} when not cached.
-     
+  (read-piece [this download-id piece-index]
+    "Read one download's cached piece data from disk.
+     The cache is namespaced by download id, so concurrent downloads never
+     share entries even for the same piece index (see valid-cache-id?).
+     Returns {:ok bytes}, {:ok nil} when not cached, or {:error ...} when
+     the download id cannot name a cache entry.
+
      Side effects: reads from piece cache")
 
-  (write-piece [this piece-index bytes]
-    "Write verified piece data to the piece cache under piece-index.
+  (write-piece [this download-id piece-index bytes]
+    "Write verified piece data to the download's piece cache under piece-index.
      This is not the final file layout — that is write-output-piece's job,
      which maps the bytes into output-dir via the compiled output layout.
-     Returns {:ok :written} or {:error reason :message msg}.
+     Returns {:ok :written} or {:error ...} when the download id cannot
+     name a cache entry.
 
      Side effects: writes to filesystem")
 
@@ -244,3 +248,19 @@
 (s/fdef id-from-path
   :args (s/cat :torrent-path string?)
   :ret string?)
+
+(defn valid-cache-id?
+  "True when the download id names exactly one piece-cache entry: a
+   non-blank string with no path separators that is neither . nor ..
+   Ids derive from torrent file names (see id-from-path), so a hostile
+   spelling must fail this check rather than escape the cache directory
+   (../..) or collapse back to the flat shared layout (empty id)."
+  [download-id]
+  (and (string? download-id)
+       (not (empty? download-id))
+       (not (re-find #"/|\\" download-id))
+       (not (contains? #{"." ".."} download-id))))
+
+(s/fdef valid-cache-id?
+  :args (s/cat :download-id any?)
+  :ret boolean?)
