@@ -270,8 +270,12 @@
       (do
         (println "No download found.")
         (System/exit 1))
-      (let [stopped (download/stop-download state)]
-        (cli-state/delete-state (:id state))
+      (let [stopped (download/stop-download state)
+            delete-result (disk/delete-state (:disk-port manager) (:id state))]
+        (when (:error delete-result)
+          (println "Failed to delete download state:")
+          (println "  " (:message delete-result))
+          (System/exit 1))
         (println "Download stopped.")
         (print-progress (download/progress (time-port/->RealTimePort) stopped))))))
 
