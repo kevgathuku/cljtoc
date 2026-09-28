@@ -297,6 +297,34 @@
                     (contains? peer-av (:ok result))))))
 
 ;; ============================================================================
+;; Tail-Piece Length (issue #43)
+;; ============================================================================
+
+(defn piece-length
+  "Real byte length of one piece given the nominal per-piece length from
+  torrent metadata and the total torrent byte count. Nominal pieces report
+  standard-piece-length; the tail piece reports its shorter real length.
+  A single source for the (index, nominal-length, total-length) derivation
+  hand-rolled per caller before: piece-blocks, announce-progress and
+  assemble-and-verify all divide through here now, so an off-by-one on the
+  final piece has exactly one place to hide.
+
+  Total over nat-int inputs: an out-of-range index intersects the torrent
+  nowhere and reports zero rather than going negative. Refusing such
+  indices stays with callers that own a range (piece-blocks)."
+  [piece-index standard-piece-length total-length]
+  (max 0 (- (min (* (long (inc piece-index)) standard-piece-length)
+                 total-length)
+            (* piece-index standard-piece-length))))
+
+(s/fdef piece-length
+  :args (s/cat :piece-index           ::piece-index
+               :standard-piece-length pos-int?
+               :total-length          pos-int?)
+  :ret nat-int?
+  :fn #(<= (:ret %) (-> % :args :standard-piece-length)))
+
+;; ============================================================================
 ;; Block Decomposition (US3)
 ;; ============================================================================
 
@@ -318,10 +346,7 @@
       (piece-error :invalid-input
                    (str "Piece index " piece-index
                         " is out of range [0, " total-pieces ")"))
-      (let [piece-start  (* piece-index standard-piece-length)
-            piece-end    (min (* (long (inc piece-index)) standard-piece-length)
-                              total-length)
-            piece-length (- piece-end piece-start)
+      (let [piece-length (piece-length piece-index standard-piece-length total-length)
             blocks       (loop [offset 0
                                 acc    (transient [])]
                            (if (>= offset piece-length)

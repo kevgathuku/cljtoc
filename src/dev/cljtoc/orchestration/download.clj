@@ -214,12 +214,9 @@
   (let [info (get-in download [:torrent :info] {})
         total (torrent/total-size info)
         piece-length (or (:piece-length info) 0)
-        piece-count (count (:pieces info))
         downloaded (reduce + 0
                            (map (fn [piece-index]
-                                  (if (= piece-index (dec piece-count))
-                                    (- total (* piece-index piece-length))
-                                    piece-length))
+                                  (pieces/piece-length piece-index piece-length total))
                                 (:verified (:piece-state download))))]
     {:downloaded downloaded
      :left (max 0 (- total downloaded))}))
@@ -904,10 +901,8 @@
    assembly/verification failure (the piece is requeued with no effects).
    The caller decides on the follow-up request via the single tail."
   [state address piece-idx addr-blocks ctx]
-  (let [{:keys [piece-length total-length total-pieces piece-hashes]} ctx
-        piece-len (if (= piece-idx (dec total-pieces))
-                    (- total-length (* piece-idx piece-length))
-                    piece-length)]
+  (let [{:keys [piece-length total-length piece-hashes]} ctx
+        piece-len (pieces/piece-length piece-idx piece-length total-length)]
     (if-let [assembled (:ok (pieces/assemble-piece addr-blocks piece-len))]
       (if (:ok (pieces/verify-piece piece-idx assembled (nth piece-hashes piece-idx)))
         [(-> state

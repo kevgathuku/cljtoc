@@ -261,6 +261,34 @@
               (= expected (reduce + (map :length blocks)))))))))
 
 ;; ---------------------------------------------------------------------------
+;; GROUP 3b: issue #43 — Single-sourced tail-piece length
+;; ---------------------------------------------------------------------------
+
+(deftest piece-length-test
+  (testing "nominal pieces report the standard length"
+    (is (= 524288 (pieces/piece-length 0 524288 1056768)))
+    (is (= 524288 (pieces/piece-length 1 524288 1056768))))
+  (testing "the tail piece reports its real (shorter) length"
+    (is (= 8192 (pieces/piece-length 2 524288 1056768))))
+  (testing "an exact-multiple total has a full-length tail piece"
+    (is (= 524288 (pieces/piece-length 1 524288 1048576))))
+  (testing "a single-piece torrent reports the total"
+    (is (= 1 (pieces/piece-length 0 16384 1))))
+  (testing "an out-of-range index reports zero rather than going negative"
+    (is (= 0 (pieces/piece-length 5 524288 1048576)))))
+
+(defspec piece-length-sums-to-total 150
+  (prop/for-all
+   [total-pieces (gen/choose 1 25)
+    spl          (gen/choose 1 65536)]
+   (let [remainder    (gen/generate (gen/choose 1 spl))
+         total-length (+ (* (dec total-pieces) spl) remainder)]
+     (= total-length
+        (reduce + (map (fn [piece-index]
+                         (pieces/piece-length piece-index spl total-length))
+                       (range total-pieces)))))))
+
+;; ---------------------------------------------------------------------------
 ;; GROUP 4: US4 — Verify Piece Integrity
 ;; ---------------------------------------------------------------------------
 
