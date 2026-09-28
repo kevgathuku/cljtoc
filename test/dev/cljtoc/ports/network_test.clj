@@ -7,11 +7,14 @@
    network: connect-peer gets a blank address, which is refused before any
    socket work, and the read and write methods get byte-array streams.
    announce is exercised on the mock only -- the real one always reaches
-   for a tracker, because collect-tracker-urls appends well-known public
-   fallbacks, so there is no offline input that stops it short."
+   for a tracker, because pick-tracker-order appends well-known public
+   fallbacks, so there is no offline input that stops it short. The
+   per-URL announce-to-url has an offline error path on the real port
+   (a malformed URL fails before any socket work)."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.spec.alpha :as s]
             [clojure.spec.gen.alpha :as gen]
+            [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
@@ -296,6 +299,9 @@
 
 (deftest fdef-specs-hold-generatively-test
   (testing "log-fn fdef holds over generated inputs"
+    ;; announce-to-url is excluded on principle, like log!: the generator
+    ;; cannot conjure a live tracker URL, so a check would die in socket
+    ;; I/O before its :ret is even reached.
     (let [failures (test-utils/check-fdefs
                     '[dev.cljtoc.ports.network/log-fn]
                     50)]
@@ -311,3 +317,131 @@
                   (peer-in (byte-array [0 0 0 1 2])))]
       (is (nil? (:error result)) (pr-str result))
       (is (instance? dev.cljtoc.protocol.peer.Interested (:ok result))))))
+
+;; Issue #44: the per-URL seam streaming consumes. announce-to-url queries
+;; ONE tracker URL so a coordinator loop can emit :tracker-peers
+;; incrementally; whole-list announce keeps combining over it.
+
+(defn- valid-announce-request
+  "A well-shaped announce request: 20-byte hashes, so any failure below
+   comes from the URL/transport, never from request validation."
+  []
+  {:info-hash (byte-array 20)
+   :peer-id (byte-array 20)
+   :port 6881
+   :uploaded 0
+   :downloaded 0
+   :left 1000})
+
+(deftest per-url-announce-is-a-scriptable-seam-test
+  (testing "mock announce-to-url returns its mock peers by default"
+    (let [result (network/announce-to-url
+                  (mock-network/create) "http://a.example.com" (valid-announce-request))]
+      (is (= {:ok #{"127.0.0.1:6881" "127.0.0.1:6882"}} result))))
+  (testing "per-URL scripts override the default for that URL only"
+    (let [mock (mock-network/create
+                {:announce-to-url-responses
+                 {"http://a.example.com" {:ok #{"10.0.0.1:1111"}}}})]
+      (is (= {:ok #{"10.0.0.1:1111"}}
+             (network/announce-to-url mock "http://a.example.com" (valid-announce-request))))
+      (is (= {:ok #{"127.0.0.1:6881" "127.0.0.1:6882"}}
+             (network/announce-to-url mock "http://b.example.com" (valid-announce-request))))))
+  (testing "announce combines peers across the ordered URLs"
+    ;; Two scripted URLs far apart in the order: a single-URL
+    ;; implementation could never produce both peer sets at once.
+    (let [mock (mock-network/create
+                {:mock-peers []
+                 :announce-to-url-responses
+                 {"http://a.example.com" {:ok #{"10.0.0.1:1111"}}
+                  "udp://tracker.opentrackr.org:1337" {:ok #{"10.0.0.2:2222"}}}})
+          result (network/announce mock {:announce "http://a.example.com"}
+                                   {:downloaded 0 :left 1000})]
+      (is (nil? (:error result)) (pr-str result))
+      (is (contains? (:ok result) "10.0.0.1:1111") (pr-str result))
+      (is (contains? (:ok result) "10.0.0.2:2222") (pr-str result))))
+  (testing "announce reports the failure when every URL fails"
+    (let [mock (mock-network/create {:announce-to-url-error {:error :boom :message "down"}})
+          result (network/announce mock {:announce "http://a.example.com"}
+                                   {:downloaded 0 :left 1000})]
+      (is (= :boom (:error result)))))
+  (testing "with distinct per-URL failures, the LAST one wins"
+    ;; Every URL in the order fails, each differently; exodus is the
+    ;; final fallback URL, so its error must surface. Unscripted URLs
+    ;; would answer successful-empty and dominate failures, so all seven
+    ;; are scripted. An implementation returning the first failure
+    ;; answers :first.
+    (let [mock (mock-network/create
+                {:announce-to-url-responses
+                 {"http://a.example.com" {:error :first :message "1"}
+                  "udp://tracker.opentrackr.org:1337" {:error :e2 :message "2"}
+                  "udp://open.demonii.com:1337" {:error :e3 :message "3"}
+                  "udp://open.stealth.si:80" {:error :e4 :message "4"}
+                  "udp://tracker.torrent.eu.org:451" {:error :e5 :message "5"}
+                  "udp://explodie.org:6969" {:error :e6 :message "6"}
+                  "udp://exodus.desync.com:6969" {:error :last :message "7"}}})
+          result (network/announce mock {:announce "http://a.example.com"}
+                                   {:downloaded 0 :left 1000})]
+      (is (= :last (:error result)) (pr-str result))))
+  (testing "queried URLs follow the pure order, captured in sequence"
+    (let [captured (atom [])
+          mock (mock-network/create {:mock-peers []
+                                     :announce-to-url-capture captured})
+          result (network/announce mock
+                                   {:announce "http://a.example.com"
+                                    :announce-list [["http://b.example.com"]]}
+                                   {:downloaded 0 :left 1000})]
+      ;; Every URL answers empty but successfully, so the swarm is
+      ;; genuinely empty -- not a tracker outage.
+      (is (= {:ok #{}} result) (pr-str result))
+      (is (= ["http://a.example.com" "http://b.example.com"]
+             (take 2 (map :url @captured))))
+      (is (= 8 (count @captured)) "2 declared + 6 public fallbacks")
+      ;; The request is built once upstream and forwarded per URL,
+      ;; not reconstructed (or nil) at each call.
+      (is (every? #(= {:downloaded 0 :left 1000}
+                      (select-keys (:request %) [:downloaded :left]))
+                  @captured))
+      (is (every? #(= 200 (:num-want (:request %))) @captured)))))
+
+(deftest real-announce-to-url-never-throws-test
+  (testing "a malformed URL is an error envelope, with no socket touched"
+    (let [result (network/announce-to-url
+                  (network-impl/create) "not-a-url" (valid-announce-request))]
+      (is (an-envelope? result))
+      (is (some? (:error result)) (pr-str result)))))
+
+(defn- with-loopback-tracker
+  "Run f against a loopback HTTP tracker serving one fixed body."
+  [body f]
+  (let [server (com.sun.net.httpserver.HttpServer/create
+                (java.net.InetSocketAddress. "127.0.0.1" 0) 0)]
+    (.createContext server "/announce"
+                    (reify com.sun.net.httpserver.HttpHandler
+                      (handle [_ exchange]
+                        (let [bytes body]
+                          (.sendResponseHeaders exchange 200 (alength bytes))
+                          (with-open [out (.getResponseBody exchange)]
+                            (.write out bytes))))))
+    (.start server)
+    (try
+      (f (str "http://127.0.0.1:" (.. server getAddress getPort) "/announce"))
+      (finally (.stop server 0)))))
+
+(deftest http-tracker-rejection-is-an-error-test
+  (testing "a tracker failure reason is :tracker-rejected, not a successful empty set"
+    (with-loopback-tracker
+      (bencode/encode-bencode {"failure reason" "unregistered torrent"
+                               "interval" 1800})
+      (fn [url]
+        (let [result (network/announce-to-url
+                      (network-impl/create) url (valid-announce-request))]
+          (is (= :tracker-rejected (:error result)) (pr-str result))
+          (is (re-find #"unregistered torrent" (:message result)) (pr-str result))))))
+  (testing "a successful announce still resolves peers (the server works)"
+    (with-loopback-tracker
+      (bencode/encode-bencode {"interval" 1800
+                               "peers" (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)])})
+      (fn [url]
+        (is (= {:ok #{"127.0.0.1:6881"}}
+               (network/announce-to-url
+                (network-impl/create) url (valid-announce-request))))))))

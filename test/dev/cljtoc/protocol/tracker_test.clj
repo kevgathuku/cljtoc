@@ -1045,3 +1045,86 @@
         (is (= 1800 (:interval (:ok parse-result))))
         (is (= 1 (count (:peers (:ok parse-result)))))
         (is (= "10.0.0.1" (:ip (first (:peers (:ok parse-result))))))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 11: Tracker fan-out policy (issue #44)
+;; ---------------------------------------------------------------------------
+;; Seam: pure ordering + merge policy. No sockets: ordering derives from
+;; declared metadata, merging is set-union so late arrivals fold in.
+
+(deftest pick-tracker-order-test
+  (testing "primary announce comes first, then announce-list tiers flattened"
+    (let [order (tracker/pick-tracker-order
+                 {:announce "http://primary.example.com/announce"
+                  :announce-list [["http://tier1a.example.com" "http://tier1b.example.com"]
+                                  ["udp://tier2.example.com:6969"]]})]
+      (is (= "http://primary.example.com/announce" (first order)))
+      (is (= ["http://primary.example.com/announce"
+              "http://tier1a.example.com"
+              "http://tier1b.example.com"
+              "udp://tier2.example.com:6969"]
+             (take 4 order)))))
+
+  (testing "deduplicates while keeping first occurrence"
+    (let [order (tracker/pick-tracker-order
+                 {:announce "http://a.example.com"
+                  :announce-list [["http://a.example.com" "http://b.example.com"]]})]
+      (is (= 1 (count (filter #(= "http://a.example.com" %) order))))
+      (is (= "http://b.example.com" (second order)))))
+
+  (testing "drops non-http/non-udp and nil entries"
+    (let [order (tracker/pick-tracker-order
+                 {:announce nil
+                  :announce-list [[nil "ftp://files.example.com" "http://ok.example.com"]]})]
+      (is (not (some #(= "ftp://files.example.com" %) order)))
+      (is (some #(= "http://ok.example.com" %) order))))
+
+  (testing "schemes match completely and case-insensitively"
+    ;; URI schemes are case-insensitive (RFC 3986); a prefix check would
+    ;; drop HTTP:// yet admit udpx://, which the adapter would then
+    ;; misdispatch as UDP.
+    (let [order (tracker/pick-tracker-order
+                 {:announce "HTTP://upper.example.com/announce"
+                  :announce-list [["udpx://host.example.com:6969"
+                                   "https://secure.example.com/announce"]]})]
+      (is (some #(= "HTTP://upper.example.com/announce" %) order))
+      (is (some #(= "https://secure.example.com/announce" %) order))
+      (is (not (some #(= "udpx://host.example.com:6969" %) order)))))
+
+  (testing "appends well-known public fallbacks after declared trackers"
+    (let [order (tracker/pick-tracker-order {:announce "http://mine.example.com"})]
+      (is (= "http://mine.example.com" (first order)))
+      (is (some #(= "udp://tracker.opentrackr.org:1337" %) order))))
+
+  (testing "hostile shapes contribute nothing instead of throwing"
+    (doseq [metadata [{:announce "http://a.example.com" :announce-list "not-a-coll"}
+                      {:announce "http://a.example.com" :announce-list 42}
+                      {:announce 42 :announce-list nil}
+                      {}]]
+      (let [order (tracker/pick-tracker-order metadata)]
+        (is (vector? order) (pr-str metadata))
+        (is (every? string? order) (pr-str metadata))))))
+
+(deftest combine-peers-test
+  (testing "union of address sets"
+    (is (= #{"a:1" "b:2" "c:3"}
+           (tracker/combine-peers #{"a:1" "b:2"} #{"b:2" "c:3"}))))
+
+  (testing "empty inputs stay empty"
+    (is (= #{} (tracker/combine-peers))))
+
+  (testing "late arrivals fold into already-dialed sets incrementally"
+    (let [dialed (tracker/combine-peers #{"a:1"} #{"b:2"})
+          merged (tracker/combine-peers dialed #{"c:3"})]
+      (is (= #{"a:1" "b:2" "c:3"} merged))))
+
+  (testing "single set returns itself as a set"
+    (is (= #{"a:1"} (tracker/combine-peers ["a:1"])))))
+
+(deftest fan-out-policy-fdefs-hold-generatively-test
+  (testing "pick-tracker-order and combine-peers conform to fdef specs"
+    (doseq [sym ['dev.cljtoc.protocol.tracker/pick-tracker-order
+                 'dev.cljtoc.protocol.tracker/combine-peers]]
+      (let [check-result (stest/check sym {:clojure.spec.test.check/opts {:num-tests 50}})]
+        (is (nil? (-> check-result first :failure))
+            (str sym " should pass all generative tests"))))))

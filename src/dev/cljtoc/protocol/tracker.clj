@@ -761,6 +761,10 @@
 ;; ---------------------------------------------------------------------------
 ;; Re-Announce Timing (US6)
 ;; ---------------------------------------------------------------------------
+;; Pending policy, kept deliberately (issue #44 decision, overlaps #22):
+;; these scheduling fns have no callers yet, but phased and repeat
+;; announces (streaming, paced re-announce) reuse them as the pure "when
+;; to ask next" half. Do not delete.
 
 (def ^:private default-interval-seconds 1800)  ; T102
 (def ^:private max-backoff-ms 3600000)          ; 1 hour cap
@@ -867,3 +871,84 @@
        :success #(= (inc (-> % :args :schedule :retry-attempt))
                     (-> % :ret second :ok :retry-attempt))
        :error   #(= :error (first (:ret %)))))
+
+;; ---------------------------------------------------------------------------
+;; Tracker fan-out policy (issue #44)
+;; ---------------------------------------------------------------------------
+;; Pure ordering + merge policy for tracker queries. No sockets here: the
+;; network adapter calls pick-tracker-order once, then announces to ONE
+;; URL at a time so a coordinator loop can emit :tracker-peers
+;; incrementally (streaming). combine-peers stays merge-shaped
+;; (set-union) so late arrivals fold into already-dialed sets.
+
+(def fallback-trackers
+  "Well-known public trackers appended after declared tracker URLs."
+  ["udp://tracker.opentrackr.org:1337"
+   "udp://open.demonii.com:1337"
+   "udp://open.stealth.si:80"
+   "udp://tracker.torrent.eu.org:451"
+   "udp://explodie.org:6969"
+   "udp://exodus.desync.com:6969"])
+
+(defn- tracker-url?
+  "True when the string names a tracker URL this client can query: an
+   http, https, or udp URI. The scheme must match completely and
+   case-insensitively (RFC 3986) -- a prefix check would drop HTTP://
+   yet admit udpx://, which the adapter would then misdispatch."
+  [candidate]
+  (and (string? candidate)
+       (boolean (re-find #"(?i)\A(?:http|https|udp)://" candidate))))
+
+(defn pick-tracker-order
+  "Order tracker URLs for sequential querying.
+
+   Primary :announce first, then :announce-list tiers flattened in order,
+   then well-known public fallbacks. Deduplicated keeping the first
+   occurrence; nil entries and URLs with unsupported schemes dropped.
+
+   Parameters:
+     torrent-metadata - Map with :announce and optional :announce-list
+
+   Returns: vector of tracker URL strings."
+  [torrent-metadata]
+  (let [primary (:announce torrent-metadata)
+        tiers (:announce-list torrent-metadata)
+        ;; Tiers arrive as vectors of vectors from parsed torrents; a
+        ;; non-sequential shape contributes nothing instead of throwing
+        ;; out of mapcat, so this stays total over any metadata map.
+        from-list (mapcat #(if (sequential? %) % [])
+                          (if (sequential? tiers) tiers []))
+        all (concat (if primary (cons primary from-list) from-list)
+                    fallback-trackers)]
+    (vec (distinct (filter tracker-url? all)))))
+
+(s/fdef pick-tracker-order
+  :args (s/cat :torrent-metadata map?)
+  :ret (s/coll-of string? :kind vector?)
+  :fn #(let [metadata (-> % :args :torrent-metadata)
+             order (:ret %)]
+         (and (if (tracker-url? (:announce metadata))
+                (= (:announce metadata) (first order))
+                true)
+              (= order (vec (distinct order)))
+              (every? tracker-url? order))))
+
+(defn combine-peers
+  "Merge peer address collections into one set.
+
+   Set-union over address sets, so a coordinator can fold late tracker
+   arrivals into the already-dialed set incrementally.
+
+   Parameters:
+     peer-sets - any number of address collections (nil counts as empty)
+
+   Returns: a set of peer addresses."
+  [& peer-sets]
+  (into #{} (mapcat #(or (seq %) [])) peer-sets))
+
+(s/fdef combine-peers
+  :args (s/cat :peer-sets (s/* (s/nilable coll?)))
+  :ret set?
+  :fn (fn [{:keys [args ret]}]
+        (= ret (into #{} (mapcat (fn [peer-set] (or (seq peer-set) []))
+                                 (:peer-sets args))))))

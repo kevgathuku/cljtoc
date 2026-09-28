@@ -77,28 +77,6 @@
           {:ok (.toByteArray baos)})
         {:error (str "HTTP " response-code)}))))
 
-(def ^:private fallback-trackers
-  "Well-known public trackers used as fallbacks when torrent trackers fail."
-  ["udp://tracker.opentrackr.org:1337"
-   "udp://open.demonii.com:1337"
-   "udp://open.stealth.si:80"
-   "udp://tracker.torrent.eu.org:451"
-   "udp://explodie.org:6969"
-   "udp://exodus.desync.com:6969"])
-
-(defn- collect-tracker-urls
-  "Build a flat, deduplicated list of tracker URLs from announce + announce-list,
-   with well-known public trackers appended as fallbacks."
-  [torrent-metadata]
-  (let [primary (:announce torrent-metadata)
-        from-list (mapcat identity (:announce-list torrent-metadata))
-        all (concat (if primary (cons primary from-list) from-list)
-                    fallback-trackers)]
-    (distinct (filter #(and (some? %)
-                            (or (str/starts-with? % "http")
-                                (str/starts-with? % "udp")))
-                      all))))
-
 (defn- udp-exchange
   "Send a UDP datagram and wait for a response. Returns byte array or throws."
   [^DatagramSocket socket ^bytes send-data ^InetSocketAddress addr timeout-ms]
@@ -175,16 +153,24 @@
           (let [parse-result (tracker/parse-http-tracker-response (:ok http-result))]
             (if (:error parse-result)
               {:error :parse-failed :message (:message parse-result)}
-              (let [peers (:peers (:ok parse-result))
-                    _ (log! network (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
-                    addresses (set (map tracker-peer->address peers))
-                    _ (log! network (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
-                {:ok addresses}))))))))
+              ;; A tracker rejection ({:ok {:success false}}) is an error
+              ;; carrying the failure reason -- never a successful empty
+              ;; set, which incremental callers would read as "no peers yet".
+              (if (false? (:success (:ok parse-result)))
+                {:error :tracker-rejected
+                 :message (str tracker-url ": " (:failure-reason (:ok parse-result)))}
+                (let [peers (:peers (:ok parse-result))
+                      _ (log! network (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
+                      addresses (set (map tracker-peer->address peers))
+                      _ (log! network (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
+                  {:ok addresses})))))))))
 
 (defn- try-single-tracker
   "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
   [network tracker-url request]
-  (if (str/starts-with? tracker-url "udp")
+  ;; Case-insensitive like the pick-tracker-order filter, so an admitted
+  ;; uppercase UDP:// URL still routes to the UDP path.
+  (if (str/starts-with? (str/lower-case tracker-url) "udp")
     (try-udp-tracker network tracker-url request)
     (try-http-tracker network tracker-url request)))
 
@@ -269,6 +255,13 @@
       (catch Exception _ nil)))
 
   network/ITrackerPort
+  (announce-to-url [network tracker-url request]
+    "Announce to ONE tracker URL. The per-URL effect half of the fan-out
+     policy: ordering (tracker/pick-tracker-order) and merging
+     (tracker/combine-peers) stay pure so a coordinator loop can query
+     URLs incrementally. Returns {:ok #{peer-address}} or {:error ...}."
+    (try-single-tracker network tracker-url request))
+
   (announce [network torrent-metadata progress]
     "Announce to trackers and get a list of peers.
      Queries ALL tracker URLs and combines peers for maximum coverage.
@@ -276,7 +269,7 @@
      by the caller from the download record -- this port only transmits it.
      Returns {:ok #{peer-address}} or {:error reason :message msg}."
     (try
-      (let [tracker-urls (collect-tracker-urls torrent-metadata)]
+      (let [tracker-urls (tracker/pick-tracker-order torrent-metadata)]
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
           (let [request {:info-hash (:info-hash torrent-metadata)
@@ -288,28 +281,31 @@
                          :event :started
                          :compact true
                          :num-want 200}]
-            ;; Query all trackers and combine peers
+            ;; Query all trackers and combine peers. Success tracks
+            ;; separately from the peer count: an announce that answers
+            ;; with zero peers is a genuinely empty swarm, not an outage.
             (loop [urls tracker-urls
                    all-peers #{}
+                   succeeded? false
                    last-error nil]
               (if (empty? urls)
-                (if (empty? all-peers)
-                  (or last-error
-                      {:error :all-trackers-failed
-                       :message "All trackers failed"})
+                (if succeeded?
                   (do
                     (log! network (str "  Collected " (count all-peers) " unique peers from trackers"))
-                    {:ok all-peers}))
+                    {:ok all-peers})
+                  (or last-error
+                      {:error :all-trackers-failed
+                       :message "All trackers failed"}))
                 (let [url (first urls)
                       _ (log! network (str "  Trying tracker: " url))
                       result (try-single-tracker network url request)]
                   (if (:ok result)
                     (do
                       (log! network (str "    Got " (count (:ok result)) " peers"))
-                      (recur (rest urls) (into all-peers (:ok result)) last-error))
+                      (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) true last-error))
                     (do
                       (log! network (str "    Failed: " (:message result)))
-                      (recur (rest urls) all-peers result)))))))))
+                      (recur (rest urls) all-peers succeeded? result)))))))))
       (catch Exception e
         {:error :tracker-error :message (.getMessage e)}))))
 
