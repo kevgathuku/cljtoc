@@ -273,24 +273,38 @@
       (long (/ bytes-downloaded elapsed-seconds))
       0)))
 
+(defn- mark-suspended
+  "Stamp when this run stopped into the stats. A nil clock (callers
+   without a time port) leaves the record untouched: resume falls back
+   to the last verified byte exactly as before."
+  [download now]
+  (if (some? now)
+    (assoc-in download [:stats :suspended-at] now)
+    download))
+
 (defn accumulate-downtime
-  "Fold the dead gap since the last verified byte into the stats.
-   Between :last-update and now no byte moved by definition, so the whole
-   gap was pause, failure, or crash -- resuming excludes it from the rate
-   denominator and refreshes last-update so the next gap starts here.
-   Records predating downtime tracking resume unchanged. Returns the
-   updated download."
+  "Fold the dead gap into the stats.
+   The gap runs from the recorded suspension (pause/failure time) when
+   the record carries one, else from the last verified byte -- an
+   unobserved crash leaves no suspension stamp, so the last byte is the
+   only boundary. Live-but-idle time before a recorded suspension stays
+   in the rate denominator: the run was up, just not moving bytes. The
+   stamp is single-use and last-update refreshes, so the next gap starts
+   here. Records predating downtime tracking resume unchanged. Returns
+   the updated download."
   [time-port download]
   (let [now (time/now time-port)
         stats (:stats download)
-        last (:last-update stats)
-        gap (if last (max 0 (- now last)) 0)]
-    (assoc download :stats (assoc stats
-                                  :downtime-ms (+ (or (:downtime-ms stats) 0)
-                                                  gap)
-                                  :last-update (if (and last (> last now))
-                                                 last
-                                                 now)))))
+        signals (filter some? [(:last-update stats) (:suspended-at stats)])
+        gap (if (seq signals) (max 0 (- now (apply max signals))) 0)]
+    (assoc download :stats (-> stats
+                               (assoc :downtime-ms (+ (or (:downtime-ms stats) 0)
+                                                      gap))
+                               (assoc :last-update (let [last (:last-update stats)]
+                                                     (if (and last (> last now))
+                                                       last
+                                                       now)))
+                               (dissoc :suspended-at)))))
 
 (s/fdef accumulate-downtime
   :args (s/cat :time-port any? :download map?)
@@ -424,13 +438,17 @@
 (defn pause-download
   "Pause an active download.
    - Closes all peer connections
+   - Stamps when the run stopped, so resume excludes only the dead gap
    - Persists state to disk via IDiskPort
    - Returns updated download with :paused state"
   ([download]
-   (pause-download nil download))
+   (pause-download nil nil download))
   ([disk-port download]
+   (pause-download nil disk-port download))
+  ([time-port disk-port download]
    (if (= :downloading (:state download))
-     (let [paused-download (assoc download :state :paused :peers #{})]
+     (let [paused-download (mark-suspended (assoc download :state :paused :peers #{})
+                                           (when time-port (time/now time-port)))]
        (if disk-port
          (let [save-result (disk/save-state disk-port paused-download)]
            (if (:error save-result)
@@ -440,7 +458,9 @@
      {:error :not-running :message "Download is not running"})))
 
 (s/fdef pause-download
-  :args (s/cat :disk-port (s/? any?) :download map?)
+  :args (s/alt :bare (s/cat :download map?)
+               :with-disk (s/cat :disk-port any? :download map?)
+               :with-time (s/cat :time-port any? :disk-port any? :download map?))
   :ret (s/or :ok (s/keys :req-un [::state])
              :error map?))
 
@@ -1155,8 +1175,9 @@
             (do
               (println)
               (println "  All peers disconnected.")
-              (assoc download :state :failed
-                     :error {:reason :no-peers :message "All peers disconnected"}))
+              (mark-suspended (assoc download :state :failed
+                                     :error {:reason :no-peers :message "All peers disconnected"})
+                              (time/now time-port)))
 
             (let [now (time/now time-port)
                   show-progress? (> (- now last-progress-time) 2000)]
@@ -1182,7 +1203,8 @@
                       ;; disconnect instead of waiting on a silent channel.
                       ;; (Message handling otherwise never removes peers,
                       ;; so this check is inert for all other paths.)
-                      (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
+                      (mark-suspended (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
+                                      now)
                       (let [wrote? (boolean (some :write-verified effects))]
                         (when (and show-progress? wrote?)
                           (print-download-progress (:download performed) (:active-peers performed)))
@@ -1190,7 +1212,8 @@
                     (let [download (:download performed)]
                       (println)
                       (println (str "  Fatal effect error: " (get-in outcome [:fatal :message])))
-                      (assoc download :state :failed :error (:fatal outcome)))))
+                      (mark-suspended (assoc download :state :failed :error (:fatal outcome))
+                                      now))))
 
                 :peer-disconnected
                 (let [{:keys [address reason]} event
@@ -1208,7 +1231,8 @@
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (if (swarm-exhausted? performed)
-                    (fail-no-peers download conn-stats total-attempted reason)
+                    (mark-suspended (fail-no-peers download conn-stats total-attempted reason)
+                                    now)
                     (recur performed
                            (if show-progress? now last-progress-time))))
 

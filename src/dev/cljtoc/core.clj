@@ -147,7 +147,7 @@
       (do
         (println "No active download found.")
         (System/exit 1))
-      (let [result (download/pause-download state)]
+      (let [result (download/pause-download (time-port/->RealTimePort) nil state)]
         (if (:error result)
           (do
             (println "Failed to pause: " (get-in result [:error :message]))
