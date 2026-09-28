@@ -70,7 +70,7 @@
   ([config]
    (let [state (atom {:responses {}})
          closed (atom #{})]
-     (->MockNetworkPort config #{} state closed state))))
+     (->MockNetworkPort (network/check-timeout-opts config) #{} state closed state))))
 
 (defn add-peer-response [mock-network peer-id message-type response]
   (swap! (:responses mock-network) assoc-in [peer-id message-type] response))

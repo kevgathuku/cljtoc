@@ -25,6 +25,31 @@
   :args (s/cat :port any?)
   :ret fn?)
 
+(def timeout-opt-keys
+  "Adapter config keys holding socket timeouts in milliseconds."
+  [:connect-timeout-ms :socket-timeout-ms :udp-timeout-ms :http-timeout-ms])
+
+(defn check-timeout-opts
+  "Validate present timeout opts before any network I/O: each must be a
+   positive int within the Java int range the socket APIs take. Zero means
+   infinite to Socket.connect/setSoTimeout, so present-but-invalid values
+   throw instead of falling back to a default. Absent keys are fine (the
+   historical defaults apply at use). Returns config unchanged."
+  [config]
+  (doseq [timeout-key timeout-opt-keys
+          :when (contains? config timeout-key)
+          :let [value (get config timeout-key)]]
+    (when-not (and (pos-int? value) (<= value Integer/MAX_VALUE))
+      (throw (ex-info (str "Invalid network timeout " timeout-key
+                           ": expected positive int ms within Java int range, got "
+                           (pr-str value))
+                      {:key timeout-key :value value}))))
+  config)
+
+(s/fdef check-timeout-opts
+  :args (s/cat :config map?)
+  :ret map?)
+
 (defprotocol INetworkPort
   "Abstraction for network operations needed by download orchestration."
 

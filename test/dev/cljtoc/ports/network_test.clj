@@ -206,6 +206,36 @@
             (is (= 10000 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
             (finally (network/close-peer (network-impl/create) (:ok result)))))))))
 
+;; check-timeout-opts throws by design, so it is excluded from stest/check
+;; (generated invalid configs would fail the check by construction); the
+;; mutation table below is its generative-equivalent coverage.
+(deftest invalid-timeout-opts-are-rejected-at-creation-test
+  (testing "present-but-invalid timeouts throw instead of reaching the socket APIs"
+    ;; Mutation vocabulary is shape-diverse by construction: zero (the
+    ;; infinite-timeout hole), negative, string, double, nil, and
+    ;; beyond-Java-int-range each exercise a different subform of the guard.
+    (doseq [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+            timeout-key [:connect-timeout-ms :socket-timeout-ms
+                         :udp-timeout-ms :http-timeout-ms]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {timeout-key bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted " timeout-key "=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network timeout" (ex-message err)))
+          (is (= timeout-key (:key (ex-data err))))
+          (is (= bad (:value (ex-data err))))))))
+  (testing "valid timeouts (including the int boundary) and absent keys pass through"
+    (let [opts {:connect-timeout-ms 1
+                :socket-timeout-ms 2
+                :udp-timeout-ms 3
+                :http-timeout-ms Integer/MAX_VALUE}]
+      (is (= opts (:config (network-impl/create opts))))
+      (is (= opts (:config (mock-network/create opts))))
+      (is (= {} (:config (network-impl/create)))))))
+
 (deftest fdef-specs-hold-generatively-test
   (testing "log-fn fdef holds over generated inputs"
     (let [failures (test-utils/check-fdefs

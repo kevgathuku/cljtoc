@@ -334,8 +334,9 @@
     (tracker-announce this torrent-metadata progress)))
 
 (defn create
-  "Create a NetworkPort instance."
+  "Create a NetworkPort instance. Timeout opts are validated up front;
+   present-but-invalid values throw instead of reaching the socket APIs."
   ([]
    (create {}))
   ([opts]
-   (->NetworkPort opts (atom {}))))
+   (->NetworkPort (network/check-timeout-opts opts) (atom {}))))
