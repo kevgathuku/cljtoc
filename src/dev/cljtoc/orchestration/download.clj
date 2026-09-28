@@ -1204,7 +1204,7 @@
                       ;; (Message handling otherwise never removes peers,
                       ;; so this check is inert for all other paths.)
                       (mark-suspended (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
-                                      now)
+                                      (time/now time-port))
                       (let [wrote? (boolean (some :write-verified effects))]
                         (when (and show-progress? wrote?)
                           (print-download-progress (:download performed) (:active-peers performed)))
@@ -1213,7 +1213,7 @@
                       (println)
                       (println (str "  Fatal effect error: " (get-in outcome [:fatal :message])))
                       (mark-suspended (assoc download :state :failed :error (:fatal outcome))
-                                      now))))
+                                      (time/now time-port)))))
 
                 :peer-disconnected
                 (let [{:keys [address reason]} event
@@ -1232,7 +1232,7 @@
                     (print-download-progress download active-peers))
                   (if (swarm-exhausted? performed)
                     (mark-suspended (fail-no-peers download conn-stats total-attempted reason)
-                                    now)
+                                    (time/now time-port))
                     (recur performed
                            (if show-progress? now last-progress-time))))
 
