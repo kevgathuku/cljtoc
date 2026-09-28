@@ -38,3 +38,12 @@
   (testing "loading an unknown id returns {:ok nil}, like the real port"
     (let [port (mock-disk/create)]
       (is (= {:ok nil} (disk/load-state port "nope"))))))
+
+(deftest mock-load-invalid-stored-bytes-test
+  (testing "a pre-existing :cljtoc/bytes tag with invalid hex loads as a
+            :load-error instead of throwing, like the real port
+            (encode-state passes such tags through unvalidated)"
+    (let [port (mock-disk/create)]
+      (disk/save-state port {:id "bad"
+                             :torrent {:info-hash {:cljtoc/bytes "zz"}}})
+      (is (= :load-error (:error (disk/load-state port "bad")))))))

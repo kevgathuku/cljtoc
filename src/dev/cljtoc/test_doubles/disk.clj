@@ -93,7 +93,13 @@
     {:ok :saved})
 
   (load-state [_ id]
-    {:ok (disk/decode-state (get @state-files id))})
+    ;; Mirrors DiskPortImpl: bytes this port did not encode (a pre-existing
+    ;; {:cljtoc/bytes ...} tag encode-state passes through unvalidated)
+    ;; come back as {:error :load-error}, never an uncaught throw.
+    (try
+      {:ok (disk/decode-state (get @state-files id))}
+      (catch Exception error
+        {:error :load-error :message (.getMessage error)})))
 
   (delete-state [_ id]
     (swap! state-files dissoc id)
