@@ -761,6 +761,10 @@
 ;; ---------------------------------------------------------------------------
 ;; Re-Announce Timing (US6)
 ;; ---------------------------------------------------------------------------
+;; Pending policy, kept deliberately (issue #44 decision, overlaps #22):
+;; these scheduling fns have no callers yet, but phased and repeat
+;; announces (streaming, paced re-announce) reuse them as the pure "when
+;; to ask next" half. Do not delete.
 
 (def ^:private default-interval-seconds 1800)  ; T102
 (def ^:private max-backoff-ms 3600000)          ; 1 hour cap

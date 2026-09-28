@@ -7,8 +7,10 @@
    network: connect-peer gets a blank address, which is refused before any
    socket work, and the read and write methods get byte-array streams.
    announce is exercised on the mock only -- the real one always reaches
-   for a tracker, because collect-tracker-urls appends well-known public
-   fallbacks, so there is no offline input that stops it short."
+   for a tracker, because pick-tracker-order appends well-known public
+   fallbacks, so there is no offline input that stops it short. The
+   per-URL announce-to-url has an offline error path on the real port
+   (a malformed URL fails before any socket work)."
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.spec.alpha :as s]
             [clojure.spec.gen.alpha :as gen]

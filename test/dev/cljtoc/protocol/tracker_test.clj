@@ -1099,3 +1099,11 @@
 
   (testing "single set returns itself as a set"
     (is (= #{"a:1"} (tracker/combine-peers ["a:1"])))))
+
+(deftest fan-out-policy-fdefs-hold-generatively-test
+  (testing "pick-tracker-order and combine-peers conform to fdef specs"
+    (doseq [sym ['dev.cljtoc.protocol.tracker/pick-tracker-order
+                 'dev.cljtoc.protocol.tracker/combine-peers]]
+      (let [check-result (stest/check sym {:clojure.spec.test.check/opts {:num-tests 50}})]
+        (is (nil? (-> check-result first :failure))
+            (str sym " should pass all generative tests"))))))
