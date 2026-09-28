@@ -1563,3 +1563,60 @@
       (is (= :downloading (get-in result [:ok :state])))
       (is (= #{["10.9.9.1:6881" 6881]}
              (set (map (juxt :address :port) (get-in result [:ok :peers]))))))))
+
+(deftest resume-at-one-verified-piece-completes-through-the-swarm-with-real-files-test
+  (testing "the issue #30 cycle end to end: a failed record with piece 0
+            verified resumes through the mock swarm, pieces 1 and 2 arrive
+            over the wire, and every output file is byte-identical to the
+            declared content. The real DiskPortImpl proves the bytes, not
+            the mock's recording. Piece 1 straddles the file boundary, so
+            the assertion also covers span writes during a resumed run"
+    (let [piece-bytes [(test-utils/to-bytes "abcd")
+                       (test-utils/to-bytes "efgh")
+                       (test-utils/to-bytes "ijkl")]
+          info {:pieces (mapv bencode/sha1-hash piece-bytes)
+                :piece-length 4
+                :name "cycle"
+                :files [{:path ["a.bin"] :length 6}
+                        {:path ["b.bin"] :length 6}]}
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+          torrent {:info-hash info-hash :info info}
+          output-dir (temp-dir "cycle-out-")
+          disk-port (disk-impl/create {:state-dir (temp-dir "cycle-state-")
+                                       :piece-cache-dir (temp-dir "cycle-cache-")})
+          piece-state (-> (pieces/initial-piece-state 3)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          failed (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   output-dir
+                                                   "cycle")
+                        :state :failed
+                        :piece-state piece-state
+                        :peers #{{:address "10.0.0.9:6881" :port 6881}}
+                        :error {:reason :no-peers :message "swarm exhausted"})
+          _ (disk/write-piece disk-port 0 (nth piece-bytes 0))
+          net (mock-net/create
+               {:mock-peers ["10.0.0.9:6881"]
+                :handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x60)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 1 0 (nth piece-bytes 1))}
+                                          {:ok (peer/->Piece 2 0 (nth piece-bytes 2))}])})
+          resumed (:ok (download/resume-download nil net failed))
+          result (deref (future (download/run-download {:network-port net
+                                                        :disk-port disk-port
+                                                        :time-port (mock-time/create)
+                                                        :config {}}
+                                                       resumed))
+                        15000 :timed-out)
+          read-file (fn [name]
+                      (seq (java.nio.file.Files/readAllBytes
+                            (.toPath (io/file output-dir "cycle" name)))))]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 3 (pieces/verified-count (:piece-state result))))
+      (is (= (seq (test-utils/to-bytes "abcdef")) (read-file "a.bin")))
+      (is (= (seq (test-utils/to-bytes "ghijkl")) (read-file "b.bin"))))))
