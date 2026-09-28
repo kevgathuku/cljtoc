@@ -117,6 +117,19 @@
                        :started-at nil)]
       (is (= 0 (download/calculate-rate time stats))))))
 
+(deftest complete-download-finalizes-stats-test
+  (testing "completion stamps completed-at, refreshes last-update, and pins
+            the rate at the run average instead of the last block's
+            instantaneous value"
+    (let [time (mock-time/create {:now 5000})
+          download {:state :downloading
+                    :stats (download/->DownloadStats 1000 nil 20000 0 4500)}
+          result (download/complete-download time download)]
+      (is (= :completed (:state result)))
+      (is (= 5000 (:completed-at (:stats result))))
+      (is (= 5000 (:last-update (:stats result))))
+      (is (= 5000 (:rate (:stats result)))))))
+
 (deftest advance-time-drives-rate-test
   (let [time (mock-time/create {:now 1000})
         stats (download/->DownloadStats 1000 nil 0 0 1000)]
@@ -1169,6 +1182,50 @@
       (is (= :completed (:state result)))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
 
+(deftest run-coordinator-completion-finalizes-stats-test
+  (testing "the coordinator's completion edge stamps the stats, so the
+            persisted record carries a completion time instead of the
+            last block's instantaneous values"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (some? (:completed-at (:stats result)))))))
+
+(deftest run-download-materialize-complete-finalizes-stats-test
+  (testing "a download completing out of the piece cache carries a
+            completion time, not just the last block's stats"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:pieces [(bencode/sha1-hash piece-0)]
+                :piece-length 4
+                :name "fin.bin"
+                :length 4}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent "/out" "fin")
+                          :state :downloading
+                          :peers #{}
+                          :piece-state (-> (pieces/initial-piece-state 1)
+                                           (#(:ok (pieces/mark-in-flight % 0)))
+                                           (#(:ok (pieces/mark-verified % 0)))))
+          disk (mock-disk/create)
+          _ (disk/write-piece disk 0 piece-0)
+          manager {:network-port (mock-net/create)
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          result (download/run-download manager download)]
+      (is (= :completed (:state result)))
+      (is (some? (:completed-at (:stats result)))))))
+
 (deftest run-coordinator-choke-requeues-through-loop-test
   (testing "choke mid-piece returns the piece to needed"
     (let [disk (mock-disk/create)
@@ -1436,8 +1493,8 @@
 ;; not by accident — the generator cannot conjure a protocol implementation,
 ;; so anything behind an effect port fails before its :ret is even reached
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
-;; calculate-rate, update-stats-bytes, initial-stats, initial-download,
-;; progress (time port); start-download, run-coordinator, run-download,
+;; calculate-rate, complete-download, update-stats-bytes, initial-stats,
+;; initial-download, progress (time port); start-download, run-coordinator, run-download,
 ;; load-persisted-state, persist-download-state (ports, channels, workers);
 ;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------

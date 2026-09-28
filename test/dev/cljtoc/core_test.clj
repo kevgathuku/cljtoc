@@ -89,6 +89,8 @@
                          :network-port (mock-net/create {:announce-capture captured}))
           result (#'core/resume-and-run manager done)]
       (is (= :completed (:state result)))
+      (is (some? (:completed-at (:stats result)))
+          "the fast path finalizes stats exactly like a swarmed completion")
       (is (nil? @captured) "neither announce nor swarm was touched"))))
 
 (deftest resume-and-run-materializes-cached-pieces-once-test

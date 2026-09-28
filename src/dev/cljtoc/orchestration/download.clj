@@ -256,6 +256,18 @@
   :args (s/cat :time-port any? :stats map? :bytes-received nat-int?)
   :ret map?)
 
+(defn- rate-at
+  "Average transfer rate at one clock reading: total bytes downloaded
+   divided by seconds since :started-at. Records predating started-at
+   tracking report 0."
+  [now stats]
+  (let [started (:started-at stats)
+        elapsed-seconds (if started (/ (- now started) 1000.0) 0)
+        bytes-downloaded (:bytes-downloaded stats)]
+    (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
+      (long (/ bytes-downloaded elapsed-seconds))
+      0)))
+
 (defn calculate-rate
   "Average transfer rate over the run: total bytes downloaded divided by
    seconds since :started-at. Averaging over the run (instead of the gap
@@ -263,17 +275,31 @@
    final block the last-gap quotient explodes into fantasy GB/s. Records
    predating started-at tracking report 0."
   [time-port stats]
-  (let [now (time/now time-port)
-        started (:started-at stats)
-        elapsed-seconds (if started (/ (- now started) 1000.0) 0)
-        bytes-downloaded (:bytes-downloaded stats)]
-    (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
-      (long (/ bytes-downloaded elapsed-seconds))
-      0)))
+  (rate-at (time/now time-port) stats))
 
 (s/fdef calculate-rate
   :args (s/cat :time-port any? :stats map?)
   :ret nat-int?)
+
+(defn complete-download
+  "Mark the download completed, finalizing its stats for persistence.
+   Stamps completed-at, refreshes last-update, and pins the rate at the
+   run average instead of the last block's instantaneous value, so the
+   saved record describes the finished run rather than its final block.
+   Returns the updated download."
+  [time-port download]
+  (let [now (time/now time-port)
+        stats (:stats download)]
+    (assoc download
+           :state :completed
+           :stats (assoc stats
+                         :completed-at now
+                         :last-update now
+                         :rate (rate-at now stats)))))
+
+(s/fdef complete-download
+  :args (s/cat :time-port any? :download map?)
+  :ret (s/keys :req-un [::state]))
 
 (defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
@@ -1088,7 +1114,7 @@
           (println "  Download complete!")
           (doseq [[_ peer-info] (:active-peers state)]
             (network/close-peer network-port (:peer-data peer-info)))
-          (assoc download :state :completed))
+          (complete-download time-port download))
 
         (let [event (async/<!! events-ch)]
           (if (nil? event)
@@ -1254,7 +1280,7 @@
   ([manager download]
    (run-download manager download nil))
   ([manager download opts]
-   (let [{:keys [disk-port config]} manager
+   (let [{:keys [disk-port time-port config]} manager
          carried (:layout opts)
          ;; The O(1) shape gate, not the O(files) invariant check: the
          ;; layout came out of compile-output-layout in this same process,
@@ -1314,7 +1340,7 @@
                       (:message materialized))
 
            (pieces/complete? (:piece-state revived))
-           (assoc revived :state :completed)
+           (complete-download time-port revived)
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.
