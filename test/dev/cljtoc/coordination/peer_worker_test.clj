@@ -20,6 +20,19 @@
   []
   (byte-array (repeat 20 (byte 2))))
 
+(deftest verify-handshake-test
+  (testing "matching info-hash returns {:ok peer-handshake}"
+    (let [info-hash (test-info-hash)
+          peer-hs {:info-hash info-hash :peer-id (test-peer-id)}]
+      (is (= {:ok peer-hs}
+             (peer-worker/verify-handshake info-hash peer-hs)))))
+  (testing "mismatched info-hash returns {:error :info-hash-mismatch}"
+    (let [result (peer-worker/verify-handshake
+                  (test-info-hash)
+                  {:info-hash (byte-array (repeat 20 (byte 9)))
+                   :peer-id (test-peer-id)})]
+      (is (= :info-hash-mismatch (:error result))))))
+
 (deftest handshake-error-emits-peer-disconnected-test
   (testing "handshake failure surfaces as :peer-disconnected via the port"
     (let [net (mock-net/create {:handshake-response {:error :timeout
