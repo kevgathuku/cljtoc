@@ -587,28 +587,6 @@
   :ret (s/or :ok (s/keys :req-un [::state])
              :error map?))
 
-(defn load-persisted-state
-  "Load persisted download state from disk."
-  [disk-port download-id]
-  (if disk-port
-    (disk/load-state disk-port download-id)
-    nil))
-
-(s/fdef load-persisted-state
-  :args (s/cat :disk-port any? :download-id any?)
-  :ret any?)
-
-(defn persist-download-state
-  "Persist current download state to disk for recovery."
-  [disk-port download]
-  (if disk-port
-    (disk/save-state disk-port download)
-    {:ok :no-disk-port}))
-
-(s/fdef persist-download-state
-  :args (s/cat :disk-port any? :download map?)
-  :ret any?)
-
 (defn stop-download [download]
   (assoc download :state :idle :peers #{}))
 
