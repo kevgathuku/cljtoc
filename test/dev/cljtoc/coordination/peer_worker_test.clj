@@ -3,7 +3,8 @@
   (:require [clojure.test :refer :all]
             [clojure.core.async :as async]
             [dev.cljtoc.coordination.peer-worker :as peer-worker]
-            [dev.cljtoc.test-doubles.network :as mock-net]))
+            [dev.cljtoc.test-doubles.network :as mock-net]
+            [dev.cljtoc.test-utils :as test-utils]))
 
 (defn- take-timeout
   [ch timeout-ms]
@@ -19,6 +20,53 @@
 (defn- test-peer-id
   []
   (byte-array (repeat 20 (byte 2))))
+
+(deftest verify-handshake-test
+  (testing "matching info-hash returns {:ok peer-handshake}"
+    (let [info-hash (test-info-hash)
+          peer-hs {:info-hash info-hash :peer-id (test-peer-id)}]
+      (is (= {:ok peer-hs}
+             (peer-worker/verify-handshake info-hash peer-hs)))))
+  (testing "mismatched info-hash returns {:error :info-hash-mismatch}"
+    (let [result (peer-worker/verify-handshake
+                  (test-info-hash)
+                  {:info-hash (byte-array (repeat 20 (byte 9)))
+                   :peer-id (test-peer-id)})]
+      (is (= :info-hash-mismatch (:error result))))))
+
+(deftest worker-logs-through-adapter-config-test
+  (testing "run-peer logs its start through the port's :log-fn"
+    (let [logged (atom [])
+          net (mock-net/create {:log-fn (fn [msg] (swap! logged conj msg))
+                                :handshake-response {:error :timeout
+                                                     :message "boom"}})
+          events-ch (async/chan 10)]
+      (peer-worker/run-peer net (test-info-hash) (test-peer-id)
+                            "127.0.0.1:6881" 4 events-ch)
+      (let [event (take-timeout events-ch 2000)]
+        (is (= :peer-disconnected (:type event)))
+        (is (= 1 (count @logged)))
+        (is (re-find #"127.0.0.1:6881" (first @logged)))))))
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "verify-handshake fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.coordination.peer-worker/verify-handshake]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
+
+(deftest worker-survives-throwing-logger-test
+  (testing "run-peer still emits :peer-disconnected when :log-fn throws"
+    (let [net (mock-net/create {:log-fn (fn [_] (throw (ex-info "boom" {})))
+                                :handshake-response {:error :timeout
+                                                     :message "boom"}})
+          events-ch (async/chan 10)]
+      (peer-worker/run-peer net (test-info-hash) (test-peer-id)
+                            "127.0.0.1:6881" 4 events-ch)
+      (let [event (take-timeout events-ch 2000)]
+        (is (not= :timeout event) "worker produced no event")
+        (is (= :peer-disconnected (:type event)))))))
 
 (deftest handshake-error-emits-peer-disconnected-test
   (testing "handshake failure surfaces as :peer-disconnected via the port"

@@ -12,10 +12,27 @@
            [java.io ByteArrayOutputStream InputStream]
            [java.security SecureRandom]))
 
-(defrecord NetworkPort
-           [config peer-connections])
-
 (def ^:private random (SecureRandom.))
+
+(def ^:private default-timeouts
+  "Historical socket timeout literals, now overridable via create opts:
+   :connect-timeout-ms, :socket-timeout-ms, :udp-timeout-ms,
+   :http-timeout-ms."
+  {:connect-timeout-ms 5000
+   :socket-timeout-ms 10000
+   :udp-timeout-ms 5000
+   :http-timeout-ms 10000})
+
+(defn- timeout-ms
+  "Read a timeout from the adapter config, falling back to the default."
+  [network timeout-key]
+  (get (:config network) timeout-key (get default-timeouts timeout-key)))
+
+(defn- log!
+  "Private delegate for network/log!: the network alias is shadowed by
+   the port arg inside every method body, so call sites use this."
+  [port message]
+  (network/log! port message))
 
 (defn- generate-peer-id
   "Generate a random 20-byte peer ID for tracker announcements."
@@ -23,42 +40,6 @@
   (let [bytes (byte-array 20)]
     (.nextBytes random bytes)
     bytes))
-
-(defn connect-peer
-  "Open TCP connection to a peer at the given address.
-   Returns {:ok peer-data} or {:error reason :message msg}."
-  [network address]
-  (try
-    (println (str "[connect] Attempting to connect to: " address))
-    (let [parsed (peer-address/parse address)]
-      (if (:error parsed)
-        {:error :invalid-address :message (:message parsed)}
-        (let [{:keys [host port]} (:ok parsed)
-              _ (println (str "[connect-peer] host=" host " port=" port))
-              socket (doto (Socket.)
-                       (.connect (InetSocketAddress. host port) 5000)
-                       (.setSoTimeout 10000))
-              peer-data {:id address
-                         :address address
-                         :socket socket
-                         :in (.getInputStream socket)
-                         :out (.getOutputStream socket)}]
-          (swap! (:peer-connections network) assoc address peer-data)
-          {:ok peer-data})))
-    (catch Exception e
-      {:error :connect-failed :message (.getMessage e)})))
-
-(defn send-message
-  "Send a peer wire message to the connected peer.
-   Returns {:ok :sent} or {:error reason :message msg}."
-  [network peer message]
-  (try
-    (let [out (:out peer)]
-      (.write out message)
-      (.flush out)
-      {:ok :sent})
-    (catch Exception e
-      {:error :send-failed :message (.getMessage e)})))
 
 (defn- read-fully
   "Read exactly n bytes from an InputStream. Returns byte array or throws on EOF."
@@ -71,50 +52,6 @@
           (if (= read-count -1)
             (throw (java.io.EOFException. (str "EOF after " offset " of " n " bytes")))
             (recur (+ offset read-count))))))))
-
-(defn receive-handshake
-  "Read a 68-byte peer handshake from the connection.
-   Returns {:ok peer-handshake} or {:error reason :message msg}."
-  [network peer]
-  (try
-    (let [in (:in peer)
-          handshake-bytes (read-fully in 68)]
-      (peer/parse-handshake handshake-bytes))
-    (catch java.net.SocketTimeoutException _
-      {:error :timeout :message "Handshake read timed out"})
-    (catch java.io.EOFException _
-      {:error :disconnected :message "Peer disconnected during handshake"})
-    (catch Exception e
-      {:error :receive-failed :message (.getMessage e)})))
-
-(defn receive-message
-  "Receive the next peer wire protocol message from a peer.
-   Reads 4-byte length prefix, then length bytes of payload.
-   Returns {:ok peer-message} or {:error reason :message msg}."
-  [network peer]
-  (try
-    (let [in (:in peer)
-          len-bytes (read-fully in 4)
-          msg-len (peer/bytes-to-int32 len-bytes)]
-      (if (zero? msg-len)
-        {:ok (peer/->KeepAlive)}
-        (let [payload (read-fully in msg-len)
-              full-msg (peer/concat-bytes len-bytes payload)]
-          (peer/parse-message full-msg))))
-    (catch java.io.EOFException _
-      {:error :disconnected :message "Peer disconnected"})
-    (catch Exception e
-      {:error :receive-failed :message (.getMessage e)})))
-
-(defn close-peer
-  "Close the connection to a peer gracefully."
-  [network peer]
-  (try
-    (when-let [socket (:socket peer)]
-      (.close socket))
-    (swap! (:peer-connections network) dissoc (:id peer))
-    nil
-    (catch Exception _ nil)))
 
 (defn- make-http-request
   "Make HTTP GET request and return response body as byte array."
@@ -181,19 +118,20 @@
 
 (defn- try-udp-tracker
   "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
-  [tracker-url request]
+  [network tracker-url request]
   (try
     (let [uri (URI. tracker-url)
           host (.getHost uri)
           port (let [p (.getPort uri)] (if (= p -1) 6969 p))
           addr (InetSocketAddress. host port)
-          socket (doto (DatagramSocket.) (.setSoTimeout 5000))
+          timeout (timeout-ms network :udp-timeout-ms)
+          socket (doto (DatagramSocket.) (.setSoTimeout timeout))
           txn-id (.nextInt (java.util.Random.))]
       (try
         ;; Step 1: Connect
         (let [connect-req (:ok (tracker/build-udp-connect-request
                                 {:transaction-id txn-id}))
-              connect-resp (udp-exchange socket connect-req addr 5000)
+              connect-resp (udp-exchange socket connect-req addr timeout)
               connect-parsed (tracker/parse-udp-connect-response connect-resp)]
           (if (:error connect-parsed)
             {:error :udp-connect-failed :message (str tracker-url ": " (:message connect-parsed))}
@@ -211,7 +149,7 @@
                                       :event (:event request)
                                       :num-want (or (:num-want request) 50)
                                       :port (:port request)}))
-                  announce-resp (udp-exchange socket announce-req addr 5000)
+                  announce-resp (udp-exchange socket announce-req addr timeout)
                   announce-parsed (tracker/parse-udp-announce-response announce-resp)]
               (if (:error announce-parsed)
                 {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
@@ -223,12 +161,13 @@
 
 (defn- try-http-tracker
   "Try announcing to an HTTP tracker. Returns {:ok peers} or {:error ...}."
-  [tracker-url request]
+  [network tracker-url request]
   (let [url-result (tracker/build-http-announce-url tracker-url request)]
     (if (:error url-result)
       {:error :build-url-failed :message (:message url-result)}
       (let [http-result (try
-                          (make-http-request (:ok url-result) 10000)
+                          (make-http-request (:ok url-result)
+                                             (timeout-ms network :http-timeout-ms))
                           (catch Exception e
                             {:error (.getMessage e)}))]
         (if (:error http-result)
@@ -237,83 +176,147 @@
             (if (:error parse-result)
               {:error :parse-failed :message (:message parse-result)}
               (let [peers (:peers (:ok parse-result))
-                    _ (println (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
+                    _ (log! network (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
                     addresses (set (map tracker-peer->address peers))
-                    _ (println (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
+                    _ (log! network (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
                 {:ok addresses}))))))))
 
 (defn- try-single-tracker
   "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
-  [tracker-url request]
+  [network tracker-url request]
   (if (str/starts-with? tracker-url "udp")
-    (try-udp-tracker tracker-url request)
-    (try-http-tracker tracker-url request)))
+    (try-udp-tracker network tracker-url request)
+    (try-http-tracker network tracker-url request)))
 
-(defn tracker-announce
-  "Announce to trackers and get a list of peers.
-   Queries ALL tracker URLs and combines peers for maximum coverage.
-   progress is {:downloaded bytes-on-disk :left bytes-remaining}, computed
-   by the caller from the download record -- this port only transmits it.
-   Returns {:ok #{peer-address}} or {:error reason :message msg}."
-  [network torrent-metadata progress]
-  (try
-    (let [tracker-urls (collect-tracker-urls torrent-metadata)]
-      (if (empty? tracker-urls)
-        {:error :no-tracker :message "No tracker URL available"}
-        (let [request {:info-hash (:info-hash torrent-metadata)
-                       :peer-id (generate-peer-id)
-                       :port 6881
-                       :uploaded 0
-                       :downloaded (:downloaded progress)
-                       :left (:left progress)
-                       :event :started
-                       :compact true
-                       :num-want 200}]
-          ;; Query all trackers and combine peers
-          (loop [urls tracker-urls
-                 all-peers #{}
-                 last-error nil]
-            (if (empty? urls)
-              (if (empty? all-peers)
-                (or last-error
-                    {:error :all-trackers-failed
-                     :message "All trackers failed"})
-                (do
-                  (println (str "  Collected " (count all-peers) " unique peers from trackers"))
-                  {:ok all-peers}))
-              (let [url (first urls)
-                    _ (println (str "  Trying tracker: " url))
-                    result (try-single-tracker url request)]
-                (if (:ok result)
-                  (do
-                    (println (str "    Got " (count (:ok result)) " peers"))
-                    (recur (rest urls) (into all-peers (:ok result)) last-error))
-                  (do
-                    (println (str "    Failed: " (:message result)))
-                    (recur (rest urls) all-peers result)))))))))
-    (catch Exception e
-      {:error :tracker-error :message (.getMessage e)})))
+(defrecord NetworkPort
+           [config peer-connections]
 
-(extend-type NetworkPort
   network/INetworkPort
-  (connect-peer [this address]
-    (connect-peer this address))
-  (send-message [this peer message]
-    (send-message this peer message))
-  (receive-message [this peer]
-    (receive-message this peer))
-  (receive-handshake [this peer]
-    (receive-handshake this peer))
-  (close-peer [this peer]
-    (close-peer this peer))
+  (connect-peer [network address]
+    "Open TCP connection to a peer at the given address.
+     Returns {:ok peer-data} or {:error reason :message msg}."
+    (try
+      (log! network (str "[connect] Attempting to connect to: " address))
+      (let [parsed (peer-address/parse address)]
+        (if (:error parsed)
+          {:error :invalid-address :message (:message parsed)}
+          (let [{:keys [host port]} (:ok parsed)
+                _ (log! network (str "[connect-peer] host=" host " port=" port))
+                socket (doto (Socket.)
+                         (.connect (InetSocketAddress. host port)
+                                   (timeout-ms network :connect-timeout-ms))
+                         (.setSoTimeout (timeout-ms network :socket-timeout-ms)))
+                peer-data {:id address
+                           :address address
+                           :socket socket
+                           :in (.getInputStream socket)
+                           :out (.getOutputStream socket)}]
+            (swap! (:peer-connections network) assoc address peer-data)
+            {:ok peer-data})))
+      (catch Exception e
+        {:error :connect-failed :message (.getMessage e)})))
+
+  (send-message [_ peer message]
+    "Send a peer wire message to the connected peer.
+     Returns {:ok :sent} or {:error reason :message msg}."
+    (try
+      (let [out (:out peer)]
+        (.write out message)
+        (.flush out)
+        {:ok :sent})
+      (catch Exception e
+        {:error :send-failed :message (.getMessage e)})))
+
+  (receive-message [_ peer]
+    "Receive the next peer wire protocol message from a peer.
+     Reads 4-byte length prefix, then length bytes of payload.
+     Returns {:ok peer-message} or {:error reason :message msg}."
+    (try
+      (let [in (:in peer)
+            len-bytes (read-fully in 4)
+            msg-len (peer/bytes-to-int32 len-bytes)]
+        (if (zero? msg-len)
+          {:ok (peer/->KeepAlive)}
+          (let [payload (read-fully in msg-len)
+                full-msg (peer/concat-bytes len-bytes payload)]
+            (peer/parse-message full-msg))))
+      (catch java.io.EOFException _
+        {:error :disconnected :message "Peer disconnected"})
+      (catch Exception e
+        {:error :receive-failed :message (.getMessage e)})))
+
+  (receive-handshake [_ peer]
+    "Read a 68-byte peer handshake from the connection.
+     Returns {:ok peer-handshake} or {:error reason :message msg}."
+    (try
+      (let [in (:in peer)
+            handshake-bytes (read-fully in 68)]
+        (peer/parse-handshake handshake-bytes))
+      (catch java.net.SocketTimeoutException _
+        {:error :timeout :message "Handshake read timed out"})
+      (catch java.io.EOFException _
+        {:error :disconnected :message "Peer disconnected during handshake"})
+      (catch Exception e
+        {:error :receive-failed :message (.getMessage e)})))
+
+  (close-peer [network peer]
+    "Close the connection to a peer gracefully."
+    (try
+      (when-let [socket (:socket peer)]
+        (.close socket))
+      (swap! (:peer-connections network) dissoc (:id peer))
+      nil
+      (catch Exception _ nil)))
 
   network/ITrackerPort
-  (announce [this torrent-metadata progress]
-    (tracker-announce this torrent-metadata progress)))
+  (announce [network torrent-metadata progress]
+    "Announce to trackers and get a list of peers.
+     Queries ALL tracker URLs and combines peers for maximum coverage.
+     progress is {:downloaded bytes-on-disk :left bytes-remaining}, computed
+     by the caller from the download record -- this port only transmits it.
+     Returns {:ok #{peer-address}} or {:error reason :message msg}."
+    (try
+      (let [tracker-urls (collect-tracker-urls torrent-metadata)]
+        (if (empty? tracker-urls)
+          {:error :no-tracker :message "No tracker URL available"}
+          (let [request {:info-hash (:info-hash torrent-metadata)
+                         :peer-id (generate-peer-id)
+                         :port 6881
+                         :uploaded 0
+                         :downloaded (:downloaded progress)
+                         :left (:left progress)
+                         :event :started
+                         :compact true
+                         :num-want 200}]
+            ;; Query all trackers and combine peers
+            (loop [urls tracker-urls
+                   all-peers #{}
+                   last-error nil]
+              (if (empty? urls)
+                (if (empty? all-peers)
+                  (or last-error
+                      {:error :all-trackers-failed
+                       :message "All trackers failed"})
+                  (do
+                    (log! network (str "  Collected " (count all-peers) " unique peers from trackers"))
+                    {:ok all-peers}))
+                (let [url (first urls)
+                      _ (log! network (str "  Trying tracker: " url))
+                      result (try-single-tracker network url request)]
+                  (if (:ok result)
+                    (do
+                      (log! network (str "    Got " (count (:ok result)) " peers"))
+                      (recur (rest urls) (into all-peers (:ok result)) last-error))
+                    (do
+                      (log! network (str "    Failed: " (:message result)))
+                      (recur (rest urls) all-peers result)))))))))
+      (catch Exception e
+        {:error :tracker-error :message (.getMessage e)}))))
 
 (defn create
-  "Create a NetworkPort instance."
+  "Create a NetworkPort instance. Timeout opts are validated up front;
+   present-but-invalid values throw instead of reaching the socket APIs."
   ([]
    (create {}))
   ([opts]
-   (->NetworkPort opts (atom {}))))
+   (->NetworkPort (network/check-adapter-config opts) (atom {}))))

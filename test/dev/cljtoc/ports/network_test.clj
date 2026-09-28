@@ -10,8 +10,10 @@
    for a tracker, because collect-tracker-urls appends well-known public
    fallbacks, so there is no offline input that stops it short."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
             [dev.cljtoc.protocol.peer :as peer]
-            [dev.cljtoc.test-utils :refer [an-envelope? channel?]]
+            [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.test-doubles.network :as mock-network])
@@ -136,6 +138,169 @@
                     (network-impl/create)
                     {:id "p" :in (failing-input-stream
                                   (java.net.SocketTimeoutException. "slow"))}))))))
+
+(deftest timeouts-come-from-adapter-config-test
+  (testing "defaults match the historical literals when no config is given"
+    (let [timeout-ms @#'network-impl/timeout-ms
+          net (network-impl/create)]
+      (is (= 5000 (timeout-ms net :connect-timeout-ms)))
+      (is (= 10000 (timeout-ms net :socket-timeout-ms)))
+      (is (= 5000 (timeout-ms net :udp-timeout-ms)))
+      (is (= 10000 (timeout-ms net :http-timeout-ms)))))
+  (testing "explicit config overrides the defaults"
+    (let [timeout-ms @#'network-impl/timeout-ms
+          net (network-impl/create {:connect-timeout-ms 1
+                                    :socket-timeout-ms 2
+                                    :udp-timeout-ms 3
+                                    :http-timeout-ms 4})]
+      (is (= 1 (timeout-ms net :connect-timeout-ms)))
+      (is (= 2 (timeout-ms net :socket-timeout-ms)))
+      (is (= 3 (timeout-ms net :udp-timeout-ms)))
+      (is (= 4 (timeout-ms net :http-timeout-ms)))))
+  (testing "a configured connect timeout reaches the socket connect"
+    ;; 192.0.2.1 is TEST-NET-1 (RFC 5737): unroutable, so the connect can
+    ;; only return via timeout or immediate refusal. With 50ms configured,
+    ;; a run honoring the default 5000ms would take ~5000ms where a route
+    ;; exists; bounding at 4000ms discriminates the two.
+    (let [net (network-impl/create {:connect-timeout-ms 50})
+          start (System/currentTimeMillis)
+          result (network/connect-peer net "192.0.2.1:6881")
+          elapsed (- (System/currentTimeMillis) start)]
+      (is (= :connect-failed (:error result)))
+      (is (< elapsed 4000) (str "took " elapsed "ms; configured timeout was not honored")))))
+
+(deftest logging-goes-through-adapter-config-test
+  (testing "log-fn defaults to println and honors :log-fn on both ports"
+    (is (= println (network/log-fn (network-impl/create))))
+    (is (= println (network/log-fn (mock-network/create))))
+    (let [capture (fn [_] nil)]
+      (is (= capture (network/log-fn (network-impl/create {:log-fn capture}))))
+      (is (= capture (network/log-fn (mock-network/create {:log-fn capture}))))))
+  (testing "the real port logs connects through the configured fn"
+    (let [logged (atom [])
+          net (network-impl/create {:log-fn (fn [msg] (swap! logged conj msg))})
+          result (network/connect-peer net "")]
+      (is (= :invalid-address (:error result)))
+      (is (= 1 (count @logged)))
+      (is (re-find #"Attempting to connect" (first @logged))))))
+
+(deftest configured-timeouts-land-on-the-socket-test
+  (testing "connect-peer applies :socket-timeout-ms to the live socket"
+    ;; 4321 matches no literal in the implementation, so equality proves
+    ;; the configured value (not a default) reached the socket object.
+    (with-open [server (java.net.ServerSocket. 0)]
+      (let [address (str "127.0.0.1:" (.getLocalPort server))
+            net (network-impl/create {:socket-timeout-ms 4321
+                                      :connect-timeout-ms 2000})
+            result (network/connect-peer net address)]
+        (if (:error result)
+          (is (nil? (:error result)) (str "loopback connect failed: " (pr-str result)))
+          (try
+            (is (= 4321 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
+            (finally (network/close-peer net (:ok result))))))))
+  (testing "and the default is the historical 10000ms"
+    (with-open [server (java.net.ServerSocket. 0)]
+      (let [address (str "127.0.0.1:" (.getLocalPort server))
+            result (network/connect-peer (network-impl/create) address)]
+        (if (:error result)
+          (is (nil? (:error result)) (str "loopback connect failed: " (pr-str result)))
+          (try
+            (is (= 10000 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
+            (finally (network/close-peer (network-impl/create) (:ok result)))))))))
+
+;; check-adapter-config throws by design, so it is excluded from stest/check
+;; (generated invalid configs would fail the check by construction); the
+;; mutation tables plus the spec-conformance test below are its coverage.
+(deftest invalid-adapter-opts-are-rejected-at-creation-test
+  (testing "present-but-invalid timeouts throw instead of reaching the socket APIs"
+    ;; Mutation vocabulary is shape-diverse by construction: zero (the
+    ;; infinite-timeout hole), negative, string, double, nil, and
+    ;; beyond-Java-int-range each exercise a different subform of the guard.
+    (doseq [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+            timeout-key [:connect-timeout-ms :socket-timeout-ms
+                         :udp-timeout-ms :http-timeout-ms]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {timeout-key bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted " timeout-key "=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= timeout-key (:key (ex-data err))))
+          (is (= bad (:value (ex-data err))))))))
+  (testing "valid timeouts (including the int boundary) and absent keys pass through"
+    (let [opts {:connect-timeout-ms 1
+                :socket-timeout-ms 2
+                :udp-timeout-ms 3
+                :http-timeout-ms Integer/MAX_VALUE}]
+      (is (= opts (:config (network-impl/create opts))))
+      (is (= opts (:config (mock-network/create opts))))
+      (is (= {} (:config (network-impl/create))))))
+  (testing ":log-fn must be a fn when present"
+    (doseq [bad ["x" 42 nil 0]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {:log-fn bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted :log-fn=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= :log-fn (:key (ex-data err)))))))
+    (let [capture (fn [_] nil)]
+      (is (= {:log-fn capture} (:config (network-impl/create {:log-fn capture}))))
+      (is (= {:log-fn capture} (:config (mock-network/create {:log-fn capture})))))))
+
+(deftest logging-failures-never-break-the-effect-path-test
+  (testing "a throwing :log-fn is swallowed at every log site"
+    (let [throwing (fn [_] (throw (ex-info "boom" {})))]
+      (testing "connect still parses instead of misreporting :connect-failed"
+        (let [result (network/connect-peer
+                      (network-impl/create {:log-fn throwing}) "")]
+          (is (= :invalid-address (:error result))
+              (str "throwing logger escaped connect: " (pr-str result)))))
+      (testing "the shared log! returns nil instead of throwing"
+        (is (nil? (network/log! (network-impl/create {:log-fn throwing}) "msg"))))
+      (testing "the mock honors the same contract"
+        (is (nil? (network/log! (mock-network/create {:log-fn throwing}) "msg")))))))
+
+(deftest adapter-config-spec-matches-the-checker-test
+  (testing "s/def shape and check-adapter-config agree on fixed batteries"
+    (let [accepts? (fn [cfg]
+                     (try (network/check-adapter-config cfg) true
+                          (catch clojure.lang.ExceptionInfo _ false)))
+          valid-cfgs [{} {:connect-timeout-ms 1} {:log-fn println}
+                      {:connect-timeout-ms 1 :socket-timeout-ms 2
+                       :udp-timeout-ms 3 :http-timeout-ms Integer/MAX_VALUE}
+                      {:unrelated-key "ignored"}]
+          invalid-cfgs (concat (for [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+                                     timeout-key [:connect-timeout-ms :socket-timeout-ms
+                                                  :udp-timeout-ms :http-timeout-ms]]
+                                 {timeout-key bad})
+                               (for [bad ["x" 42 nil 0]] {:log-fn bad}))]
+      (doseq [cfg valid-cfgs]
+        (is (s/valid? ::network/adapter-config cfg)
+            (str "spec rejected " (pr-str cfg)))
+        (is (accepts? cfg)
+            (str "checker rejected " (pr-str cfg))))
+      (doseq [cfg invalid-cfgs]
+        (is (not (s/valid? ::network/adapter-config cfg))
+            (str "spec accepted " (pr-str cfg)))
+        (is (not (accepts? cfg))
+            (str "checker accepted " (pr-str cfg))))))
+  (testing "every generated valid config passes the checker"
+    (doseq [cfg (gen/sample (s/gen ::network/adapter-config) 50)]
+      (is (= cfg (network/check-adapter-config cfg))
+          (str "checker rejected generated " (pr-str cfg))))))
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "log-fn fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.ports.network/log-fn]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
 
 (deftest a-full-length-message-is-parsed-test
   (testing "a non-zero length prefix reads exactly its declared payload and parses it.

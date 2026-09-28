@@ -7,9 +7,27 @@
 
    Uses async/thread for blocking socket reads."
   (:require [clojure.core.async :as async]
+            [clojure.spec.alpha :as s]
             [dev.cljtoc.ports.network :as net]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
+
+(s/def ::info-hash bytes?)
+(s/def ::peer-handshake (s/keys :req-un [::info-hash]))
+
+(defn verify-handshake
+  "Pure handshake verification: check the peer's handshake info-hash
+   matches ours.
+   Returns {:ok peer-handshake} or {:error :info-hash-mismatch}."
+  [info-hash peer-handshake]
+  (if (java.util.Arrays/equals ^bytes info-hash
+                               ^bytes (:info-hash peer-handshake))
+    {:ok peer-handshake}
+    {:error :info-hash-mismatch}))
+
+(s/fdef verify-handshake
+  :args (s/cat :info-hash ::info-hash :peer-handshake ::peer-handshake)
+  :ret map?)
 
 (defn run-peer
   "Connect to peer, perform handshake, then enter read loop.
@@ -25,7 +43,7 @@
 
    Returns a channel that closes when the peer worker exits."
   [network-port info-hash our-peer-id address total-pieces events-ch]
-  (println (str "[run-peer] Starting peer worker for address: " address))
+  (net/log! network-port (str "[run-peer] Starting peer worker for address: " address))
   (async/thread
     (try
       ;; 1. Connect
@@ -52,8 +70,7 @@
 
                     (let [peer-hs (:ok hs-result)]
                       ;; 4. Verify info-hash matches
-                      (if (not (java.util.Arrays/equals ^bytes info-hash
-                                                        ^bytes (:info-hash peer-hs)))
+                      (if (:error (verify-handshake info-hash peer-hs))
                         (do
                           (net/close-peer network-port peer-data)
                           (async/>!! events-ch {:type :peer-disconnected
