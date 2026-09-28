@@ -252,6 +252,19 @@
       (is (= {:log-fn capture} (:config (network-impl/create {:log-fn capture}))))
       (is (= {:log-fn capture} (:config (mock-network/create {:log-fn capture})))))))
 
+(deftest logging-failures-never-break-the-effect-path-test
+  (testing "a throwing :log-fn is swallowed at every log site"
+    (let [throwing (fn [_] (throw (ex-info "boom" {})))]
+      (testing "connect still parses instead of misreporting :connect-failed"
+        (let [result (network/connect-peer
+                      (network-impl/create {:log-fn throwing}) "")]
+          (is (= :invalid-address (:error result))
+              (str "throwing logger escaped connect: " (pr-str result)))))
+      (testing "the shared log! returns nil instead of throwing"
+        (is (nil? (network/log! (network-impl/create {:log-fn throwing}) "msg"))))
+      (testing "the mock honors the same contract"
+        (is (nil? (network/log! (mock-network/create {:log-fn throwing}) "msg")))))))
+
 (deftest adapter-config-spec-matches-the-checker-test
   (testing "s/def shape and check-adapter-config agree on fixed batteries"
     (let [accepts? (fn [cfg]

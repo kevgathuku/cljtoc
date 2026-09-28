@@ -29,9 +29,10 @@
   (get (:config network) timeout-key (get default-timeouts timeout-key)))
 
 (defn- log!
-  "Log a message through the adapter config (see network/log-fn)."
+  "Private delegate for network/log!: the network alias is shadowed by
+   the port arg inside every method body, so call sites use this."
   [port message]
-  ((network/log-fn port) message))
+  (network/log! port message))
 
 (defn- generate-peer-id
   "Generate a random 20-byte peer ID for tracker announcements."

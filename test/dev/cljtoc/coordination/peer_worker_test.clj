@@ -56,6 +56,18 @@
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))
 
+(deftest worker-survives-throwing-logger-test
+  (testing "run-peer still emits :peer-disconnected when :log-fn throws"
+    (let [net (mock-net/create {:log-fn (fn [_] (throw (ex-info "boom" {})))
+                                :handshake-response {:error :timeout
+                                                     :message "boom"}})
+          events-ch (async/chan 10)]
+      (peer-worker/run-peer net (test-info-hash) (test-peer-id)
+                            "127.0.0.1:6881" 4 events-ch)
+      (let [event (take-timeout events-ch 2000)]
+        (is (not= :timeout event) "worker produced no event")
+        (is (= :peer-disconnected (:type event)))))))
+
 (deftest handshake-error-emits-peer-disconnected-test
   (testing "handshake failure surfaces as :peer-disconnected via the port"
     (let [net (mock-net/create {:handshake-response {:error :timeout

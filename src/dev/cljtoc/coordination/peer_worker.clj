@@ -43,7 +43,7 @@
 
    Returns a channel that closes when the peer worker exits."
   [network-port info-hash our-peer-id address total-pieces events-ch]
-  ((net/log-fn network-port) (str "[run-peer] Starting peer worker for address: " address))
+  (net/log! network-port (str "[run-peer] Starting peer worker for address: " address))
   (async/thread
     (try
       ;; 1. Connect

@@ -26,6 +26,23 @@
   :args (s/cat :port any?)
   :ret fn?)
 
+(defn log!
+  "Log a message through the adapter config. Best-effort by design: a
+   throwing logger is swallowed (nil) so observability can never break
+   the effect path -- e.g. aborting tracker fallback or crashing a peer
+   worker. Mirrors close-peer's swallow precedent."
+  [port message]
+  (try
+    ((log-fn port) message)
+    nil
+    (catch Exception _ nil)))
+
+;; Excluded from stest/check: side-effecting by design (println default)
+;; and dispatches to an injected fn, so generated cases would print noise.
+(s/fdef log!
+  :args (s/cat :port any? :message string?)
+  :ret nil?)
+
 (s/def ::timeout-ms (s/and pos-int? #(<= % Integer/MAX_VALUE)))
 (s/def ::connect-timeout-ms ::timeout-ms)
 (s/def ::socket-timeout-ms ::timeout-ms)
