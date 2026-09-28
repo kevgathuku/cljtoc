@@ -93,7 +93,7 @@
   [disk-port state-dir args]
   (if (seq args)
     (:ok (disk/load-state disk-port (first args)))
-    (cli-state/load-most-recent state-dir)))
+    (cli-state/load-most-recent disk-port state-dir)))
 
 (defn- cmd-torrent-download
   [args]

@@ -5,6 +5,7 @@
    Uses human-readable filenames as download IDs."
   (:require [clojure.java.io :as io]
             [clojure.edn :as edn]
+            [clojure.string :as str]
             [dev.cljtoc.ports.disk :as disk]))
 
 (def default-state-dir "./torrent-state")
@@ -31,18 +32,22 @@
            nil))
        nil))))
 
+(defn- state-id
+  "The download id for a state file: the filename without the .edn suffix."
+  [file]
+  (str/replace (.getName ^java.io.File file) #"\.edn$" ""))
+
 (defn load-most-recent
-  "Load the most recently started download."
-  ([]
-   (load-most-recent default-state-dir))
-  ([state-dir]
+  "Load the most recently started download. Dir-scanning by recency lives
+   here (the port has no equivalent); the bytes move through the port."
+  ([disk-port]
+   (load-most-recent disk-port default-state-dir))
+  ([disk-port state-dir]
    (let [dir (io/file state-dir)]
      (when (.exists dir)
        (let [files (sort-by #(.lastModified %) > (.listFiles dir))]
          (when (seq files)
-           (try
-             (disk/decode-state (edn/read-string (slurp (first files))))
-             (catch Exception _ nil))))))))
+           (:ok (disk/load-state disk-port (state-id (first files))))))))))
 
 (defn save-state
   "Save download state to disk."
