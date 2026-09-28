@@ -153,11 +153,17 @@
           (let [parse-result (tracker/parse-http-tracker-response (:ok http-result))]
             (if (:error parse-result)
               {:error :parse-failed :message (:message parse-result)}
-              (let [peers (:peers (:ok parse-result))
-                    _ (log! network (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
-                    addresses (set (map tracker-peer->address peers))
-                    _ (log! network (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
-                {:ok addresses}))))))))
+              ;; A tracker rejection ({:ok {:success false}}) is an error
+              ;; carrying the failure reason -- never a successful empty
+              ;; set, which incremental callers would read as "no peers yet".
+              (if (false? (:success (:ok parse-result)))
+                {:error :tracker-rejected
+                 :message (str tracker-url ": " (:failure-reason (:ok parse-result)))}
+                (let [peers (:peers (:ok parse-result))
+                      _ (log! network (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
+                      addresses (set (map tracker-peer->address peers))
+                      _ (log! network (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
+                  {:ok addresses})))))))))
 
 (defn- try-single-tracker
   "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."

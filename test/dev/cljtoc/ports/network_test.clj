@@ -14,6 +14,7 @@
   (:require [clojure.test :refer [deftest is testing]]
             [clojure.spec.alpha :as s]
             [clojure.spec.gen.alpha :as gen]
+            [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
@@ -394,3 +395,39 @@
                   (network-impl/create) "not-a-url" (valid-announce-request))]
       (is (an-envelope? result))
       (is (some? (:error result)) (pr-str result)))))
+
+(defn- with-loopback-tracker
+  "Run f against a loopback HTTP tracker serving one fixed body."
+  [body f]
+  (let [server (com.sun.net.httpserver.HttpServer/create
+                (java.net.InetSocketAddress. "127.0.0.1" 0) 0)]
+    (.createContext server "/announce"
+                    (reify com.sun.net.httpserver.HttpHandler
+                      (handle [_ exchange]
+                        (let [bytes body]
+                          (.sendResponseHeaders exchange 200 (alength bytes))
+                          (with-open [out (.getResponseBody exchange)]
+                            (.write out bytes))))))
+    (.start server)
+    (try
+      (f (str "http://127.0.0.1:" (.. server getAddress getPort) "/announce"))
+      (finally (.stop server 0)))))
+
+(deftest http-tracker-rejection-is-an-error-test
+  (testing "a tracker failure reason is :tracker-rejected, not a successful empty set"
+    (with-loopback-tracker
+      (bencode/encode-bencode {"failure reason" "unregistered torrent"
+                               "interval" 1800})
+      (fn [url]
+        (let [result (network/announce-to-url
+                      (network-impl/create) url (valid-announce-request))]
+          (is (= :tracker-rejected (:error result)) (pr-str result))
+          (is (re-find #"unregistered torrent" (:message result)) (pr-str result))))))
+  (testing "a successful announce still resolves peers (the server works)"
+    (with-loopback-tracker
+      (bencode/encode-bencode {"interval" 1800
+                               "peers" (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)])})
+      (fn [url]
+        (is (= {:ok #{"127.0.0.1:6881"}}
+               (network/announce-to-url
+                (network-impl/create) url (valid-announce-request))))))))
