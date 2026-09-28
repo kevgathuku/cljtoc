@@ -1100,7 +1100,10 @@
    hole in it.
 
    Returns {:ok download} with the piece state updated, or the refusing
-   port envelope {:error reason :message msg} unchanged."
+   port envelope {:error reason :message msg} unchanged. The envelope
+   carries the in-progress :download, so a write that fails after earlier
+   pieces were requeued does not discard that progress: the failed record
+   keeps it instead of re-claiming the holey pieces as verified."
   [download disk-port output-layout]
   (loop [download download
          remaining (sort (:verified (:piece-state download)))]
@@ -1111,17 +1114,17 @@
             cached (disk/read-piece disk-port piece-index)]
         (cond
           (:error cached)
-          cached
+          (assoc cached :download download)
 
           (nil? (:ok cached))
           (let [requeued (pieces/requeue-verified (:piece-state download)
-                                                  piece-index)]
+                                                   piece-index)]
             (if (:ok requeued)
               (recur (assoc download :piece-state (:ok requeued)) rest-pieces)
               ;; The index came out of the verified set this loop is walking,
               ;; so the transition cannot legitimately fail. Surface it
               ;; anyway: assoc'ing a nil piece state would strand the record.
-              requeued))
+              (assoc requeued :download download)))
 
           :else
           (let [written (disk/write-output-piece disk-port
@@ -1130,7 +1133,7 @@
                                                  piece-index
                                                  (:ok cached))]
             (if (:error written)
-              written
+              (assoc written :download download)
               (recur download rest-pieces))))))))
 
 (defn run-download
@@ -1167,7 +1170,11 @@
             revived (:ok materialized)
             ;; Dial candidates capped exactly as the spawn below reads them,
             ;; so the empty guard and the worker spawn cannot drift apart.
-            peer-addresses (capped-peer-addresses (map :address (:peers revived))
+            ;; From the original record: materialization only edits
+            ;; :piece-state, never :peers, so this is identical on the
+            ;; success path and well-defined on the failure paths, where
+            ;; revived is nil and the cond returns before using it.
+            peer-addresses (capped-peer-addresses (map :address (:peers download))
                                                   config)]
         (cond
           (:error init-result)
@@ -1176,7 +1183,7 @@
                      (:message init-result))
 
           (:error materialized)
-          (fail-disk download
+          (fail-disk (:download materialized)
                      "Failed to materialize verified pieces"
                      (:message materialized))
 

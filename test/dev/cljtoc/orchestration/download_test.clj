@@ -1425,12 +1425,6 @@
       (is (= :read-error (:error result)))
       (is (= "permission denied" (:message result))))))
 
-(defn- temp-dir [prefix]
-  (let [dir (io/file (System/getProperty "java.io.tmpdir")
-                     (str prefix (System/nanoTime)))]
-    (.mkdirs dir)
-    (.getAbsolutePath dir)))
-
 (deftest resume-of-a-fully-verified-download-writes-the-real-content-test
   (testing "a record whose pieces are all verified materializes them from the
             cache into the output file. initialize-output-layout only creates
@@ -1446,9 +1440,9 @@
                 :length 8}
           torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
                    :info info}
-          output-dir (temp-dir "resume-out-")
-          port (disk-impl/create {:state-dir (temp-dir "resume-state-")
-                                  :piece-cache-dir (temp-dir "resume-cache-")})
+          output-dir (test-utils/temp-dir "resume-out-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "resume-state-")
+                                  :piece-cache-dir (test-utils/temp-dir "resume-cache-")})
           _ (System/arraycopy piece-0 0 content 0 4)
           _ (System/arraycopy piece-1 0 content 4 4)
           piece-state (-> (pieces/initial-piece-state 2)
@@ -1581,9 +1575,9 @@
                         {:path ["b.bin"] :length 6}]}
           info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
           torrent {:info-hash info-hash :info info}
-          output-dir (temp-dir "cycle-out-")
-          disk-port (disk-impl/create {:state-dir (temp-dir "cycle-state-")
-                                       :piece-cache-dir (temp-dir "cycle-cache-")})
+          output-dir (test-utils/temp-dir "cycle-out-")
+          disk-port (disk-impl/create {:state-dir (test-utils/temp-dir "cycle-state-")
+                                       :piece-cache-dir (test-utils/temp-dir "cycle-cache-")})
           piece-state (-> (pieces/initial-piece-state 3)
                           (#(:ok (pieces/mark-in-flight % 0)))
                           (#(:ok (pieces/mark-verified % 0))))
@@ -1653,3 +1647,71 @@
       (is (= :disk-error (get-in result [:error :reason])))
       (is (re-find #"^Failed to materialize verified pieces"
                    (get-in result [:error :message]))))))
+
+(deftest materialize-keeps-requeue-progress-when-a-later-write-fails-test
+  (testing "a write that fails after an earlier piece was requeued carries
+            the in-progress record. Failing with the original would re-claim
+            the holey piece as verified, and the next resume would repeat
+            the same dance instead of fetching it"
+    (let [{:keys [download layout]} (materialize-fixture)
+          both-verified (assoc download :piece-state
+                               (-> (:piece-state download)
+                                   (#(:ok (pieces/mark-in-flight % 1)))
+                                   (#(:ok (pieces/mark-verified % 1)))))
+          disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "disk full"}})
+          _ (disk/write-piece disk 1 (test-utils/to-bytes "efgh"))
+          result (#'download/materialize-verified-pieces both-verified disk layout)
+          failed-record (:download result)]
+      (is (= :write-error (:error result)))
+      (is (= #{0} (:needed (:piece-state failed-record))))
+      (is (= #{1} (:verified (:piece-state failed-record)))))))
+
+(deftest paused-download-resumes-through-the-swarm-with-real-files-test
+  (testing "the same cycle from a :paused record: one piece verified, the
+            other arrives over the wire, both files byte-identical. Pause
+            and failure share the resume path past the entry guard, so this
+            pins the spec's paused/failed wording rather than assuming it"
+    (let [piece-bytes [(test-utils/to-bytes "abcd")
+                       (test-utils/to-bytes "efgh")]
+          info {:pieces (mapv bencode/sha1-hash piece-bytes)
+                :piece-length 4
+                :name "resumed"
+                :length 8}
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+          torrent {:info-hash info-hash :info info}
+          output-dir (test-utils/temp-dir "paused-out-")
+          disk-port (disk-impl/create {:state-dir (test-utils/temp-dir "paused-state-")
+                                       :piece-cache-dir (test-utils/temp-dir "paused-cache-")})
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          paused (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   output-dir
+                                                   "paused")
+                        :state :paused
+                        :piece-state piece-state
+                        :peers #{})
+          _ (disk/write-piece disk-port 0 (nth piece-bytes 0))
+          net (mock-net/create
+               {:mock-peers ["10.0.0.9:6881"]
+                :handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x40)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 1 0 (nth piece-bytes 1))}])})
+          resumed (:ok (download/resume-download nil net paused))
+          result (deref (future (download/run-download {:network-port net
+                                                        :disk-port disk-port
+                                                        :time-port (mock-time/create)
+                                                        :config {}}
+                                                       resumed))
+                        15000 :timed-out)
+          on-disk (seq (java.nio.file.Files/readAllBytes
+                        (.toPath (io/file output-dir "resumed"))))]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= 2 (pieces/verified-count (:piece-state result))))
+      (is (= (seq (test-utils/to-bytes "abcdefgh")) on-disk)))))

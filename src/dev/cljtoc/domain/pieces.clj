@@ -94,6 +94,24 @@
   [error-kw message]
   {:error error-kw :message message})
 
+(defn- partition-sum-valid?
+  "Returns true if the partition invariant holds: needed + in-flight + verified = total-pieces."
+  [state]
+  (= (:total-pieces state)
+     (+ (count (:needed state))
+        (count (:in-flight state))
+        (count (:verified state)))))
+
+(defn- transition-fn-valid?
+  "Validates the :fn contract for the piece-state transitions:
+  on success, total-pieces is unchanged and partition invariant holds."
+  [%]
+  (let [result (:ret %)
+        original-total (-> % :args :piece-state :total-pieces)]
+    (or (keyword? (:error result))
+        (and (= (:total-pieces (:ok result)) original-total)
+             (partition-sum-valid? (:ok result))))))
+
 ;; ============================================================================
 ;; State Initialization (US1)
 ;; ============================================================================
@@ -188,6 +206,11 @@
     (piece-error :invalid-transition
                  (str "Piece " piece-index " is not verified; cannot requeue"))))
 
+(s/fdef requeue-verified
+  :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)
+  :ret  map?
+  :fn   transition-fn-valid?)
+
 ;; ============================================================================
 ;; Function Specs (US1)
 ;; ============================================================================
@@ -221,24 +244,6 @@
   :fn   #(= (:ret %) (= (-> % :args :piece-state :total-pieces)
                         (count (-> % :args :piece-state :verified)))))
 
-(defn- partition-sum-valid?
-  "Returns true if the partition invariant holds: needed + in-flight + verified = total-pieces."
-  [state]
-  (= (:total-pieces state)
-     (+ (count (:needed state))
-        (count (:in-flight state))
-        (count (:verified state)))))
-
-(defn- transition-fn-valid?
-  "Validates the :fn contract for mark-* and requeue-piece:
-  on success, total-pieces is unchanged and partition invariant holds."
-  [%]
-  (let [result (:ret %)
-        original-total (-> % :args :piece-state :total-pieces)]
-    (or (keyword? (:error result))
-        (and (= (:total-pieces (:ok result)) original-total)
-             (partition-sum-valid? (:ok result))))))
-
 (s/fdef mark-in-flight
   :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)
   :ret  map?
@@ -250,11 +255,6 @@
   :fn   transition-fn-valid?)
 
 (s/fdef requeue-piece
-  :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)
-  :ret  map?
-  :fn   transition-fn-valid?)
-
-(s/fdef requeue-verified
   :args (s/cat :piece-state ::piece-state :piece-index ::piece-index)
   :ret  map?
   :fn   transition-fn-valid?)
