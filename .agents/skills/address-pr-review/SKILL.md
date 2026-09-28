@@ -30,9 +30,9 @@ One finding, one vertical slice: red test first, minimal green, then the next fi
 
 POST one reply per thread (`in_reply_to` comment id): confirmed → what changed, the covering test, the commit SHA; false positive → the proof, evidence only; partial → what was accepted and what was declined, with why.
 
-## 5. Push and request re-review
+## 5. Push
 
-Push the branch (the PR updates itself), then request re-review from the original reviewer. If the reviewer identity doesn't resolve, report that instead of stalling — the push itself usually triggers a fresh review. Never poll waiting for the review to land; it arrives asynchronously, minutes later.
+Push the branch (the PR updates itself), the push itself usually triggers a fresh review.
 
 ## 6. File the findings
 
