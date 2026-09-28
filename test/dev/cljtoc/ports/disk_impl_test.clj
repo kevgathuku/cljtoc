@@ -1,7 +1,7 @@
 (ns dev.cljtoc.ports.disk-impl-test
   "Tests for DiskPortImpl state persistence.
    Seam: IDiskPort save-state / load-state through real temp dirs.
-   Byte arrays must round-trip EDN-safe (hex), loadable by either seam.
+   Byte arrays must round-trip EDN-safe (hex) through the single port seam.
    Also pins the port contract itself: every method returns its envelope
    directly, so no caller needs to know about core.async."
   (:require [clojure.test :refer [deftest is testing]]
@@ -112,16 +112,15 @@
         (is (= "edn-safe" (:id parsed)))
         (is (= {:cljtoc/bytes "010203"} (get-in parsed [:torrent :info-hash])))))))
 
-(deftest seams-interoperate-test
-  (testing "state saved via the disk port loads via cli-state and vice versa"
+(deftest port-and-keeper-share-one-filename-scheme-test
+  (testing "the port writes where state-file-path points and reads what lands there"
     (let [state-dir (test-utils/temp-dir "disk-state-")
-          port (make-port state-dir)
-          via-disk {:id "interop" :state :paused :note "from-disk"}]
-      (disk/save-state port via-disk)
-      (is (= :paused (:state (cli-state/load-state "interop" state-dir))))
-      (cli-state/save-state {:id "interop2" :state :downloading} state-dir)
-      (let [result (disk/load-state port "interop2")]
-        (is (= :downloading (get-in result [:ok :state])))))))
+          port (make-port state-dir)]
+      (disk/save-state port {:id "scheme" :state :paused})
+      (is (.exists (io/file (cli-state/state-file-path "scheme" state-dir))))
+      (spit (io/file (cli-state/state-file-path "scheme2" state-dir))
+            (pr-str (disk/encode-state {:id "scheme2" :state :downloading})))
+      (is (= :downloading (get-in (disk/load-state port "scheme2") [:ok :state]))))))
 
 (deftest load-missing-returns-nil-ok-test
   (testing "loading an unknown id returns {:ok nil}"
