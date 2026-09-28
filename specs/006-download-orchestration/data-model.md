@@ -233,6 +233,10 @@ Time effect abstraction.
   +------------+                 +----------+
   | :completed |                 | :failed  |
   +------------+                 +----------+
+
+  :failed --resume--> :downloading: the saved peer set is dropped, the
+  tracker is re-announced for fresh peers, pieces the dead run left in
+  flight return to :needed, and the stale :error is cleared.
 ```
 
 ## Validation Rules

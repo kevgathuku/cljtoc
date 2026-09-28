@@ -39,7 +39,10 @@ Pauses an active download, closing peer connections and persisting state.
 
 ### resume-download
 
-Resumes a paused download from persisted state.
+Resumes a paused or failed download from persisted state. The saved peer
+set is dropped and the tracker is re-announced when a network port is
+given; pieces the dead run left in flight return to :needed; the stale
+:error is cleared.
 
 ```clojure
 (resume-download download)
@@ -165,7 +168,7 @@ Common errors:
 | `:invalid-torrent` | .torrent file cannot be parsed |
 | `:file-not-found` | Path does not exist |
 | `:not-running` | Download is not active |
-| `:not-paused` | Cannot resume (not paused) |
+| `:not-paused` | Cannot resume (neither paused nor failed) |
 | `:already-paused` | Download already paused |
 | `:not-found` | Download ID not found |
 | `:no-peers` | Cannot connect to any peers |
