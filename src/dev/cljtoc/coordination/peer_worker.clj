@@ -12,6 +12,9 @@
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
 
+(s/def ::info-hash bytes?)
+(s/def ::peer-handshake (s/keys :req-un [::info-hash]))
+
 (defn verify-handshake
   "Pure handshake verification: check the peer's handshake info-hash
    matches ours.
@@ -23,7 +26,7 @@
     {:error :info-hash-mismatch}))
 
 (s/fdef verify-handshake
-  :args (s/cat :info-hash bytes? :peer-handshake map?)
+  :args (s/cat :info-hash ::info-hash :peer-handshake ::peer-handshake)
   :ret map?)
 
 (defn run-peer

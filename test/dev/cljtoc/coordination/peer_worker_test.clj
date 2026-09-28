@@ -3,7 +3,8 @@
   (:require [clojure.test :refer :all]
             [clojure.core.async :as async]
             [dev.cljtoc.coordination.peer-worker :as peer-worker]
-            [dev.cljtoc.test-doubles.network :as mock-net]))
+            [dev.cljtoc.test-doubles.network :as mock-net]
+            [dev.cljtoc.test-utils :as test-utils]))
 
 (defn- take-timeout
   [ch timeout-ms]
@@ -46,6 +47,14 @@
         (is (= :peer-disconnected (:type event)))
         (is (= 1 (count @logged)))
         (is (re-find #"127.0.0.1:6881" (first @logged)))))))
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "verify-handshake fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.coordination.peer-worker/verify-handshake]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
 
 (deftest handshake-error-emits-peer-disconnected-test
   (testing "handshake failure surfaces as :peer-disconnected via the port"

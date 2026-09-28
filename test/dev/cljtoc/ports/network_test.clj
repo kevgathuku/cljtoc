@@ -11,7 +11,7 @@
    fallbacks, so there is no offline input that stops it short."
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.protocol.peer :as peer]
-            [dev.cljtoc.test-utils :refer [an-envelope? channel?]]
+            [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.test-doubles.network :as mock-network])
@@ -205,6 +205,14 @@
           (try
             (is (= 10000 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
             (finally (network/close-peer (network-impl/create) (:ok result)))))))))
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "log-fn fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.ports.network/log-fn]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
 
 (deftest a-full-length-message-is-parsed-test
   (testing "a non-zero length prefix reads exactly its declared payload and parses it.
