@@ -4,6 +4,7 @@
             [clojure.java.io :as io]
             [clojure.core.async :as async]
             [dev.cljtoc.orchestration.download :as download]
+            [dev.cljtoc.orchestration.coordinator :as coordinator]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.domain.torrent :as torrent]
@@ -710,13 +711,13 @@
 
 (deftest requeue-assignment-test
   (testing "requeues the piece, clears the assignment and drops buffered blocks"
-    (let [updated (download/requeue-assignment (coordinator-state 1) "peer-a" 1)]
+    (let [updated (coordinator/requeue-assignment (coordinator-state 1) "peer-a" 1)]
       (is (contains? (get-in updated [:download :piece-state :needed]) 1))
       (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece])))
       (is (not (contains? (:blocks-received updated) "peer-a")))))
   (testing "still clears bookkeeping when the piece is no longer in-flight"
     (let [state (assoc-in (coordinator-state 1) [:download :piece-state :in-flight] #{})
-          updated (download/requeue-assignment state "peer-a" 1)]
+          updated (coordinator/requeue-assignment state "peer-a" 1)]
       (is (nil? (get-in updated [:active-peers "peer-a" :assigned-piece])))
       (is (not (contains? (:blocks-received updated) "peer-a"))))))
 
@@ -724,9 +725,9 @@
   (testing "records the peer with no assignment and no effects"
     (let [peer-state-value (peer-state/initial-peer-state 2)
           state {:download {} :active-peers {} :blocks-received {} :expected-blocks {}}
-          [updated effects] (download/on-connected state {:address "peer-a"
-                                                          :peer-data {:id "data-a"}
-                                                          :peer-state peer-state-value})]
+          [updated effects] (coordinator/on-connected state {:address "peer-a"
+                                                             :peer-data {:id "data-a"}
+                                                             :peer-state peer-state-value})]
       (is (= [] effects))
       (is (= {:peer-data {:id "data-a"}
               :peer-state peer-state-value
@@ -734,10 +735,10 @@
              (get-in updated [:active-peers "peer-a"])))))
   (testing "a resolving dial leaves the pending set"
     (let [peer-state-value (peer-state/initial-peer-state 2)
-          state (download/initial-coordinator-state {} ["peer-a" "peer-b"])
-          [updated effects] (download/on-connected state {:address "peer-a"
-                                                          :peer-data {:id "data-a"}
-                                                          :peer-state peer-state-value})]
+          state (coordinator/initial-coordinator-state {} ["peer-a" "peer-b"])
+          [updated effects] (coordinator/on-connected state {:address "peer-a"
+                                                             :peer-data {:id "data-a"}
+                                                             :peer-state peer-state-value})]
       (is (= [] effects))
       (is (= #{"peer-b"} (:pending-dials updated))))))
 
@@ -746,20 +747,20 @@
     (let [state (assoc (coordinator-state 1)
                        :active-peers {"peer-a" {:assigned-piece 1}
                                       "peer-b" {:assigned-piece nil}})
-          [updated effects] (download/on-disconnected state {:address "peer-a"
-                                                             :reason "boom"})]
+          [updated effects] (coordinator/on-disconnected state {:address "peer-a"
+                                                                :reason "boom"})]
       (is (= [] effects))
       (is (contains? (get-in updated [:download :piece-state :needed]) 1))
       (is (not (contains? (:active-peers updated) "peer-a")))
       (is (not (contains? (:blocks-received updated) "peer-a")))
       (is (not (contains? (:expected-blocks updated) "peer-a")))))
   (testing "dropping the last peer leaves an exhausted swarm"
-    (let [[updated effects] (download/on-disconnected (coordinator-state 1)
-                                                      {:address "peer-a"
-                                                       :reason "boom"})]
+    (let [[updated effects] (coordinator/on-disconnected (coordinator-state 1)
+                                                         {:address "peer-a"
+                                                          :reason "boom"})]
       (is (= [] effects))
       (is (empty? (:active-peers updated)))
-      (is (true? (download/swarm-exhausted? updated)))))
+      (is (true? (coordinator/swarm-exhausted? updated)))))
   (testing "a complete download is never exhausted"
     (let [complete-state (pieces/initial-piece-state 2)
           complete-state (:ok (pieces/mark-in-flight complete-state 0))
@@ -770,47 +771,47 @@
                  :active-peers {"peer-a" {:assigned-piece nil}}
                  :blocks-received {}
                  :expected-blocks {}}
-          [updated effects] (download/on-disconnected state {:address "peer-a"
-                                                             :reason "bye"})]
+          [updated effects] (coordinator/on-disconnected state {:address "peer-a"
+                                                                :reason "bye"})]
       (is (= [] effects))
       (is (empty? (:active-peers updated)))
-      (is (false? (download/swarm-exhausted? updated)))))
+      (is (false? (coordinator/swarm-exhausted? updated)))))
   (testing "unknown address drops nothing and the swarm lives on"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {"peer-a" {:assigned-piece 1}})
-          [updated effects] (download/on-disconnected state {:address "ghost"
-                                                             :reason "boom"})]
+          [updated effects] (coordinator/on-disconnected state {:address "ghost"
+                                                                :reason "boom"})]
       (is (= [] effects))
-      (is (false? (download/swarm-exhausted? updated)))
+      (is (false? (coordinator/swarm-exhausted? updated)))
       (is (contains? (:active-peers updated) "peer-a"))
       (is (contains? (get-in updated [:download :piece-state :in-flight]) 1))))
   (testing "a refused dial leaves the pending set without touching peers"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {}
                        :pending-dials #{"peer-a" "peer-b"})
-          [updated effects] (download/on-disconnected state {:address "peer-a"
-                                                             :reason "refused"})]
+          [updated effects] (coordinator/on-disconnected state {:address "peer-a"
+                                                                :reason "refused"})]
       (is (= [] effects))
       (is (= #{"peer-b"} (:pending-dials updated)))
-      (is (false? (download/swarm-exhausted? updated)))))
+      (is (false? (coordinator/swarm-exhausted? updated)))))
   (testing "dropping a connected peer leaves pending dials alone"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {"peer-a" {:assigned-piece nil}}
                        :pending-dials #{"peer-b"})
-          [updated effects] (download/on-disconnected state {:address "peer-a"
-                                                             :reason "boom"})]
+          [updated effects] (coordinator/on-disconnected state {:address "peer-a"
+                                                                :reason "boom"})]
       (is (= [] effects))
       (is (= #{"peer-b"} (:pending-dials updated)))
-      (is (false? (download/swarm-exhausted? updated)))))
+      (is (false? (coordinator/swarm-exhausted? updated)))))
   (testing "a duplicate disconnect for a resolved dial is a no-op on pending"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {}
                        :pending-dials #{})
-          [updated effects] (download/on-disconnected state {:address "peer-a"
-                                                             :reason "late duplicate"})]
+          [updated effects] (coordinator/on-disconnected state {:address "peer-a"
+                                                                :reason "late duplicate"})]
       (is (= [] effects))
       (is (= #{} (:pending-dials updated)))
-      (is (true? (download/swarm-exhausted? updated))))))
+      (is (true? (coordinator/swarm-exhausted? updated))))))
 
 ;; swarm-exhausted? (issue #11): pending dials count as a live swarm —
 ;; failure only when nothing is active, nothing is dialing, and pieces
@@ -821,16 +822,16 @@
     (let [state (assoc (coordinator-state 1)
                        :active-peers {}
                        :pending-dials #{"peer-b"})]
-      (is (false? (download/swarm-exhausted? state)))))
+      (is (false? (coordinator/swarm-exhausted? state)))))
   (testing "no active peers and no pending dials is exhausted"
     (let [state (assoc (coordinator-state 1)
                        :active-peers {}
                        :pending-dials #{})]
-      (is (true? (download/swarm-exhausted? state)))))
+      (is (true? (coordinator/swarm-exhausted? state)))))
   (testing "active peers still count, pending or not"
     (let [state (assoc (coordinator-state 1)
                        :pending-dials #{"peer-b"})]
-      (is (false? (download/swarm-exhausted? state)))))
+      (is (false? (coordinator/swarm-exhausted? state)))))
   (testing "a complete download is never exhausted"
     (let [complete-state (pieces/initial-piece-state 2)
           complete-state (:ok (pieces/mark-in-flight complete-state 0))
@@ -842,7 +843,7 @@
                  :pending-dials #{}
                  :blocks-received {}
                  :expected-blocks {}}]
-      (is (false? (download/swarm-exhausted? state))))))
+      (is (false? (coordinator/swarm-exhausted? state))))))
 
 ;; on-message takes [state event ctx] and returns [new-state effects].
 ;; Effects are data: {:send {:peer-data ... :bytes ...}} for block requests,
@@ -873,7 +874,7 @@
 
 (deftest on-message-unchoke-plans-request-test
   (testing "unchoke assigns the rarest-needed piece and plans its block sends"
-    (let [[updated effects] (download/on-message
+    (let [[updated effects] (coordinator/on-message
                              (message-state)
                              {:address "peer-a" :message (peer/->Unchoke)}
                              (message-ctx (two-piece-hashes)))]
@@ -892,7 +893,7 @@
                     (assoc-in [:download :piece-state]
                               (:ok (pieces/mark-in-flight
                                     (pieces/initial-piece-state 2) 0))))
-          [updated effects] (download/on-message
+          [updated effects] (coordinator/on-message
                              state
                              {:address "peer-a" :message (peer/->Choke)}
                              (message-ctx (two-piece-hashes)))]
@@ -906,7 +907,7 @@
                    (peer-state/set-am-interested true)
                    (peer-state/apply-message (peer/->Unchoke)))
           state (assoc-in (message-state) [:active-peers "peer-a" :peer-state] bare)
-          [updated effects] (download/on-message
+          [updated effects] (coordinator/on-message
                              state
                              {:address "peer-a" :message (peer/->Have 1)}
                              (message-ctx (two-piece-hashes)))]
@@ -923,7 +924,7 @@
                     (assoc-in [:download :piece-state]
                               (:ok (pieces/mark-in-flight
                                     (pieces/initial-piece-state 2) 0))))
-          [updated effects] (download/on-message
+          [updated effects] (coordinator/on-message
                              state
                              {:address "peer-a"
                               :message (peer/->Piece 0 0 (byte-array 16384))}
@@ -941,7 +942,7 @@
                       (assoc-in [:download :piece-state]
                                 (:ok (pieces/mark-in-flight
                                       (pieces/initial-piece-state 2) 0))))
-            [updated effects] (download/on-message
+            [updated effects] (coordinator/on-message
                                state
                                {:address "peer-a"
                                 :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
@@ -963,7 +964,7 @@
                     (assoc-in [:download :piece-state]
                               (:ok (pieces/mark-in-flight
                                     (pieces/initial-piece-state 2) 0))))
-          [updated effects] (download/on-message
+          [updated effects] (coordinator/on-message
                              state
                              {:address "peer-a"
                               :message (peer/->Piece 0 5 (byte-array 1))}
@@ -982,7 +983,7 @@
                     (assoc-in [:download :piece-state]
                               (:ok (pieces/mark-in-flight
                                     (pieces/initial-piece-state 2) 0))))
-          [updated effects] (download/on-message
+          [updated effects] (coordinator/on-message
                              state
                              {:address "peer-a"
                               :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
@@ -995,11 +996,11 @@
   (testing "unknown peers and keep-alives return the state untouched"
     (let [state (message-state)
           ctx (message-ctx (two-piece-hashes))]
-      (is (= [state []] (download/on-message
+      (is (= [state []] (coordinator/on-message
                          state
                          {:address "ghost" :message (peer/->Unchoke)}
                          ctx)))
-      (is (= [state []] (download/on-message
+      (is (= [state []] (coordinator/on-message
                          state
                          {:address "peer-a" :message (peer/->KeepAlive)}
                          ctx))))))
@@ -1411,7 +1412,7 @@
 
 (deftest run-coordinator-waits-for-pending-dials-test
   (testing "the coordinator starts with every dialed address pending"
-    (let [state (download/initial-coordinator-state (loop-download) ["peer-a" "peer-b"])]
+    (let [state (coordinator/initial-coordinator-state (loop-download) ["peer-a" "peer-b"])]
       (is (= #{"peer-a" "peer-b"} (:pending-dials state)))
       (is (empty? (:active-peers state)))))
   (testing "first disconnect with dials outstanding keeps waiting, then completes"
@@ -1607,7 +1608,8 @@
 
 ;; ---------------------------------------------------------------------------
 ;; fdef specs hold generatively (stest/check).
-;; Pinned: the pure, total half of this namespace. Excluded on principle,
+;; Pinned: the pure, total half of this namespace plus the extracted
+;; coordinator kernel (orchestration.coordinator). Excluded on principle,
 ;; not by accident — the generator cannot conjure a protocol implementation,
 ;; so anything behind an effect port fails before its :ret is even reached
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
@@ -1622,14 +1624,14 @@
   (testing "every check-grade download fdef holds over generated inputs"
     (let [failures (test-utils/check-fdefs
                     '[dev.cljtoc.orchestration.download/capped-peer-addresses
-                      dev.cljtoc.orchestration.download/swarm-exhausted?
+                      dev.cljtoc.orchestration.coordinator/swarm-exhausted?
                       dev.cljtoc.orchestration.download/can-retry?
                       dev.cljtoc.orchestration.download/has-active-peers?
-                      dev.cljtoc.orchestration.download/on-connected
-                      dev.cljtoc.orchestration.download/on-disconnected
-                      dev.cljtoc.orchestration.download/on-message
-                      dev.cljtoc.orchestration.download/requeue-assignment
-                      dev.cljtoc.orchestration.download/initial-coordinator-state
+                      dev.cljtoc.orchestration.coordinator/on-connected
+                      dev.cljtoc.orchestration.coordinator/on-disconnected
+                      dev.cljtoc.orchestration.coordinator/on-message
+                      dev.cljtoc.orchestration.coordinator/requeue-assignment
+                      dev.cljtoc.orchestration.coordinator/initial-coordinator-state
                       dev.cljtoc.orchestration.download/handle-no-peers
                       dev.cljtoc.orchestration.download/retry-download
                       dev.cljtoc.orchestration.download/transition-to-failed
