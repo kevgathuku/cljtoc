@@ -17,6 +17,20 @@
 
 (def ^:private random (SecureRandom.))
 
+(def ^:private default-timeouts
+  "Historical socket timeout literals, now overridable via create opts:
+   :connect-timeout-ms, :socket-timeout-ms, :udp-timeout-ms,
+   :http-timeout-ms."
+  {:connect-timeout-ms 5000
+   :socket-timeout-ms 10000
+   :udp-timeout-ms 5000
+   :http-timeout-ms 10000})
+
+(defn- timeout-ms
+  "Read a timeout from the adapter config, falling back to the default."
+  [network timeout-key]
+  (get (:config network) timeout-key (get default-timeouts timeout-key)))
+
 (defn- generate-peer-id
   "Generate a random 20-byte peer ID for tracker announcements."
   []
@@ -36,8 +50,9 @@
         (let [{:keys [host port]} (:ok parsed)
               _ (println (str "[connect-peer] host=" host " port=" port))
               socket (doto (Socket.)
-                       (.connect (InetSocketAddress. host port) 5000)
-                       (.setSoTimeout 10000))
+                       (.connect (InetSocketAddress. host port)
+                                 (timeout-ms network :connect-timeout-ms))
+                       (.setSoTimeout (timeout-ms network :socket-timeout-ms)))
               peer-data {:id address
                          :address address
                          :socket socket
@@ -181,19 +196,20 @@
 
 (defn- try-udp-tracker
   "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
-  [tracker-url request]
+  [network tracker-url request]
   (try
     (let [uri (URI. tracker-url)
           host (.getHost uri)
           port (let [p (.getPort uri)] (if (= p -1) 6969 p))
           addr (InetSocketAddress. host port)
-          socket (doto (DatagramSocket.) (.setSoTimeout 5000))
+          timeout (timeout-ms network :udp-timeout-ms)
+          socket (doto (DatagramSocket.) (.setSoTimeout timeout))
           txn-id (.nextInt (java.util.Random.))]
       (try
         ;; Step 1: Connect
         (let [connect-req (:ok (tracker/build-udp-connect-request
                                 {:transaction-id txn-id}))
-              connect-resp (udp-exchange socket connect-req addr 5000)
+              connect-resp (udp-exchange socket connect-req addr timeout)
               connect-parsed (tracker/parse-udp-connect-response connect-resp)]
           (if (:error connect-parsed)
             {:error :udp-connect-failed :message (str tracker-url ": " (:message connect-parsed))}
@@ -211,7 +227,7 @@
                                       :event (:event request)
                                       :num-want (or (:num-want request) 50)
                                       :port (:port request)}))
-                  announce-resp (udp-exchange socket announce-req addr 5000)
+                  announce-resp (udp-exchange socket announce-req addr timeout)
                   announce-parsed (tracker/parse-udp-announce-response announce-resp)]
               (if (:error announce-parsed)
                 {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
@@ -223,12 +239,13 @@
 
 (defn- try-http-tracker
   "Try announcing to an HTTP tracker. Returns {:ok peers} or {:error ...}."
-  [tracker-url request]
+  [network tracker-url request]
   (let [url-result (tracker/build-http-announce-url tracker-url request)]
     (if (:error url-result)
       {:error :build-url-failed :message (:message url-result)}
       (let [http-result (try
-                          (make-http-request (:ok url-result) 10000)
+                          (make-http-request (:ok url-result)
+                                             (timeout-ms network :http-timeout-ms))
                           (catch Exception e
                             {:error (.getMessage e)}))]
         (if (:error http-result)
@@ -244,10 +261,10 @@
 
 (defn- try-single-tracker
   "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
-  [tracker-url request]
+  [network tracker-url request]
   (if (str/starts-with? tracker-url "udp")
-    (try-udp-tracker tracker-url request)
-    (try-http-tracker tracker-url request)))
+    (try-udp-tracker network tracker-url request)
+    (try-http-tracker network tracker-url request)))
 
 (defn tracker-announce
   "Announce to trackers and get a list of peers.
@@ -283,7 +300,7 @@
                   {:ok all-peers}))
               (let [url (first urls)
                     _ (println (str "  Trying tracker: " url))
-                    result (try-single-tracker url request)]
+                    result (try-single-tracker network url request)]
                 (if (:ok result)
                   (do
                     (println (str "    Got " (count (:ok result)) " peers"))

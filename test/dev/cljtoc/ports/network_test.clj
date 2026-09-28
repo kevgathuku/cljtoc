@@ -137,6 +137,36 @@
                     {:id "p" :in (failing-input-stream
                                   (java.net.SocketTimeoutException. "slow"))}))))))
 
+(deftest timeouts-come-from-adapter-config-test
+  (testing "defaults match the historical literals when no config is given"
+    (let [timeout-ms @#'network-impl/timeout-ms
+          net (network-impl/create)]
+      (is (= 5000 (timeout-ms net :connect-timeout-ms)))
+      (is (= 10000 (timeout-ms net :socket-timeout-ms)))
+      (is (= 5000 (timeout-ms net :udp-timeout-ms)))
+      (is (= 10000 (timeout-ms net :http-timeout-ms)))))
+  (testing "explicit config overrides the defaults"
+    (let [timeout-ms @#'network-impl/timeout-ms
+          net (network-impl/create {:connect-timeout-ms 1
+                                    :socket-timeout-ms 2
+                                    :udp-timeout-ms 3
+                                    :http-timeout-ms 4})]
+      (is (= 1 (timeout-ms net :connect-timeout-ms)))
+      (is (= 2 (timeout-ms net :socket-timeout-ms)))
+      (is (= 3 (timeout-ms net :udp-timeout-ms)))
+      (is (= 4 (timeout-ms net :http-timeout-ms)))))
+  (testing "a configured connect timeout reaches the socket connect"
+    ;; 192.0.2.1 is TEST-NET-1 (RFC 5737): unroutable, so the connect can
+    ;; only return via timeout or immediate refusal. With 50ms configured,
+    ;; a run honoring the default 5000ms would take ~5000ms where a route
+    ;; exists; bounding at 4000ms discriminates the two.
+    (let [net (network-impl/create {:connect-timeout-ms 50})
+          start (System/currentTimeMillis)
+          result (network/connect-peer net "192.0.2.1:6881")
+          elapsed (- (System/currentTimeMillis) start)]
+      (is (= :connect-failed (:error result)))
+      (is (< elapsed 4000) (str "took " elapsed "ms; configured timeout was not honored")))))
+
 (deftest a-full-length-message-is-parsed-test
   (testing "a non-zero length prefix reads exactly its declared payload and parses it.
             Per BEP 3 a 1-byte body of 2 is an Interested, so the oracle is the
