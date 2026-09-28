@@ -355,27 +355,20 @@
                                                            :files [{:path ["a"] :length 8}]}))))))
 
 (deftest duplicate-declared-paths-are-rejected-test
-  ;; A torrent may declare the same path twice. output-file-sizes collapses
-  ;; that into one map entry while piece-file-spans still hands out two
-  ;; distinct byte ranges for it, so both land in the same physical file and
-  ;; the download completes having lost the overwritten bytes. Reject it in
-  ;; the shared layout guard so neither derivation reports success.
+  ;; A torrent may declare the same path twice: the sizes view would collapse
+  ;; that into one map entry while spans kept two distinct byte ranges, so
+  ;; both landed in the same physical file and the download completed having
+  ;; lost the overwritten bytes. Refuse it in the layout guard, so no layout
+  ;; is ever derived from the clash.
   (let [info {:name "t" :piece-length 4
-              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
-    (testing "output-file-sizes refuses the collapsed layout"
-      (let [result (torrent/output-file-sizes info)]
-        (is (:error result))
-        (is (re-find #"same output path twice" (:message result)))))
-    (testing "piece-file-spans refuses it too, not just the size map"
-      (let [result (torrent/piece-file-spans info 0 4)]
-        (is (:error result))
-        (is (re-find #"same output path twice" (:message result)))))
-    (testing "each piece of the duplicated range errors, not only the first"
-      (is (:error (torrent/piece-file-spans info 1 4))))))
-(testing "a duplicate full path declared through different nesting is the same clash"
-  (let [info {:name "t" :piece-length 4
-              :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
-    (is (:error (torrent/output-file-sizes info)))))
+              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}
+        result (torrent/compile-output-layout info)]
+    (is (:error result))
+    (is (re-find #"same output path twice" (:message result))))
+  (testing "a duplicate full path declared through different nesting is the same clash"
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
+      (is (:error (torrent/compile-output-layout info))))))
 
 (deftest mutually-exclusive-layout-fields-are-rejected-test
   ;; An info carrying both :length (single-file) and :files (multi-file)
@@ -385,39 +378,29 @@
   ;; half the declared layout unwritten. The wire format leaves no room for
   ;; both; reject the shape in the shared guard.
   (let [info {:name "t" :piece-length 4 :length 4
-              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}]
-    (testing "output-file-sizes refuses the two-layout info"
-      (let [result (torrent/output-file-sizes info)]
-        (is (:error result))
-        (is (re-find #"both :length and :files" (:message result)))))
-    (testing "piece-file-spans refuses it too"
-      (let [result (torrent/piece-file-spans info 0 4)]
-        (is (:error result))
-        (is (re-find #"both :length and :files" (:message result))))))
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        result (torrent/compile-output-layout info)]
+    (is (:error result))
+    (is (re-find #"both :length and :files" (:message result))))
   (testing "an empty :files beside :length is the same clash, not an empty layout"
-    (is (:error (torrent/output-file-sizes {:name "t" :piece-length 4
-                                            :length 4 :files []})))))
+    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
+                                                :length 4 :files []})))))
 
 (deftest missing-length-fields-are-rejected-test
   ;; The guard claims exactly one of :length/:files but only refused both
-  ;; present. With neither, output-file-sizes returns a size map containing
-  ;; nil and init-layout! dies later in setLength instead of refusing the
-  ;; malformed layout as :invalid-info. Same one level down: a file entry
-  ;; without :length poisons the same map.
-  (testing "an info with neither :length nor :files is an error in both derivations"
+  ;; present. With neither, the old sizes entry point returned a size map
+  ;; containing nil and init-layout! died later in setLength instead of
+  ;; refusing the malformed layout as :invalid-info. Same one level down:
+  ;; a file entry without :length poisons the same map.
+  (testing "an info with neither :length nor :files is an error"
     (let [info {:name "t" :piece-length 4}
-          sizes-result (torrent/output-file-sizes info)
-          spans-result (torrent/piece-file-spans info 0 4)]
-      (is (:error sizes-result))
-      (is (re-find #"either :length or :files" (:message sizes-result)))
-      (is (:error spans-result))))
-  (testing "a file entry without :length is an error in both derivations"
+          result (torrent/compile-output-layout info)]
+      (is (:error result))
+      (is (re-find #"either :length or :files" (:message result)))))
+  (testing "a file entry without :length is an error"
     (let [info {:name "t" :piece-length 4
-                :files [{:path ["a"] :length 4} {:path ["b"]}]}
-          sizes-result (torrent/output-file-sizes info)
-          spans-result (torrent/piece-file-spans info 0 4)]
-      (is (:error sizes-result))
-      (is (:error spans-result)))))
+                :files [{:path ["a"] :length 4} {:path ["b"]}]}]
+      (is (:error (torrent/compile-output-layout info))))))
 
 (deftest prefix-colliding-paths-are-rejected-test
   ;; ["t" "a"] cannot be both the file one entry claims and the directory
@@ -426,33 +409,28 @@
   ;; opening the parent as a file — so refuse upfront, in the shared guard.
   (let [info {:name "t" :piece-length 4
               :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}]
-    (testing "both derivations refuse the nested layout"
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
+    (is (:error (torrent/compile-output-layout info))))
   (testing "an empty entry path collides with its siblings the same way"
     (let [info {:name "t" :piece-length 4
                 :files [{:path [] :length 4} {:path ["x"] :length 4}]}]
-      (is (:error (torrent/output-file-sizes info))))))
+      (is (:error (torrent/compile-output-layout info))))))
 
 (deftest non-integer-lengths-are-rejected-test
-  ;; Lengths the derivations cannot honestly process: a string :length
-  ;; crashes piece-file-spans in (>= piece-start total) instead of erroring,
-  ;; and output-file-sizes happily hands the string downstream, where
-  ;; setLength explodes later, far from the lie. Same guard, same reason.
-  (testing "a non-integer single-file length is an error in both derivations"
+  ;; Lengths the layout cannot honestly process: a string :length used to
+  ;; crash span derivation in (>= piece-start total) instead of erroring,
+  ;; and the sizes view happily handed the string downstream, where
+  ;; setLength exploded later, far from the lie. Same guard, same reason.
+  (testing "a non-integer single-file length is an error"
     (let [info {:name "t" :piece-length 4 :length "x"}]
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
-  (testing "a non-integer file-entry length is an error in both derivations"
+      (is (:error (torrent/compile-output-layout info)))))
+  (testing "a non-integer file-entry length is an error"
     (let [info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length "x"}]}]
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
+      (is (:error (torrent/compile-output-layout info)))))
   (testing "zero stays admitted — it is a length, and empty files are real"
     (let [info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]}]
-      (is (:ok (torrent/output-file-sizes info)))
-      (is (:ok (torrent/piece-file-spans info 0 4))))))
+      (is (:ok (torrent/compile-output-layout info))))))
 
 ;; The exclusivity rule, generated rather than hoped for: stest/check over
 ;; the derivations can only feed them bare maps, whose generator all but
