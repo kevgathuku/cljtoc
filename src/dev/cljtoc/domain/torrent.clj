@@ -270,7 +270,7 @@
       [{:path [(:name info)] :length (:length info)}])))
 
 (defn- layout-error
-  "The one layout guard shared by output-file-sizes and piece-file-spans: the
+  "The one layout guard behind compile-output-layout: the
    layout needs a :name, a positive :piece-length, carries exactly one of
    :length (single-file) or :files (multi-file), every declared path component must stay inside the
    output directory, every present length must be a natural integer, and no
@@ -353,8 +353,8 @@
 
 (defn compile-output-layout
   "Derive the output layout of an info dict once per download: every
-   declared entry with its cumulative byte :start, the sizes map
-   output-file-sizes returns, the content :total, and the :piece-length
+   declared entry with its cumulative byte :start, the sizes map,
+   the content :total, and the :piece-length
    passed through for span math. :files holds only positive-length
    entries — a zero-length file overlaps no piece, so excluding it keeps
    the per-piece walk to exactly the overlapped files — while :sizes
@@ -393,8 +393,8 @@
 (s/fdef compile-output-layout
   :args (s/cat :info ::info)
   :ret map?
-  ;; The single derivation output-file-sizes and piece-file-spans share:
-  ;; every searched entry is a declared size, and the sizes sum to the total.
+  ;; The single derivation behind the sizes and span views: every searched
+  ;; entry is a declared size, and the sizes sum to the total.
   :fn #(let [ret (:ret %)]
          (or (:error ret)
              (let [layout (:ok ret)]
@@ -407,7 +407,7 @@
   "Index of the first file a piece starting at piece-start can overlap:
    one past the last entry starting at or before it. Binary search over
    the compiled :starts, O(log files) instead of the O(files) linear
-   walk piece-file-spans used to pay on every piece."
+   walk the retired per-piece entry point used to pay on every piece."
   [files piece-start]
   (loop [low-idx 0 high-idx (count files)]
     (if (= low-idx high-idx)
@@ -447,8 +447,8 @@
       (bencode/torrent-error "layout must be a compiled output layout" {})
 
       :else
-      ;; See piece-file-spans: huge indices overflow long arithmetic, and
-      ;; the contract is errors as data — never a throw.
+      ;; Huge indices overflow long arithmetic, and the contract is errors
+      ;; as data — never a throw.
       (try
         (let [total (:total layout)
               piece-start (* piece-index nominal)
@@ -456,8 +456,8 @@
           (cond
             ;; No searchable entries yet bytes declared: not a layout
             ;; compile-output-layout can produce. (Empty with zero total
-            ;; falls through to the past-total error, matching
-            ;; piece-file-spans on an all-empty layout.)
+            ;; falls through to the past-total error, as on an all-empty
+            ;; layout with no searchable entries.)
             (and (empty? files) (pos? total))
             (bencode/torrent-error "layout must be a compiled output layout" {})
 
@@ -502,73 +502,8 @@
                :piece-index ::piece-span-index
                :piece-byte-count ::piece-byte-count)
   :ret map?
-  ;; Same span shape as piece-file-spans: the two entry points agree by
-  ;; construction, and the agreement property pins it per generated layout.
-  :fn #(let [ret (:ret %)]
-         (or (:error ret)
-             (s/valid? ::file-span-list (:ok ret)))))
-
-(defn output-file-sizes
-  "Declared output sizes of an info dict: {relative-path-vector length}.
-   Rejects a layout that could not be written as declared (see layout-error),
-   so a caller never receives a path it must not open.
-   Returns {:ok sizes} or {:error ...}."
-  [info]
-  (let [compiled (compile-output-layout info)]
-    (if (:error compiled)
-      compiled
-      {:ok (:sizes (:ok compiled))})))
-
-(s/fdef output-file-sizes
-  :args (s/cat :info ::info)
-  :ret map?
-  ;; Sizes map declared path vectors to lengths: write-layout! looks each
-  ;; spanned path up in this map, so non-vector keys would silently miss.
-  :fn #(let [ret (:ret %)]
-         (or (:error ret)
-             (and (map? (:ok ret))
-                  (every? vector? (keys (:ok ret)))))))
-
-(defn piece-file-spans
-  "Map one piece to file-layout spans: per overlapped file,
-   {:path [name ...] :file-offset n :data-offset m :length k}.
-   Single-file info (:length) yields one span; multi-file info (:files)
-   splits pieces crossing a file boundary. The final short piece maps
-   only its own bytes. A layout that could not be written as declared
-   (see layout-error) is an error.
-   Returns {:ok spans} or {:error ...}."
-  [info piece-index piece-byte-count]
-  (let [nominal (:piece-length info)
-        bad-layout (layout-error info)]
-    (cond
-      (or (not (nat-int? piece-index)) (not (pos-int? piece-byte-count)))
-      (bencode/torrent-error "piece index and byte count must be valid" {})
-
-      (or (not (integer? nominal)) (not (pos? nominal)))
-      (bencode/torrent-error "info must carry a positive :piece-length" {})
-
-      bad-layout
-      bad-layout
-
-      :else
-      ;; Thin wrapper over the compiled layout: the span loop lives in
-      ;; layout-spans now, so the two derivations cannot drift apart.
-      ;; Legit lengths can still overflow long arithmetic in the compile,
-      ;; and the contract is errors as data — never a throw.
-      (let [compiled (compile-output-layout info)]
-        (if (:error compiled)
-          compiled
-          (layout-spans (:ok compiled) piece-index piece-byte-count))))))
-
-(s/fdef piece-file-spans
-  :args (s/cat :info ::info
-               :piece-index ::piece-span-index
-               :piece-byte-count ::piece-byte-count)
-  :ret map?
-  ;; Every emitted span conforms ::file-span: paths survive the component
-  ;; guard as string vectors, offsets are ordered differences (nat-int?),
-  ;; and the overlap guard keeps lengths positive. Error envelopes take
-  ;; the other branch, so this also gives ::file-span-list its first use.
+  ;; Span shape pinned per generated layout by the independent-oracle
+  ;; property: every emitted span conforms ::file-span-list.
   :fn #(let [ret (:ret %)]
          (or (:error ret)
              (s/valid? ::file-span-list (:ok ret)))))
