@@ -1606,6 +1606,47 @@
       (is (= (seq content) (seq (test-utils/to-bytes on-disk)))
           "the completed file carries the verified content, not its length"))))
 
+(deftest resume-of-a-completed-download-initializes-every-declared-file-test
+  (testing "an all-verified resume returns :completed without run-download,
+            which is the only other caller of initialize-output-layout. The
+            piece writer only opens files piece bytes touch, so a declared
+            zero-length file would stay absent under a :completed report --
+            the layout must be initialized on the fast path too"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:name "multi"
+                :piece-length 4
+                :pieces [(bencode/sha1-hash piece-0)]
+                :files [{:path ["data.bin"] :length 4}
+                        {:path ["empty.bin"] :length 0}]}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          output-dir (test-utils/temp-dir "resume-empty-out-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "resume-empty-state-")
+                                  :piece-cache-dir (test-utils/temp-dir "resume-empty-cache-")})
+          piece-state (-> (pieces/initial-piece-state 1)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent
+                                                     output-dir
+                                                     "empty")
+                          :piece-state piece-state
+                          :state :paused
+                          :peers #{})
+          _ (disk/write-piece port 0 piece-0)
+          captured (atom nil)
+          net (mock-net/create {:announce-error {:error :tracker-error
+                                                 :message "tracker down"}
+                                :announce-capture captured})
+          result (download/resume-download port net download)]
+      (is (nil? @captured) "no tracker announce was attempted")
+      (is (= :completed (get-in result [:ok :state])))
+      (is (= (seq piece-0)
+             (seq (test-utils/to-bytes
+                   (slurp (io/file output-dir "multi" "data.bin"))))))
+      (is (.exists (io/file output-dir "multi" "empty.bin"))
+          "the declared zero-length file exists under a :completed report"))))
+
 ;; ============================================================================
 ;; Resume: letting a failed download back in (issue #30)
 ;; ============================================================================

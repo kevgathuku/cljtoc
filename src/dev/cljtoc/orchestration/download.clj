@@ -410,21 +410,22 @@
 
     The announce below would otherwise report stale verified bytes and fail
     a download the cache already completes. Returns {:ok download} carrying
-    the reconciled record, or the original record when there is nothing to
-    reconcile against: no disk port, an uncompilable layout, or a failed
-    materialization. Those fall through to the announce path, where
-    run-download reports the layout failure exactly as before."
+    the reconciled record, plus :layout holding the compiled output layout
+    (nil when there is nothing to reconcile against: no disk port, an
+    uncompilable layout, or a failed materialization). Those fall through
+    to the announce path, where run-download reports the layout failure
+    exactly as before."
   [disk-port download]
   (if (nil? disk-port)
-    {:ok download}
+    {:ok download :layout nil}
     (let [compiled (torrent/compile-output-layout (:info (:torrent download)))]
       (if (:error compiled)
-        {:ok download}
+        {:ok download :layout nil}
         (let [materialized (materialize-verified-pieces
                             download disk-port (:ok compiled))]
           (if (:error materialized)
-            {:ok download}
-            materialized))))))
+            {:ok download :layout nil}
+            (assoc materialized :layout (:ok compiled))))))))
 
 (defn resume-download
   "Resume a paused or failed download.
@@ -439,7 +440,9 @@
      run-download derives every worker from :peers
    - Requeues pieces the dead run left in flight
    - Returns the download in :downloading state, or :completed when the
-     cache already holds every verified piece"
+     cache already holds every verified piece (with the output layout
+     initialized: the skipped run never initializes it, and the piece
+     writer alone would leave a declared zero-length file absent)"
   ([download]
    (resume-download nil nil download))
   ([disk-port network-port download]
@@ -465,8 +468,19 @@
           ;; record skips the announce and the swarm outright: there is
           ;; nothing left to fetch, and gating completion on a tracker
           ;; answer stranded fully-cached resumes on a dead tracker.
-         (let [reconciled (:ok (reconcile-verified-pieces disk-port revived))]
-           (if (pieces/complete? (:piece-state reconciled))
+         (let [{reconciled :ok layout :layout}
+               (reconcile-verified-pieces disk-port revived)
+                ;; The swarm is skipped, so run-download never initializes
+                ;; the output layout -- and the piece writer only opens
+                ;; files piece bytes touch. Initialize here so a declared
+                ;; zero-length file exists before the :completed report.
+                ;; An init failure falls through to the announce path,
+                ;; where run-download reports it exactly as before.
+               initialized (when (and (pieces/complete? (:piece-state reconciled))
+                                      (some? layout))
+                             (disk/initialize-output-layout
+                              disk-port layout (:output-dir reconciled)))]
+           (if (and (some? initialized) (not (:error initialized)))
              {:ok (assoc reconciled :state :completed)}
              (let [announce-result (announce-to-tracker network-port reconciled)]
                (if (:error announce-result)
