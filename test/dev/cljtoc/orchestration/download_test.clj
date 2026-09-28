@@ -101,6 +101,22 @@
         stats (download/->DownloadStats 1000 nil 16384 0 1000)]
     (is (= 16384 (download/calculate-rate time stats)))))
 
+(deftest calculate-rate-averages-over-the-run-test
+  (testing "the reported speed is total bytes over run duration, not over
+            the gap since the last block: milliseconds after the final
+            block the old quotient exploded into fantasy GB/s"
+    (let [time (mock-time/create {:now 2000})
+          stats (download/->DownloadStats 1000 nil 20000 0 1900)]
+      (is (= 20000 (download/calculate-rate time stats))))))
+
+(deftest calculate-rate-without-a-start-time-reports-zero-test
+  (testing "decoded records predating started-at tracking report 0 rather
+            than throwing or dividing by a nil clock"
+    (let [time (mock-time/create {:now 2000})
+          stats (assoc (download/->DownloadStats 1000 nil 20000 0 1900)
+                       :started-at nil)]
+      (is (= 0 (download/calculate-rate time stats))))))
+
 (deftest advance-time-drives-rate-test
   (let [time (mock-time/create {:now 1000})
         stats (download/->DownloadStats 1000 nil 0 0 1000)]

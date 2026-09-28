@@ -256,9 +256,16 @@
   :args (s/cat :time-port any? :stats map? :bytes-received nat-int?)
   :ret map?)
 
-(defn calculate-rate [time-port stats]
+(defn calculate-rate
+  "Average transfer rate over the run: total bytes downloaded divided by
+   seconds since :started-at. Averaging over the run (instead of the gap
+   since :last-update) keeps the reported speed stable: right after the
+   final block the last-gap quotient explodes into fantasy GB/s. Records
+   predating started-at tracking report 0."
+  [time-port stats]
   (let [now (time/now time-port)
-        elapsed-seconds (/ (- now (:last-update stats)) 1000.0)
+        started (:started-at stats)
+        elapsed-seconds (if started (/ (- now started) 1000.0) 0)
         bytes-downloaded (:bytes-downloaded stats)]
     (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
       (long (/ bytes-downloaded elapsed-seconds))
