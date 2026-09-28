@@ -8,7 +8,7 @@ Take a GitHub issue number through validation, TDD implementation, and an opened
 
 ## 1. Fetch and validate
 
-Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. State the verdict in one line per claim (confirmed / stale / partially true). Stop if the issue is stale and ask how to proceed.
+Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. Check the palace before finalizing verdicts: `mempalace_search` (wing `torrent_client_clj`, room `decisions`) for prior verdicts on the touched files — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
 
 ## 2. Branch
 
@@ -18,7 +18,7 @@ Check `git status` is clean and `git branch --show-current` is `main`, then crea
 
 Via the `mempalace-recall` skill, run four lookups on the issue's area and fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body:
 
-- `mempalace_search` (wing `torrent_client_clj`, room `decisions`): verdicts — prior approaches, reverted attempts, naming choices, plus per-thread false-positive proofs on the touched files (do not re-file a refuted claim).
+- `mempalace_search` (wing `torrent_client_clj`, room `decisions`): prior approaches, reverted attempts, naming choices that constrain the plan (verdicts on the claims themselves were settled in step 1 — do not re-litigate them here).
 - `mempalace_search` (same wing, room `lessons`): recurring failure modes for this area — mock drift from real envelopes, guard-before-call-site, inferred-vs-observed termination.
 - `mempalace_kg_timeline` on the touched file / issue entity: what already fixes / causes what, in order.
 - `mempalace_diary_read` (last 3): unfinished work from recent sessions, plus any diagnosed-but-unfixed P0 gap the PR must not claim to close.

@@ -37,3 +37,9 @@ Push the branch (the PR updates itself), the push itself usually triggers a fres
 ## 6. File the findings
 
 Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): PR number, one line per thread (verdict, fixing commit or rebuttal proof), and any deviation from the review as written — same home as the `issue-to-pr` decision entry, so the issue, its PR, and its review history sit together.
+
+## 7. File the diary entry
+
+Write session continuity to the palace diary (`mempalace_diary_write`, pi diary, AAAK-compressed): the review round addressed, the re-review state (requested, pending, or blocked), threads deferred to follow-up issues, and the next run's starting point. The per-thread verdicts already live in the step 6 decisions entry — the diary carries only what the next session needs to resume, never a second copy of the findings.
+
+Done when a diary entry exists naming the round, the re-review state, and where the next run starts.
