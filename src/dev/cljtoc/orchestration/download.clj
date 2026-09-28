@@ -1118,7 +1118,7 @@
 
           (nil? (:ok cached))
           (let [requeued (pieces/requeue-verified (:piece-state download)
-                                                   piece-index)]
+                                                  piece-index)]
             (if (:ok requeued)
               (recur (assoc download :piece-state (:ok requeued)) rest-pieces)
               ;; The index came out of the verified set this loop is walking,
