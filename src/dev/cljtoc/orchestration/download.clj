@@ -214,12 +214,9 @@
   (let [info (get-in download [:torrent :info] {})
         total (torrent/total-size info)
         piece-length (or (:piece-length info) 0)
-        piece-count (count (:pieces info))
         downloaded (reduce + 0
                            (map (fn [piece-index]
-                                  (if (= piece-index (dec piece-count))
-                                    (- total (* piece-index piece-length))
-                                    piece-length))
+                                  (pieces/piece-length piece-index piece-length total))
                                 (:verified (:piece-state download))))]
     {:downloaded downloaded
      :left (max 0 (- total downloaded))}))
