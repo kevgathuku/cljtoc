@@ -334,60 +334,25 @@
   (testing "missing sizes total zero"
     (is (= 0 (torrent/total-size {})))))
 
-(deftest piece-file-spans-test
-  (testing "single-file piece maps to one span at the piece offset"
-    (let [info {:name "test.txt" :piece-length 4 :length 8}]
-      (is (= {:ok [{:path ["test.txt"] :file-offset 0 :data-offset 0 :length 4}]}
-             (torrent/piece-file-spans info 0 4)))
-      (is (= {:ok [{:path ["test.txt"] :file-offset 4 :data-offset 0 :length 4}]}
-             (torrent/piece-file-spans info 1 4)))))
-  (testing "multi-file piece spanning a file boundary splits into two spans"
-    (let [info {:name "t" :piece-length 6
-                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
-      (is (= {:ok [{:path ["t" "a"] :file-offset 0 :data-offset 0 :length 4}
-                   {:path ["t" "b"] :file-offset 0 :data-offset 4 :length 2}]}
-             (torrent/piece-file-spans info 0 6)))))
-  (testing "short final piece maps only its own bytes"
-    (let [info {:name "t" :piece-length 6
-                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
-      (is (= {:ok [{:path ["t" "b"] :file-offset 2 :data-offset 0 :length 4}]}
-             (torrent/piece-file-spans info 1 4)))))
-  (testing "out-of-range piece index is an error"
-    (let [info {:name "test.txt" :piece-length 4 :length 8}]
-      (is (:error (torrent/piece-file-spans info 2 4)))))
-  (testing "path components escaping the output dir are an error"
-    (is (:error (torrent/piece-file-spans {:name ".." :piece-length 4 :length 8} 0 4)))
-    (is (:error (torrent/piece-file-spans {:name "t" :piece-length 4 :length 8
-                                           :files [{:path [".."] :length 8}]} 0 4)))
-    (is (:error (torrent/piece-file-spans {:name "a/b" :piece-length 4 :length 8} 0 4)))
-    (is (:error (torrent/piece-file-spans {:name "" :piece-length 4 :length 8} 0 4)))))
-
-(deftest piece-file-spans-rejects-unusable-geometry-test
-  (testing "a negative or non-integral piece index or byte count is an error"
-    (let [info {:name "t" :piece-length 4 :length 8}]
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info -1 4))))
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info 0.5 4))))
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info 0 0))))
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info 0 -4))))))
+(deftest compiled-layout-rejects-bad-piece-length-test
+  ;; Geometry (bad index/count) is pinned through layout-spans in
+  ;; layout-spans-test; this pins the compile side: a missing or
+  ;; non-positive piece length never yields a layout at all.
   (testing "a missing or non-positive piece length is an error"
     (is (re-find #"positive :piece-length"
-                 (:message (torrent/piece-file-spans {:name "t" :length 8} 0 4))))
+                 (:message (torrent/compile-output-layout {:name "t" :length 8}))))
     (is (re-find #"positive :piece-length"
-                 (:message (torrent/piece-file-spans {:name "t" :piece-length 0 :length 8} 0 4))))
+                 (:message (torrent/compile-output-layout {:name "t" :piece-length 0 :length 8}))))
     (is (re-find #"positive :piece-length"
-                 (:message (torrent/piece-file-spans {:name "t" :piece-length -4 :length 8} 0 4))))))
+                 (:message (torrent/compile-output-layout {:name "t" :piece-length -4 :length 8}))))))
 
-(deftest output-file-sizes-requires-name-test
+(deftest compile-output-layout-requires-name-test
   (testing "info without a name cannot yield an output layout"
     (is (re-find #":name"
-                 (:message (torrent/output-file-sizes {:piece-length 4 :length 8}))))
+                 (:message (torrent/compile-output-layout {:piece-length 4 :length 8}))))
     (is (re-find #":name"
-                 (:message (torrent/output-file-sizes {:piece-length 4
-                                                       :files [{:path ["a"] :length 8}]}))))))
+                 (:message (torrent/compile-output-layout {:piece-length 4
+                                                           :files [{:path ["a"] :length 8}]}))))))
 
 (deftest duplicate-declared-paths-are-rejected-test
   ;; A torrent may declare the same path twice. output-file-sizes collapses
