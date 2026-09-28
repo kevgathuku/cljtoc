@@ -167,6 +167,21 @@
       (is (= :connect-failed (:error result)))
       (is (< elapsed 4000) (str "took " elapsed "ms; configured timeout was not honored")))))
 
+(deftest logging-goes-through-adapter-config-test
+  (testing "log-fn defaults to println and honors :log-fn on both ports"
+    (is (= println (network/log-fn (network-impl/create))))
+    (is (= println (network/log-fn (mock-network/create))))
+    (let [capture (fn [_] nil)]
+      (is (= capture (network/log-fn (network-impl/create {:log-fn capture}))))
+      (is (= capture (network/log-fn (mock-network/create {:log-fn capture}))))))
+  (testing "the real port logs connects through the configured fn"
+    (let [logged (atom [])
+          net (network-impl/create {:log-fn (fn [msg] (swap! logged conj msg))})
+          result (network/connect-peer net "")]
+      (is (= :invalid-address (:error result)))
+      (is (= 1 (count @logged)))
+      (is (re-find #"Attempting to connect" (first @logged))))))
+
 (deftest a-full-length-message-is-parsed-test
   (testing "a non-zero length prefix reads exactly its declared payload and parses it.
             Per BEP 3 a 1-byte body of 2 is an Interested, so the oracle is the

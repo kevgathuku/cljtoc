@@ -9,8 +9,21 @@
    method blocks until it has one. Nothing here runs work on a pool, so a
    caller that wants two calls in flight has to put them on threads of its
    own -- that choice belongs above this seam, not inside it."
-  (:require [dev.cljtoc.protocol.peer :as peer]
+  (:require [clojure.spec.alpha :as s]
+            [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker]))
+
+(defn log-fn
+  "Return the port's configured log fn (a fn of one message string).
+   Both the real NetworkPort and the mock carry their adapter config in
+   :config; anything else logs via println. Keeps println side effects
+   injectable without changing call shapes."
+  [port]
+  (get (:config port) :log-fn println))
+
+(s/fdef log-fn
+  :args (s/cat :port any?)
+  :ret fn?)
 
 (defprotocol INetworkPort
   "Abstraction for network operations needed by download orchestration."

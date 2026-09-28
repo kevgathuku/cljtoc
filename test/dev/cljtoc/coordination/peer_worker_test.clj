@@ -33,6 +33,20 @@
                    :peer-id (test-peer-id)})]
       (is (= :info-hash-mismatch (:error result))))))
 
+(deftest worker-logs-through-adapter-config-test
+  (testing "run-peer logs its start through the port's :log-fn"
+    (let [logged (atom [])
+          net (mock-net/create {:log-fn (fn [msg] (swap! logged conj msg))
+                                :handshake-response {:error :timeout
+                                                     :message "boom"}})
+          events-ch (async/chan 10)]
+      (peer-worker/run-peer net (test-info-hash) (test-peer-id)
+                            "127.0.0.1:6881" 4 events-ch)
+      (let [event (take-timeout events-ch 2000)]
+        (is (= :peer-disconnected (:type event)))
+        (is (= 1 (count @logged)))
+        (is (re-find #"127.0.0.1:6881" (first @logged)))))))
+
 (deftest handshake-error-emits-peer-disconnected-test
   (testing "handshake failure surfaces as :peer-disconnected via the port"
     (let [net (mock-net/create {:handshake-response {:error :timeout

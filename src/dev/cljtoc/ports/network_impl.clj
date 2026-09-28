@@ -31,6 +31,11 @@
   [network timeout-key]
   (get (:config network) timeout-key (get default-timeouts timeout-key)))
 
+(defn- log!
+  "Log a message through the adapter config (see network/log-fn)."
+  [port message]
+  ((network/log-fn port) message))
+
 (defn- generate-peer-id
   "Generate a random 20-byte peer ID for tracker announcements."
   []
@@ -43,12 +48,12 @@
    Returns {:ok peer-data} or {:error reason :message msg}."
   [network address]
   (try
-    (println (str "[connect] Attempting to connect to: " address))
+    (log! network (str "[connect] Attempting to connect to: " address))
     (let [parsed (peer-address/parse address)]
       (if (:error parsed)
         {:error :invalid-address :message (:message parsed)}
         (let [{:keys [host port]} (:ok parsed)
-              _ (println (str "[connect-peer] host=" host " port=" port))
+              _ (log! network (str "[connect-peer] host=" host " port=" port))
               socket (doto (Socket.)
                        (.connect (InetSocketAddress. host port)
                                  (timeout-ms network :connect-timeout-ms))
@@ -254,9 +259,9 @@
             (if (:error parse-result)
               {:error :parse-failed :message (:message parse-result)}
               (let [peers (:peers (:ok parse-result))
-                    _ (println (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
+                    _ (log! network (str "[tracker] Raw peers sample: " (vec (take 3 peers))))
                     addresses (set (map tracker-peer->address peers))
-                    _ (println (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
+                    _ (log! network (str "[tracker] Sample addresses: " (vec (take 3 addresses))))]
                 {:ok addresses}))))))))
 
 (defn- try-single-tracker
@@ -296,17 +301,17 @@
                     {:error :all-trackers-failed
                      :message "All trackers failed"})
                 (do
-                  (println (str "  Collected " (count all-peers) " unique peers from trackers"))
+                  (log! network (str "  Collected " (count all-peers) " unique peers from trackers"))
                   {:ok all-peers}))
               (let [url (first urls)
-                    _ (println (str "  Trying tracker: " url))
+                    _ (log! network (str "  Trying tracker: " url))
                     result (try-single-tracker network url request)]
                 (if (:ok result)
                   (do
-                    (println (str "    Got " (count (:ok result)) " peers"))
+                    (log! network (str "    Got " (count (:ok result)) " peers"))
                     (recur (rest urls) (into all-peers (:ok result)) last-error))
                   (do
-                    (println (str "    Failed: " (:message result)))
+                    (log! network (str "    Failed: " (:message result)))
                     (recur (rest urls) all-peers result)))))))))
     (catch Exception e
       {:error :tracker-error :message (.getMessage e)})))
