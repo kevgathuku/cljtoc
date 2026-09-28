@@ -1079,6 +1079,18 @@
       (is (not (some #(= "ftp://files.example.com" %) order)))
       (is (some #(= "http://ok.example.com" %) order))))
 
+  (testing "schemes match completely and case-insensitively"
+    ;; URI schemes are case-insensitive (RFC 3986); a prefix check would
+    ;; drop HTTP:// yet admit udpx://, which the adapter would then
+    ;; misdispatch as UDP.
+    (let [order (tracker/pick-tracker-order
+                 {:announce "HTTP://upper.example.com/announce"
+                  :announce-list [["udpx://host.example.com:6969"
+                                   "https://secure.example.com/announce"]]})]
+      (is (some #(= "HTTP://upper.example.com/announce" %) order))
+      (is (some #(= "https://secure.example.com/announce" %) order))
+      (is (not (some #(= "udpx://host.example.com:6969" %) order)))))
+
   (testing "appends well-known public fallbacks after declared trackers"
     (let [order (tracker/pick-tracker-order {:announce "http://mine.example.com"})]
       (is (= "http://mine.example.com" (first order)))

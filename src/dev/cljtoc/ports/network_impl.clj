@@ -162,7 +162,9 @@
 (defn- try-single-tracker
   "Try announcing to a single tracker URL. Returns {:ok peers} or {:error ...}."
   [network tracker-url request]
-  (if (str/starts-with? tracker-url "udp")
+  ;; Case-insensitive like the pick-tracker-order filter, so an admitted
+  ;; uppercase UDP:// URL still routes to the UDP path.
+  (if (str/starts-with? (str/lower-case tracker-url) "udp")
     (try-udp-tracker network tracker-url request)
     (try-http-tracker network tracker-url request)))
 

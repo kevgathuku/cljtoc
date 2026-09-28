@@ -890,12 +890,21 @@
    "udp://explodie.org:6969"
    "udp://exodus.desync.com:6969"])
 
+(defn- tracker-url?
+  "True when the string names a tracker URL this client can query: an
+   http, https, or udp URI. The scheme must match completely and
+   case-insensitively (RFC 3986) -- a prefix check would drop HTTP://
+   yet admit udpx://, which the adapter would then misdispatch."
+  [candidate]
+  (and (string? candidate)
+       (boolean (re-find #"(?i)\A(?:http|https|udp)://" candidate))))
+
 (defn pick-tracker-order
   "Order tracker URLs for sequential querying.
 
    Primary :announce first, then :announce-list tiers flattened in order,
    then well-known public fallbacks. Deduplicated keeping the first
-   occurrence; nil and non-http/non-udp entries dropped.
+   occurrence; nil entries and URLs with unsupported schemes dropped.
 
    Parameters:
      torrent-metadata - Map with :announce and optional :announce-list
@@ -911,22 +920,18 @@
                           (if (sequential? tiers) tiers []))
         all (concat (if primary (cons primary from-list) from-list)
                     fallback-trackers)]
-    (vec (distinct (filter #(and (string? %)
-                                 (or (string/starts-with? % "http")
-                                     (string/starts-with? % "udp")))
-                           all)))))
+    (vec (distinct (filter tracker-url? all)))))
 
 (s/fdef pick-tracker-order
   :args (s/cat :torrent-metadata map?)
   :ret (s/coll-of string? :kind vector?)
   :fn #(let [metadata (-> % :args :torrent-metadata)
              order (:ret %)]
-         (and (if (and (string? (:announce metadata))
-                       (or (string/starts-with? (:announce metadata) "http")
-                           (string/starts-with? (:announce metadata) "udp")))
+         (and (if (tracker-url? (:announce metadata))
                 (= (:announce metadata) (first order))
                 true)
-              (= order (vec (distinct order))))))
+              (= order (vec (distinct order)))
+              (every? tracker-url? order))))
 
 (defn combine-peers
   "Merge peer address collections into one set.
