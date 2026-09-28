@@ -85,7 +85,12 @@
   (testing "requeue-piece on needed piece returns :invalid-transition"
     (let [state  (pieces/initial-piece-state 5)
           result (pieces/requeue-piece state 2)]
-      (is (= :invalid-transition (:error result))))))
+      (is (= :invalid-transition (:error result)))))
+  (testing "requeue-verified on a piece that was never verified returns :invalid-transition"
+    (let [state  (pieces/initial-piece-state 5)
+          result (pieces/requeue-verified state 2)]
+      (is (= :invalid-transition (:error result)))
+      (is (string? (:message result))))))
 
 (deftest immutability-test
   (testing "original PieceState is unmodified after mark-in-flight"
@@ -396,3 +401,15 @@
       (is (= 0 (:piece-index (first ok))))
       (is (= 0 (:offset (first ok))))
       (is (= 1 (:length (first ok)))))))
+
+(deftest requeue-verified-test
+  (testing "a verified piece whose cache bytes are gone returns to needed"
+    (let [state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 5) 2))
+          state2 (:ok (pieces/mark-verified state 2))
+          result (pieces/requeue-verified state2 2)]
+      (is (some? (:ok result)))
+      (let [state3 (:ok result)]
+        (is (not (contains? (:verified state3) 2)))
+        (is (contains? (:needed state3) 2))
+        (is (= 0 (pieces/verified-count state3)))
+        (is (= 5 (pieces/needed-count state3)))))))

@@ -1620,3 +1620,36 @@
       (is (= 3 (pieces/verified-count (:piece-state result))))
       (is (= (seq (test-utils/to-bytes "abcdef")) (read-file "a.bin")))
       (is (= (seq (test-utils/to-bytes "ghijkl")) (read-file "b.bin"))))))
+
+(deftest run-download-fails-when-verified-pieces-cannot-be-materialized-test
+  (testing "a layout that refuses the write during resume fails the download
+            with :disk-error instead of reporting the pieces as safe"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:pieces [(bencode/sha1-hash piece-0)
+                         (bencode/sha1-hash (test-utils/to-bytes "efgh"))]
+                :piece-length 4
+                :name "matfail.bin"
+                :length 8}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 0)))
+                          (#(:ok (pieces/mark-verified % 0))))
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent
+                                                     "/out"
+                                                     "matfail")
+                          :piece-state piece-state
+                          :state :downloading)
+          disk (mock-disk/create {:output-write-error {:error :write-error
+                                                       :message "disk full"}})
+          _ (disk/write-piece disk 0 piece-0)
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        download)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (re-find #"^Failed to materialize verified pieces"
+                   (get-in result [:error :message]))))))

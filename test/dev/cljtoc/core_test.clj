@@ -56,3 +56,13 @@
     (let [result (#'core/resume-and-run (mock-manager) (failed-record))]
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason]))))))
+
+(deftest make-ports-builds-one-manager-from-the-shared-dirs-test
+  (testing "both commands resume against the same piece cache the download
+            wrote, so the construction lives in one place. The ports are
+            real implementations; creating them touches nothing"
+    (let [{:keys [manager time-port]} (#'core/make-ports)]
+      (is (some? (:network-port manager)))
+      (is (some? (:disk-port manager)))
+      (is (some? (:time-port manager)))
+      (is (some? time-port)))))
