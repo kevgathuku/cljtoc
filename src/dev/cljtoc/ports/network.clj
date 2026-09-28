@@ -10,6 +10,7 @@
    caller that wants two calls in flight has to put them on threads of its
    own -- that choice belongs above this seam, not inside it."
   (:require [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker]))
 
@@ -25,28 +26,48 @@
   :args (s/cat :port any?)
   :ret fn?)
 
+(s/def ::timeout-ms (s/and pos-int? #(<= % Integer/MAX_VALUE)))
+(s/def ::connect-timeout-ms ::timeout-ms)
+(s/def ::socket-timeout-ms ::timeout-ms)
+(s/def ::udp-timeout-ms ::timeout-ms)
+(s/def ::http-timeout-ms ::timeout-ms)
+;; fn? has no generator, so the bare predicate would make the shape
+;; un-generatable (s/gen fails at :log-fn); generate println instead,
+;; mirroring tracker/spec.clj's with-gen precedent.
+(s/def ::log-fn (s/with-gen fn? #(gen/return println)))
+(s/def ::adapter-config
+  (s/keys :opt-un [::connect-timeout-ms ::socket-timeout-ms
+                   ::udp-timeout-ms ::http-timeout-ms ::log-fn]))
+
 (def timeout-opt-keys
   "Adapter config keys holding socket timeouts in milliseconds."
   [:connect-timeout-ms :socket-timeout-ms :udp-timeout-ms :http-timeout-ms])
 
-(defn check-timeout-opts
-  "Validate present timeout opts before any network I/O: each must be a
-   positive int within the Java int range the socket APIs take. Zero means
-   infinite to Socket.connect/setSoTimeout, so present-but-invalid values
-   throw instead of falling back to a default. Absent keys are fine (the
-   historical defaults apply at use). Returns config unchanged."
+(defn check-adapter-config
+  "Validate adapter opts before any network I/O: present timeouts must be
+   positive ints within the Java int range the socket APIs take (zero means
+   infinite, so present-but-invalid values throw instead of falling back),
+   and a present :log-fn must be a fn. Absent keys are fine (historical
+   defaults apply at use). Returns config unchanged."
   [config]
   (doseq [timeout-key timeout-opt-keys
           :when (contains? config timeout-key)
           :let [value (get config timeout-key)]]
     (when-not (and (pos-int? value) (<= value Integer/MAX_VALUE))
-      (throw (ex-info (str "Invalid network timeout " timeout-key
+      (throw (ex-info (str "Invalid network adapter opt " timeout-key
                            ": expected positive int ms within Java int range, got "
                            (pr-str value))
                       {:key timeout-key :value value}))))
+  (when (contains? config :log-fn)
+    (let [log-fn-value (:log-fn config)]
+      (when-not (fn? log-fn-value)
+        (throw (ex-info (str "Invalid network adapter opt :log-fn"
+                             ": expected a fn of one message string, got "
+                             (pr-str log-fn-value))
+                        {:key :log-fn :value log-fn-value})))))
   config)
 
-(s/fdef check-timeout-opts
+(s/fdef check-adapter-config
   :args (s/cat :config map?)
   :ret map?)
 

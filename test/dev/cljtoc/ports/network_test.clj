@@ -10,6 +10,8 @@
    for a tracker, because collect-tracker-urls appends well-known public
    fallbacks, so there is no offline input that stops it short."
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
@@ -206,10 +208,10 @@
             (is (= 10000 (.getSoTimeout ^java.net.Socket (:socket (:ok result)))))
             (finally (network/close-peer (network-impl/create) (:ok result)))))))))
 
-;; check-timeout-opts throws by design, so it is excluded from stest/check
+;; check-adapter-config throws by design, so it is excluded from stest/check
 ;; (generated invalid configs would fail the check by construction); the
-;; mutation table below is its generative-equivalent coverage.
-(deftest invalid-timeout-opts-are-rejected-at-creation-test
+;; mutation tables plus the spec-conformance test below are its coverage.
+(deftest invalid-adapter-opts-are-rejected-at-creation-test
   (testing "present-but-invalid timeouts throw instead of reaching the socket APIs"
     ;; Mutation vocabulary is shape-diverse by construction: zero (the
     ;; infinite-timeout hole), negative, string, double, nil, and
@@ -224,7 +226,7 @@
         (is (some? err)
             (str label " port accepted " timeout-key "=" (pr-str bad)))
         (when (some? err)
-          (is (re-find #"Invalid network timeout" (ex-message err)))
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
           (is (= timeout-key (:key (ex-data err))))
           (is (= bad (:value (ex-data err))))))))
   (testing "valid timeouts (including the int boundary) and absent keys pass through"
@@ -234,7 +236,50 @@
                 :http-timeout-ms Integer/MAX_VALUE}]
       (is (= opts (:config (network-impl/create opts))))
       (is (= opts (:config (mock-network/create opts))))
-      (is (= {} (:config (network-impl/create)))))))
+      (is (= {} (:config (network-impl/create))))))
+  (testing ":log-fn must be a fn when present"
+    (doseq [bad ["x" 42 nil 0]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {:log-fn bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted :log-fn=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= :log-fn (:key (ex-data err)))))))
+    (let [capture (fn [_] nil)]
+      (is (= {:log-fn capture} (:config (network-impl/create {:log-fn capture}))))
+      (is (= {:log-fn capture} (:config (mock-network/create {:log-fn capture})))))))
+
+(deftest adapter-config-spec-matches-the-checker-test
+  (testing "s/def shape and check-adapter-config agree on fixed batteries"
+    (let [accepts? (fn [cfg]
+                     (try (network/check-adapter-config cfg) true
+                          (catch clojure.lang.ExceptionInfo _ false)))
+          valid-cfgs [{} {:connect-timeout-ms 1} {:log-fn println}
+                      {:connect-timeout-ms 1 :socket-timeout-ms 2
+                       :udp-timeout-ms 3 :http-timeout-ms Integer/MAX_VALUE}
+                      {:unrelated-key "ignored"}]
+          invalid-cfgs (concat (for [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+                                     timeout-key [:connect-timeout-ms :socket-timeout-ms
+                                                  :udp-timeout-ms :http-timeout-ms]]
+                                 {timeout-key bad})
+                               (for [bad ["x" 42 nil 0]] {:log-fn bad}))]
+      (doseq [cfg valid-cfgs]
+        (is (s/valid? ::network/adapter-config cfg)
+            (str "spec rejected " (pr-str cfg)))
+        (is (accepts? cfg)
+            (str "checker rejected " (pr-str cfg))))
+      (doseq [cfg invalid-cfgs]
+        (is (not (s/valid? ::network/adapter-config cfg))
+            (str "spec accepted " (pr-str cfg)))
+        (is (not (accepts? cfg))
+            (str "checker accepted " (pr-str cfg))))))
+  (testing "every generated valid config passes the checker"
+    (doseq [cfg (gen/sample (s/gen ::network/adapter-config) 50)]
+      (is (= cfg (network/check-adapter-config cfg))
+          (str "checker rejected generated " (pr-str cfg))))))
 
 (deftest fdef-specs-hold-generatively-test
   (testing "log-fn fdef holds over generated inputs"

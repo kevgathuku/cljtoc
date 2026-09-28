@@ -339,4 +339,4 @@
   ([]
    (create {}))
   ([opts]
-   (->NetworkPort (network/check-timeout-opts opts) (atom {}))))
+   (->NetworkPort (network/check-adapter-config opts) (atom {}))))
