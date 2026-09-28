@@ -38,6 +38,9 @@
 (defprotocol ITrackerPort
   "Abstraction for tracker communication operations."
 
-  (announce [this torrent-metadata]
+  (announce [this torrent-metadata progress]
     "Announce to the tracker and get a list of peers.
+     progress is {:downloaded bytes-on-disk :left bytes-remaining}: the
+     tracker's leecher accounting depends on it, so a resume must report
+     verified bytes rather than zero.
      Returns {:ok #{peer-address}} or {:error reason :message msg}."))

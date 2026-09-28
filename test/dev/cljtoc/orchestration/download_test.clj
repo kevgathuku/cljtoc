@@ -445,6 +445,59 @@
         result (download/resume-download nil net paused)]
     (is (= :tracker-error (:error result)))))
 
+(defn- progress-fixture
+  "A 2-piece single-file download (pieces of 4+4, total 8) with piece 0
+   verified. Returns {:download :torrent}."
+  []
+  (let [torrent {:info-hash (byte-array 20)
+                 :info {:pieces ["h1" "h2"] :piece-length 4 :length 8 :name "p.bin"}}
+        piece-state (-> (pieces/initial-piece-state 2)
+                        (#(:ok (pieces/mark-in-flight % 0)))
+                        (#(:ok (pieces/mark-verified % 0))))]
+    {:torrent torrent
+     :download (assoc (download/initial-download (mock-time/create) torrent "/out" "prog")
+                      :piece-state piece-state)}))
+
+(deftest announce-progress-reports-verified-bytes-test
+  (testing "a fresh download announces nothing downloaded, all bytes left"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 4 :length 8 :name "p.bin"}}
+          download (download/initial-download (mock-time/create) torrent "/out" "fresh")]
+      (is (= {:downloaded 0 :left 8} (#'download/announce-progress download)))))
+  (testing "a verified piece counts toward downloaded"
+    (let [{:keys [download]} (progress-fixture)]
+      (is (= {:downloaded 4 :left 4} (#'download/announce-progress download)))))
+  (testing "the short tail piece counts at its real length, not a full piece"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"] :piece-length 4 :length 6 :name "p.bin"}}
+          piece-state (-> (pieces/initial-piece-state 2)
+                          (#(:ok (pieces/mark-in-flight % 1)))
+                          (#(:ok (pieces/mark-verified % 1))))
+          download (assoc (download/initial-download (mock-time/create) torrent "/out" "tail")
+                          :piece-state piece-state)]
+      (is (= {:downloaded 2 :left 4} (#'download/announce-progress download)))))
+  (testing "records without size metadata announce zero without throwing"
+    (let [torrent {:info-hash (byte-array 20)
+                   :info {:pieces ["h1" "h2"]}}
+          download (download/initial-download (mock-time/create) torrent "/out" "bare")]
+      (is (= {:downloaded 0 :left 0} (#'download/announce-progress download))))))
+
+(deftest resume-download-announces-verified-progress-test
+  (testing "the tracker re-announce on resume reports verified bytes as
+            downloaded instead of zero, so the tracker stops counting a
+            resumed leecher as empty"
+    (let [{:keys [download]} (progress-fixture)
+          paused (assoc download
+                        :state :failed
+                        :peers #{}
+                        :error {:reason :no-peers :message "gone"})
+          captured (atom nil)
+          net (mock-net/create {:mock-peers ["10.9.9.1:6881"]
+                                :announce-capture captured})
+          result (download/resume-download nil net paused)]
+      (is (= :downloading (get-in result [:ok :state])))
+      (is (= {:downloaded 4 :left 4} (:progress @captured))))))
+
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
 

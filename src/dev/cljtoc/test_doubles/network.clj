@@ -40,7 +40,9 @@
     nil)
 
   network/ITrackerPort
-  (announce [_ _]
+  (announce [_ torrent-metadata progress]
+    (when-let [capture (:announce-capture config)]
+      (reset! capture {:torrent torrent-metadata :progress progress}))
     (if-let [announce-error (:announce-error config)]
       announce-error
       {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])})))
@@ -52,6 +54,8 @@
    - :default-bitfield - set of piece indices this mock peer has (default: #{0 1 2 3 4})
    - :mock-peers - vector of peer addresses to return on announce
    - :announce-error - error map to return from announce instead of peers
+   - :announce-capture - atom reset to {:torrent _ :progress _} on announce,
+     so tests can assert the reported downloaded/left
    - :handshake-response - map or (fn [peer]) returning {:ok handshake}
      or {:error ...} for receive-handshake
    - :receive-responses - atom holding a seq of {:ok ...} / {:error ...}

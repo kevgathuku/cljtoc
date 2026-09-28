@@ -204,8 +204,30 @@
       (download-error :invalid-torrent (:message result))
       {:ok (:ok result)})))
 
-(defn- announce-to-tracker [network-port torrent]
-  (let [result (network/announce network-port torrent)]
+(defn- announce-progress
+  "The progress a tracker (re-)announce must report for download:
+   :downloaded is the verified bytes already on disk, :left the rest.
+   Announcing zero on resume tells the tracker nothing was fetched and
+   skews its leecher accounting. The tail piece counts at its real
+   length; missing size metadata announces zero rather than throwing."
+  [download]
+  (let [info (get-in download [:torrent :info] {})
+        total (torrent/total-size info)
+        piece-length (or (:piece-length info) 0)
+        piece-count (count (:pieces info))
+        downloaded (reduce + 0
+                           (map (fn [piece-index]
+                                  (if (= piece-index (dec piece-count))
+                                    (- total (* piece-index piece-length))
+                                    piece-length))
+                                (:verified (:piece-state download))))]
+    {:downloaded downloaded
+     :left (max 0 (- total downloaded))}))
+
+(defn- announce-to-tracker [network-port download]
+  (let [result (network/announce network-port
+                                 (:torrent download)
+                                 (announce-progress download))]
     (if (:error result)
       (download-error :tracker-error (:message result))
       {:ok (:ok result)})))
@@ -296,7 +318,7 @@
       parse-result
       (let [torrent (:ok parse-result)
             download (initial-download time-port torrent output-dir (disk/id-from-path torrent-path))
-            announce-result (announce-to-tracker network-port torrent)]
+            announce-result (announce-to-tracker network-port download)]
         (if (:error announce-result)
           (assoc download :state :failed
                  :error (:error announce-result)
@@ -408,7 +430,7 @@
                           :piece-state (requeue-stranded-pieces
                                         (:piece-state revived)))]
        (if network-port
-         (let [announce-result (announce-to-tracker network-port (:torrent revived))]
+         (let [announce-result (announce-to-tracker network-port revived)]
            (if (:error announce-result)
              announce-result
              {:ok (assoc revived :peers (build-peers (:ok announce-result)))}))
