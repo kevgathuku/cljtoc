@@ -298,6 +298,9 @@
 
 (deftest fdef-specs-hold-generatively-test
   (testing "log-fn fdef holds over generated inputs"
+    ;; announce-to-url is excluded on principle, like log!: the generator
+    ;; cannot conjure a live tracker URL, so a check would die in socket
+    ;; I/O before its :ret is even reached.
     (let [failures (test-utils/check-fdefs
                     '[dev.cljtoc.ports.network/log-fn]
                     50)]
@@ -359,7 +362,31 @@
     (let [mock (mock-network/create {:announce-to-url-error {:error :boom :message "down"}})
           result (network/announce mock {:announce "http://a.example.com"}
                                    {:downloaded 0 :left 1000})]
-      (is (= :boom (:error result))))))
+      (is (= :boom (:error result)))))
+  (testing "with distinct per-URL failures, the LAST one wins"
+    ;; exodus is the final fallback URL, so its error must surface;
+    ;; an implementation returning the first failure answers :first.
+    (let [mock (mock-network/create
+                {:mock-peers []
+                 :announce-to-url-responses
+                 {"http://a.example.com" {:error :first :message "1"}
+                  "udp://exodus.desync.com:6969" {:error :last :message "2"}}})
+          result (network/announce mock {:announce "http://a.example.com"}
+                                   {:downloaded 0 :left 1000})]
+      (is (= :last (:error result)) (pr-str result))))
+  (testing "queried URLs follow the pure order, captured in sequence"
+    (let [captured (atom [])
+          mock (mock-network/create {:mock-peers []
+                                     :announce-to-url-capture captured})
+          result (network/announce mock
+                                   {:announce "http://a.example.com"
+                                    :announce-list [["http://b.example.com"]]}
+                                   {:downloaded 0 :left 1000})]
+      ;; Every URL answers empty, so the all-failed fallback fires.
+      (is (= :all-trackers-failed (:error result)) (pr-str result))
+      (is (= ["http://a.example.com" "http://b.example.com"]
+             (take 2 @captured)))
+      (is (= 8 (count @captured)) "2 declared + 6 public fallbacks"))))
 
 (deftest real-announce-to-url-never-throws-test
   (testing "a malformed URL is an error envelope, with no socket touched"

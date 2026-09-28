@@ -903,7 +903,12 @@
    Returns: vector of tracker URL strings."
   [torrent-metadata]
   (let [primary (:announce torrent-metadata)
-        from-list (mapcat identity (:announce-list torrent-metadata))
+        tiers (:announce-list torrent-metadata)
+        ;; Tiers arrive as vectors of vectors from parsed torrents; a
+        ;; non-sequential shape contributes nothing instead of throwing
+        ;; out of mapcat, so this stays total over any metadata map.
+        from-list (mapcat #(if (sequential? %) % [])
+                          (if (sequential? tiers) tiers []))
         all (concat (if primary (cons primary from-list) from-list)
                     fallback-trackers)]
     (vec (distinct (filter #(and (string? %)

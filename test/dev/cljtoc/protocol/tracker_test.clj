@@ -1082,7 +1082,16 @@
   (testing "appends well-known public fallbacks after declared trackers"
     (let [order (tracker/pick-tracker-order {:announce "http://mine.example.com"})]
       (is (= "http://mine.example.com" (first order)))
-      (is (some #(= "udp://tracker.opentrackr.org:1337" %) order)))))
+      (is (some #(= "udp://tracker.opentrackr.org:1337" %) order))))
+
+  (testing "hostile shapes contribute nothing instead of throwing"
+    (doseq [metadata [{:announce "http://a.example.com" :announce-list "not-a-coll"}
+                      {:announce "http://a.example.com" :announce-list 42}
+                      {:announce 42 :announce-list nil}
+                      {}]]
+      (let [order (tracker/pick-tracker-order metadata)]
+        (is (vector? order) (pr-str metadata))
+        (is (every? string? order) (pr-str metadata))))))
 
 (deftest combine-peers-test
   (testing "union of address sets"
