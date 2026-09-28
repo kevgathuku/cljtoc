@@ -12,14 +12,6 @@
 ;; Encoding and ID scheme live in dev.cljtoc.ports.disk (the single
 ;; persistence seam); this namespace is a sync adapter over the same layout.
 
-(defrecord DownloadState
-           [id
-            torrent-path
-            output-dir
-            state
-            started-at
-            error])
-
 (defn state-file-path [id state-dir]
   (str state-dir "/" id ".edn"))
 
@@ -73,34 +65,4 @@
      (when (.exists file)
        (.delete file)))))
 
-(defn id-from-path
-  "Generate a human-readable ID from torrent file path."
-  [torrent-path]
-  (disk/id-from-path torrent-path))
 
-(defn get-or-create-download-id
-  "Get the download ID for a torrent path. The ID is stable per path, so
-   calling this for a previously saved torrent resumes that same state file."
-  ([torrent-path]
-   (get-or-create-download-id torrent-path default-state-dir))
-  ([torrent-path _state-dir]
-   (id-from-path torrent-path)))
-
-(defn has-active-download?
-  "Check if there's an active download."
-  ([]
-   (has-active-download? default-state-dir))
-  ([state-dir]
-   (let [recent (load-most-recent state-dir)]
-     (when recent
-       (contains? #{:starting :downloading :paused} (:state recent))))))
-
-(defn clear-state
-  "Clear all download state from disk."
-  ([]
-   (clear-state default-state-dir))
-  ([state-dir]
-   (let [dir (io/file state-dir)]
-     (when (.exists dir)
-       (doseq [f (.listFiles dir)]
-         (.delete f))))))
