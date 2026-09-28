@@ -10,6 +10,8 @@
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.ports.disk-impl :as disk-impl]
+            [clojure.java.io :as io]
             [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
@@ -161,3 +163,40 @@
           "the state resume loads is the state download saved")
       (is (= "./torrent-cache" (str (:piece-cache-dir (:disk-port manager))))
           "the cache resume materializes from is the cache download wrote"))))
+
+(defn- temp-disk-port
+  "A real disk port over a fresh temp state dir (plus a throwaway cache dir
+   the port constructor requires). File system is the seam — no mocks."
+  [state-dir]
+  (disk-impl/create {:state-dir state-dir
+                     :piece-cache-dir (test-utils/temp-dir "core-test-cache-")}))
+
+(deftest load-command-state-test
+  (testing "by id loads the record the port saved"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (is (= {:ok :saved} (disk/save-state port {:id "cmd-1" :state :paused})))
+      (let [loaded (#'core/load-command-state port dir ["cmd-1"])]
+        (is (= "cmd-1" (:id loaded)))
+        (is (= :paused (:state loaded))))))
+  (testing "an unknown id reads as nil, so commands print not-found"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (is (nil? (#'core/load-command-state port dir ["nope"])))))
+  (testing "a corrupt file reads as nil — the CLI's missing-state story"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (spit (io/file dir "corrupt.edn") "{broken edn")
+      (is (nil? (#'core/load-command-state port dir ["corrupt"])))))
+  (testing "no id falls back to the most recent record"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "old" :state :paused})
+      (disk/save-state port {:id "new" :state :downloading})
+      (.setLastModified (io/file dir "old.edn") 1000)
+      (.setLastModified (io/file dir "new.edn") 2000)
+      (is (= "new" (:id (#'core/load-command-state port dir []))))))
+  (testing "no id with an empty dir reads as nil"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (is (nil? (#'core/load-command-state port dir []))))))
