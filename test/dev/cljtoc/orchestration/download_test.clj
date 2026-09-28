@@ -1404,6 +1404,29 @@
       (is (= #{0 1} (:needed piece-state)))
       (is (false? (pieces/complete? piece-state))))))
 
+(deftest materialize-requeues-a-verified-piece-with-corrupt-cached-bytes-test
+  (testing "cache bytes that fail their torrent hash go back to :needed
+            instead of being written into the output. The real port returns
+            whatever the cache file holds with no length or hash check, so
+            trusting the verified set alone would complete the download with
+            corrupt content on disk"
+    (let [{:keys [download layout disk]} (materialize-fixture)
+          _ (disk/write-piece disk 0 (test-utils/to-bytes "XXXX"))
+          result (#'download/materialize-verified-pieces download disk layout)
+          piece-state (:piece-state (:ok result))]
+      (is (= #{} (:verified piece-state)))
+      (is (= #{0 1} (:needed piece-state)))
+      (is (nil? (mock-disk/get-output-piece disk 0))))))
+
+(deftest materialize-trusts-the-cache-when-the-record-carries-no-hashes-test
+  (testing "without piece hashes there is nothing to verify against, so the
+            piece writes through exactly as before the verification step"
+    (let [{:keys [download layout disk piece-0]} (materialize-fixture)
+          result (#'download/materialize-verified-pieces
+                  (dissoc download :torrent) disk layout)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
+
 (deftest materialize-fails-when-the-layout-rejects-a-write-test
   (testing "a refused write fails the resume rather than reporting a
             download whose bytes never landed"

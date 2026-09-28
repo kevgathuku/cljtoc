@@ -172,6 +172,15 @@
       resumed
       (download/run-download manager (:ok resumed)))))
 
+(defn- refusal?
+  "True when result is a refusal envelope rather than a Download record.
+
+   resume-and-run returns either: a refusal carries :error but no :state,
+   while even a :failed record carries both. Testing :error alone mistook
+   failed records for refusals and returned without saving them."
+  [result]
+  (boolean (and (:error result) (nil? (:state result)))))
+
 (defn- cmd-torrent-resume
   [args]
   (let [state (if (seq args)
@@ -183,13 +192,15 @@
         (System/exit 1))
       (let [{:keys [manager time-port]} (make-ports)
             result (resume-and-run manager state)]
-        (if (:error result)
+        (if (refusal? result)
           (do
-            (println "Failed to resume: " (get-in result [:error :message]))
+            (println "Failed to resume: " (:message result))
             (System/exit 1))
           (do
             (cli-state/save-state result)
-            (println "Download resumed.")
+            (println (if (= :failed (:state result))
+                       (str "Download failed: " (get-in result [:error :message]))
+                       "Download resumed."))
             (print-progress (download/progress time-port result))))))))
 
 (defn- cmd-torrent-status

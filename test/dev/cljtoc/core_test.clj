@@ -57,6 +57,20 @@
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason]))))))
 
+(deftest refusal-distinguishes-envelopes-from-records-test
+  (testing "resume-and-run returns either a refusal envelope (:error, no
+            :state) or a Download record (always has :state). Checking
+            :error alone mistook a :failed record for a refusal and dropped
+            it without saving, so the refusal test must key on the missing
+            :state"
+    (is (#'core/refusal?
+         {:error :not-paused
+          :message "Download is not resumable from state :completed"}))
+    (is (not (#'core/refusal? (failed-record)))
+        "a :failed record carries :error too, but it must be saved, not refused")
+    (is (not (#'core/refusal?
+              (assoc (failed-record) :state :downloading :error nil))))))
+
 (deftest make-ports-builds-one-manager-from-the-shared-dirs-test
   (testing "both commands resume against the same piece cache the download
             wrote, so the construction lives in one place. The ports are

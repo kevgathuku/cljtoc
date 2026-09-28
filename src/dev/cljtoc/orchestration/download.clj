@@ -1095,9 +1095,12 @@
    the content is on disk rather than that the files exist.
 
    A verified piece the cache no longer holds cannot be written, so it
-   returns to :needed and the swarm fetches it again. Leaving it verified
-   would let complete? answer true and report a finished download with a
-   hole in it.
+   returns to :needed and the swarm fetches it again, as does a piece
+   whose cached bytes fail their torrent hash -- the port returns
+   whatever the cache file holds, so a truncated file would otherwise
+   land in the output while the piece stays verified. Leaving either
+   verified would let complete? answer true and report a finished
+   download with a hole in it.
 
    Returns {:ok download} with the piece state updated, or the refusing
    port envelope {:error reason :message msg} unchanged. The envelope
@@ -1116,7 +1119,18 @@
           (:error cached)
           (assoc cached :download download)
 
-          (nil? (:ok cached))
+          ;; Bytes the cache can no longer vouch for go back to the swarm:
+          ;; missing bytes, or bytes failing their torrent hash (the real
+          ;; port returns whatever the cache file holds, so a truncated
+          ;; file would otherwise land in the output while the piece stays
+          ;; verified). Without hashes there is nothing to check against.
+          (let [cached-bytes (:ok cached)
+                expected (nth (get-in download [:torrent :info :pieces])
+                              piece-index nil)]
+            (or (nil? cached-bytes)
+                (and (some? expected)
+                     (not (:ok (pieces/verify-piece
+                                piece-index cached-bytes expected))))))
           (let [requeued (pieces/requeue-verified (:piece-state download)
                                                   piece-index)]
             (if (:ok requeued)
