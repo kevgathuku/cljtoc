@@ -134,18 +134,28 @@
                     (println "  " (or (:message result)
                                       (str (:error result))))
                     (System/exit 1))
-                  (let [download-id (:id result)]
-                    (cli-state/save-state (assoc result
-                                                 :torrent-path torrent-path
-                                                 :output-dir output-dir))
+                  (let [download-id (:id result)
+                        save-result (disk/save-state (:disk-port manager)
+                                                     (assoc result
+                                                            :torrent-path torrent-path
+                                                            :output-dir output-dir))]
+                    (when (:error save-result)
+                      (println "Failed to save download state:")
+                      (println "  " (:message save-result))
+                      (System/exit 1))
                     (println (str "Download started: " download-id))
                     (println)
                     (print-progress (download/progress time-port result))
                     (println)
-                    (let [final-download (download/run-download manager result)]
-                      (cli-state/save-state (assoc final-download
-                                                   :torrent-path torrent-path
-                                                   :output-dir output-dir))
+                    (let [final-download (download/run-download manager result)
+                          save-result (disk/save-state (:disk-port manager)
+                                                       (assoc final-download
+                                                              :torrent-path torrent-path
+                                                              :output-dir output-dir))]
+                      (when (:error save-result)
+                        (println "Failed to save download state:")
+                        (println "  " (:message save-result))
+                        (System/exit 1))
                       (println)
                       (print-progress (download/progress time-port final-download)))))))))))))
 
@@ -164,8 +174,11 @@
           (do
             (println "Failed to pause: " (get-in result [:error :message]))
             (System/exit 1))
-          (do
-            (cli-state/save-state (get result :ok))
+          (let [save-result (disk/save-state (:disk-port manager) (get result :ok))]
+            (when (:error save-result)
+              (println "Failed to save download state:")
+              (println "  " (:message save-result))
+              (System/exit 1))
             (println "Download paused.")
             (print-progress (download/progress (time-port/->RealTimePort) (get result :ok)))))))))
 
@@ -221,8 +234,11 @@
           (do
             (println "Failed to resume: " (:message result))
             (System/exit 1))
-          (do
-            (cli-state/save-state result)
+          (let [save-result (disk/save-state (:disk-port manager) result)]
+            (when (:error save-result)
+              (println "Failed to save download state:")
+              (println "  " (:message save-result))
+              (System/exit 1))
             (println (if (= :failed (:state result))
                        (str "Download failed: " (get-in result [:error :message]))
                        "Download resumed."))
