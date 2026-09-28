@@ -334,83 +334,41 @@
   (testing "missing sizes total zero"
     (is (= 0 (torrent/total-size {})))))
 
-(deftest piece-file-spans-test
-  (testing "single-file piece maps to one span at the piece offset"
-    (let [info {:name "test.txt" :piece-length 4 :length 8}]
-      (is (= {:ok [{:path ["test.txt"] :file-offset 0 :data-offset 0 :length 4}]}
-             (torrent/piece-file-spans info 0 4)))
-      (is (= {:ok [{:path ["test.txt"] :file-offset 4 :data-offset 0 :length 4}]}
-             (torrent/piece-file-spans info 1 4)))))
-  (testing "multi-file piece spanning a file boundary splits into two spans"
-    (let [info {:name "t" :piece-length 6
-                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
-      (is (= {:ok [{:path ["t" "a"] :file-offset 0 :data-offset 0 :length 4}
-                   {:path ["t" "b"] :file-offset 0 :data-offset 4 :length 2}]}
-             (torrent/piece-file-spans info 0 6)))))
-  (testing "short final piece maps only its own bytes"
-    (let [info {:name "t" :piece-length 6
-                :files [{:path ["a"] :length 4} {:path ["b"] :length 6}]}]
-      (is (= {:ok [{:path ["t" "b"] :file-offset 2 :data-offset 0 :length 4}]}
-             (torrent/piece-file-spans info 1 4)))))
-  (testing "out-of-range piece index is an error"
-    (let [info {:name "test.txt" :piece-length 4 :length 8}]
-      (is (:error (torrent/piece-file-spans info 2 4)))))
-  (testing "path components escaping the output dir are an error"
-    (is (:error (torrent/piece-file-spans {:name ".." :piece-length 4 :length 8} 0 4)))
-    (is (:error (torrent/piece-file-spans {:name "t" :piece-length 4 :length 8
-                                           :files [{:path [".."] :length 8}]} 0 4)))
-    (is (:error (torrent/piece-file-spans {:name "a/b" :piece-length 4 :length 8} 0 4)))
-    (is (:error (torrent/piece-file-spans {:name "" :piece-length 4 :length 8} 0 4)))))
-
-(deftest piece-file-spans-rejects-unusable-geometry-test
-  (testing "a negative or non-integral piece index or byte count is an error"
-    (let [info {:name "t" :piece-length 4 :length 8}]
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info -1 4))))
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info 0.5 4))))
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info 0 0))))
-      (is (re-find #"must be valid"
-                   (:message (torrent/piece-file-spans info 0 -4))))))
+(deftest compiled-layout-rejects-bad-piece-length-test
+  ;; Geometry (bad index/count) is pinned through layout-spans in
+  ;; layout-spans-test; this pins the compile side: a missing or
+  ;; non-positive piece length never yields a layout at all.
   (testing "a missing or non-positive piece length is an error"
     (is (re-find #"positive :piece-length"
-                 (:message (torrent/piece-file-spans {:name "t" :length 8} 0 4))))
+                 (:message (torrent/compile-output-layout {:name "t" :length 8}))))
     (is (re-find #"positive :piece-length"
-                 (:message (torrent/piece-file-spans {:name "t" :piece-length 0 :length 8} 0 4))))
+                 (:message (torrent/compile-output-layout {:name "t" :piece-length 0 :length 8}))))
     (is (re-find #"positive :piece-length"
-                 (:message (torrent/piece-file-spans {:name "t" :piece-length -4 :length 8} 0 4))))))
+                 (:message (torrent/compile-output-layout {:name "t" :piece-length -4 :length 8}))))))
 
-(deftest output-file-sizes-requires-name-test
+(deftest compile-output-layout-requires-name-test
   (testing "info without a name cannot yield an output layout"
     (is (re-find #":name"
-                 (:message (torrent/output-file-sizes {:piece-length 4 :length 8}))))
+                 (:message (torrent/compile-output-layout {:piece-length 4 :length 8}))))
     (is (re-find #":name"
-                 (:message (torrent/output-file-sizes {:piece-length 4
-                                                       :files [{:path ["a"] :length 8}]}))))))
+                 (:message (torrent/compile-output-layout {:piece-length 4
+                                                           :files [{:path ["a"] :length 8}]}))))))
 
 (deftest duplicate-declared-paths-are-rejected-test
-  ;; A torrent may declare the same path twice. output-file-sizes collapses
-  ;; that into one map entry while piece-file-spans still hands out two
-  ;; distinct byte ranges for it, so both land in the same physical file and
-  ;; the download completes having lost the overwritten bytes. Reject it in
-  ;; the shared layout guard so neither derivation reports success.
+  ;; A torrent may declare the same path twice: the sizes view would collapse
+  ;; that into one map entry while spans kept two distinct byte ranges, so
+  ;; both landed in the same physical file and the download completed having
+  ;; lost the overwritten bytes. Refuse it in the layout guard, so no layout
+  ;; is ever derived from the clash.
   (let [info {:name "t" :piece-length 4
-              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
-    (testing "output-file-sizes refuses the collapsed layout"
-      (let [result (torrent/output-file-sizes info)]
-        (is (:error result))
-        (is (re-find #"same output path twice" (:message result)))))
-    (testing "piece-file-spans refuses it too, not just the size map"
-      (let [result (torrent/piece-file-spans info 0 4)]
-        (is (:error result))
-        (is (re-find #"same output path twice" (:message result)))))
-    (testing "each piece of the duplicated range errors, not only the first"
-      (is (:error (torrent/piece-file-spans info 1 4))))))
-(testing "a duplicate full path declared through different nesting is the same clash"
-  (let [info {:name "t" :piece-length 4
-              :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
-    (is (:error (torrent/output-file-sizes info)))))
+              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}
+        result (torrent/compile-output-layout info)]
+    (is (:error result))
+    (is (re-find #"same output path twice" (:message result))))
+  (testing "a duplicate full path declared through different nesting is the same clash"
+    (let [info {:name "t" :piece-length 4
+                :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
+      (is (:error (torrent/compile-output-layout info))))))
 
 (deftest mutually-exclusive-layout-fields-are-rejected-test
   ;; An info carrying both :length (single-file) and :files (multi-file)
@@ -420,39 +378,29 @@
   ;; half the declared layout unwritten. The wire format leaves no room for
   ;; both; reject the shape in the shared guard.
   (let [info {:name "t" :piece-length 4 :length 4
-              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}]
-    (testing "output-file-sizes refuses the two-layout info"
-      (let [result (torrent/output-file-sizes info)]
-        (is (:error result))
-        (is (re-find #"both :length and :files" (:message result)))))
-    (testing "piece-file-spans refuses it too"
-      (let [result (torrent/piece-file-spans info 0 4)]
-        (is (:error result))
-        (is (re-find #"both :length and :files" (:message result))))))
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        result (torrent/compile-output-layout info)]
+    (is (:error result))
+    (is (re-find #"both :length and :files" (:message result))))
   (testing "an empty :files beside :length is the same clash, not an empty layout"
-    (is (:error (torrent/output-file-sizes {:name "t" :piece-length 4
-                                            :length 4 :files []})))))
+    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
+                                                :length 4 :files []})))))
 
 (deftest missing-length-fields-are-rejected-test
   ;; The guard claims exactly one of :length/:files but only refused both
-  ;; present. With neither, output-file-sizes returns a size map containing
-  ;; nil and init-layout! dies later in setLength instead of refusing the
-  ;; malformed layout as :invalid-info. Same one level down: a file entry
-  ;; without :length poisons the same map.
-  (testing "an info with neither :length nor :files is an error in both derivations"
+  ;; present. With neither, the old sizes entry point returned a size map
+  ;; containing nil and init-layout! died later in setLength instead of
+  ;; refusing the malformed layout as :invalid-info. Same one level down:
+  ;; a file entry without :length poisons the same map.
+  (testing "an info with neither :length nor :files is an error"
     (let [info {:name "t" :piece-length 4}
-          sizes-result (torrent/output-file-sizes info)
-          spans-result (torrent/piece-file-spans info 0 4)]
-      (is (:error sizes-result))
-      (is (re-find #"either :length or :files" (:message sizes-result)))
-      (is (:error spans-result))))
-  (testing "a file entry without :length is an error in both derivations"
+          result (torrent/compile-output-layout info)]
+      (is (:error result))
+      (is (re-find #"either :length or :files" (:message result)))))
+  (testing "a file entry without :length is an error"
     (let [info {:name "t" :piece-length 4
-                :files [{:path ["a"] :length 4} {:path ["b"]}]}
-          sizes-result (torrent/output-file-sizes info)
-          spans-result (torrent/piece-file-spans info 0 4)]
-      (is (:error sizes-result))
-      (is (:error spans-result)))))
+                :files [{:path ["a"] :length 4} {:path ["b"]}]}]
+      (is (:error (torrent/compile-output-layout info))))))
 
 (deftest prefix-colliding-paths-are-rejected-test
   ;; ["t" "a"] cannot be both the file one entry claims and the directory
@@ -461,33 +409,28 @@
   ;; opening the parent as a file — so refuse upfront, in the shared guard.
   (let [info {:name "t" :piece-length 4
               :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}]
-    (testing "both derivations refuse the nested layout"
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
+    (is (:error (torrent/compile-output-layout info))))
   (testing "an empty entry path collides with its siblings the same way"
     (let [info {:name "t" :piece-length 4
                 :files [{:path [] :length 4} {:path ["x"] :length 4}]}]
-      (is (:error (torrent/output-file-sizes info))))))
+      (is (:error (torrent/compile-output-layout info))))))
 
 (deftest non-integer-lengths-are-rejected-test
-  ;; Lengths the derivations cannot honestly process: a string :length
-  ;; crashes piece-file-spans in (>= piece-start total) instead of erroring,
-  ;; and output-file-sizes happily hands the string downstream, where
-  ;; setLength explodes later, far from the lie. Same guard, same reason.
-  (testing "a non-integer single-file length is an error in both derivations"
+  ;; Lengths the layout cannot honestly process: a string :length used to
+  ;; crash span derivation in (>= piece-start total) instead of erroring,
+  ;; and the sizes view happily handed the string downstream, where
+  ;; setLength exploded later, far from the lie. Same guard, same reason.
+  (testing "a non-integer single-file length is an error"
     (let [info {:name "t" :piece-length 4 :length "x"}]
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
-  (testing "a non-integer file-entry length is an error in both derivations"
+      (is (:error (torrent/compile-output-layout info)))))
+  (testing "a non-integer file-entry length is an error"
     (let [info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length "x"}]}]
-      (is (:error (torrent/output-file-sizes info)))
-      (is (:error (torrent/piece-file-spans info 0 4)))))
+      (is (:error (torrent/compile-output-layout info)))))
   (testing "zero stays admitted — it is a length, and empty files are real"
     (let [info {:name "t" :piece-length 4
                 :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]}]
-      (is (:ok (torrent/output-file-sizes info)))
-      (is (:ok (torrent/piece-file-spans info 0 4))))))
+      (is (:ok (torrent/compile-output-layout info))))))
 
 ;; The exclusivity rule, generated rather than hoped for: stest/check over
 ;; the derivations can only feed them bare maps, whose generator all but
@@ -501,21 +444,24 @@
                                            {:path [(str "f" file-index)]
                                             :length (inc file-index)})
                                          (range file-count))}]
-                  (and (:error (torrent/output-file-sizes info))
-                       (:error (torrent/piece-file-spans info 0 1))))))
+                  (:error (torrent/compile-output-layout info)))))
 
 (deftest piece-arithmetic-overflow-is-an-error-test
   ;; Found by stest/check once ::info generated realistic shapes: a huge
   ;; piece-length times a huge index overflows long in (* piece-index
   ;; nominal). Real torrents cannot reach it, but the contract is errors
   ;; as data — never a throw — so overflow reports instead of escaping.
+  ;; The info still compiles (lengths are honest); the overflow fires in
+  ;; the per-piece span math.
   (testing "overflowing piece arithmetic returns an error, not ArithmeticException"
     (let [info {:name "t" :piece-length 4611686018427387904 :length 8}
-          result (torrent/piece-file-spans info 2 4)]
+          layout (:ok (torrent/compile-output-layout info))
+          result (torrent/layout-spans layout 2 4)]
+      (is (some? layout))
       (is (:error result))
       (is (re-find #"overflow" (:message result))))))
 
-(defspec piece-file-spans-cover-exactly-spec 100
+(defspec layout-spans-cover-exactly-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)
     file-lengths (gen/vector (gen/choose 1 20) 1 4)]
@@ -527,32 +473,34 @@
                  :files (mapv (fn [file-index file-length]
                                 {:path [(str "f" file-index)] :length file-length})
                               (range file-count) file-lengths)})
+         layout (:ok (torrent/compile-output-layout info))
          piece-count (int (Math/ceil (/ total (double piece-length))))
          file-sizes (if (= 1 file-count)
                       {["f"] total}
                       (into {} (map (fn [file-index file-length]
                                       [["t" (str "f" file-index)] file-length])
                                     (range file-count) file-lengths)))]
-     (every? true?
-             (for [piece-index (range piece-count)]
-               (let [piece-start (* piece-index piece-length)
-                     expected (min piece-length (- total piece-start))
-                     spans (:ok (torrent/piece-file-spans info piece-index expected))
-                     lengths (map :length spans)
-                     data-offsets (map :data-offset spans)]
-                 (and (vector? spans)
-                      (= expected (reduce + 0 lengths))
-                      (= (vec (butlast (reductions + 0 lengths))) (vec data-offsets))
-                      (every? #(and (>= (:file-offset %) 0)
-                                    (<= (+ (:file-offset %) (:length %))
-                                        (get file-sizes (:path %) -1)))
-                              spans))))))))
+     (and (some? layout)
+          (every? true?
+                  (for [piece-index (range piece-count)]
+                    (let [piece-start (* piece-index piece-length)
+                          expected (min piece-length (- total piece-start))
+                          spans (:ok (torrent/layout-spans layout piece-index expected))
+                          lengths (map :length spans)
+                          data-offsets (map :data-offset spans)]
+                      (and (vector? spans)
+                           (= expected (reduce + 0 lengths))
+                           (= (vec (butlast (reductions + 0 lengths))) (vec data-offsets))
+                           (every? #(and (>= (:file-offset %) 0)
+                                         (<= (+ (:file-offset %) (:length %))
+                                             (get file-sizes (:path %) -1)))
+                                   spans)))))))))
 
 ;; ---------------------------------------------------------------------------
-;; Cross-function invariants between output-file-sizes and piece-file-spans.
-;; write-layout! looks each spanned path up in the sizes map to truncate it, so
-;; a path emitted by one function and absent from the other is an NPE, not a
-;; wrong-but-safe result. Neither function's own test checks the agreement.
+;; Invariants of the compiled layout value. write-layout! looks each spanned
+;; path up in the layout's own sizes map to truncate it, so a spanned path
+;; absent from :sizes is an NPE, not a wrong-but-safe result — and the two
+;; can never disagree because both are views of one compiled value.
 ;; ---------------------------------------------------------------------------
 
 (defn- generated-info
@@ -567,42 +515,46 @@
                       {:path [(str "f" file-index)] :length file-length})
                     (range file-count) file-lengths)})))
 
-(defspec output-file-sizes-match-declared-total-spec 100
+(defspec compiled-sizes-match-declared-total-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)
     file-lengths (gen/vector (gen/choose 0 20) 1 5)]
    (let [info (generated-info piece-length file-lengths)
-         sizes (:ok (torrent/output-file-sizes info))]
-     (and (some? sizes)
+         layout (:ok (torrent/compile-output-layout info))
+         sizes (:sizes layout)]
+     (and (some? layout)
           (= (reduce + 0 file-lengths) (reduce + 0 (vals sizes)))
           (= (count file-lengths) (count sizes))
           (= (set (vals sizes)) (set file-lengths))))))
 
-(defspec piece-span-paths-are-declared-by-output-file-sizes-spec 100
+(defspec piece-span-paths-are-declared-sizes-spec 100
   (prop/for-all
    [piece-length (gen/choose 1 16)
     file-lengths (gen/vector (gen/choose 1 20) 1 5)]
    (let [info (generated-info piece-length file-lengths)
          total (reduce + 0 file-lengths)
-         sizes (set (keys (:ok (torrent/output-file-sizes info))))
+         layout (:ok (torrent/compile-output-layout info))
+         sizes (set (keys (:sizes layout)))
          piece-count (int (Math/ceil (/ total (double piece-length))))
          span-paths (set (for [piece-index (range piece-count)
                                :let [start (* piece-index piece-length)
                                      len (min piece-length (- total start))]
-                               span (:ok (torrent/piece-file-spans info piece-index len))]
+                               span (:ok (torrent/layout-spans layout piece-index len))]
                            (:path span)))]
-     (every? sizes span-paths))))
+     (and (some? layout)
+          (every? sizes span-paths)))))
 
 (defspec hostile-path-components-never-produce-a-layout-spec 100
   (prop/for-all
    [hostile (gen/elements [".." "." "a/b" "a\\b" "/abs" "" "./.." "f/.."
                            "/etc/passwd" "\\\\host\\share" "~/x" "sub/../../x"])]
-   (let [single (:ok (torrent/output-file-sizes {:name hostile :piece-length 4 :length 4}))
-         multi (:ok (torrent/output-file-sizes
-                     {:name "t" :piece-length 4
-                      :files [{:path [hostile] :length 4}]}))
-         spans (:ok (torrent/piece-file-spans {:name hostile :piece-length 4 :length 4} 0 4))]
-     (and (nil? single) (nil? multi) (nil? spans)))))
+   (let [single (torrent/compile-output-layout {:name hostile :piece-length 4 :length 4})
+         multi (torrent/compile-output-layout
+                {:name "t" :piece-length 4
+                 :files [{:path [hostile] :length 4}]})]
+     ;; No layout, so no spans either: refusal at compile subsumes refusal
+     ;; at every per-piece lookup.
+     (and (:error single) (:error multi)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiled output layout (issue #31): derived once per download, so the
@@ -670,9 +622,9 @@
                  mutation-idx (gen/choose 0 (dec (count info-mutations)))]
                 (let [info ((nth info-mutations mutation-idx)
                             (test-utils/layout-test-info piece-length file-lengths))]
-                  (and (:error (torrent/compile-output-layout info))
-                       (:error (torrent/output-file-sizes info))
-                       (:error (torrent/piece-file-spans info 0 4))))))
+                  ;; The compile gate is the strictest: the retired wrappers
+                  ;; delegated to it, so its refusal subsumes theirs.
+                  (:error (torrent/compile-output-layout info)))))
 
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"
@@ -734,29 +686,7 @@
                    :sizes {["t" "a"] 0 ["t" "b"] 0}
                    :total 0 :piece-length 4}}
              compiled))
-      (is (:error (torrent/layout-spans (:ok compiled) 0 4)))
-      (is (= (torrent/piece-file-spans info 0 4)
-             (torrent/layout-spans (:ok compiled) 0 4))))))
-
-;; Issue #31 acceptance mandates this agreement property. piece-file-spans
-;; is now a thin wrapper over layout-spans, so the comparison is ceremonial
-;; by construction — layout-spans-match-independent-oracle-spec below is
-;; the discriminating proof. Kept because the spec asks for it by name.
-(defspec layout-spans-agrees-with-piece-file-spans-spec 100
-  (prop/for-all
-   [piece-length (gen/choose 1 16)
-    file-lengths (gen/vector (gen/choose 0 20) 1 5)]
-   (let [info (generated-info piece-length file-lengths)
-         total (reduce + 0 file-lengths)
-         layout (:ok (torrent/compile-output-layout info))
-         piece-count (int (Math/ceil (/ total (double piece-length))))]
-     (and (some? layout)
-          (every? true?
-                  (for [piece-index (range piece-count)
-                        :let [start (* piece-index piece-length)
-                              len (min piece-length (- total start))]]
-                    (= (torrent/piece-file-spans info piece-index len)
-                       (torrent/layout-spans layout piece-index len))))))))
+      (is (:error (torrent/layout-spans (:ok compiled) 0 4))))))
 
 (defn- expected-spans
   "Independent span oracle: overlaps derived straight from declared
@@ -818,10 +748,8 @@
                       dev.cljtoc.domain.torrent/parse-pieces
                       dev.cljtoc.domain.torrent/parse-info-dict
                       dev.cljtoc.domain.torrent/total-size
-                      dev.cljtoc.domain.torrent/output-file-sizes
                       dev.cljtoc.domain.torrent/compile-output-layout
                       dev.cljtoc.domain.torrent/layout-spans
-                      dev.cljtoc.domain.torrent/piece-file-spans
                       dev.cljtoc.domain.torrent/validate-required-fields
                       dev.cljtoc.domain.torrent/validate-field-types
                       dev.cljtoc.domain.torrent/validate-pieces-length
