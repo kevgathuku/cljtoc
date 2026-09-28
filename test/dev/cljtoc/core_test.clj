@@ -89,7 +89,22 @@
                          :network-port (mock-net/create {:announce-capture captured}))
           result (#'core/resume-and-run manager done)]
       (is (= :completed (:state result)))
+      (is (some? (:completed-at (:stats result)))
+          "the fast path finalizes stats exactly like a swarmed completion")
       (is (nil? @captured) "neither announce nor swarm was touched"))))
+
+(deftest resume-and-run-excludes-the-dead-gap-from-the-rate-test
+  (testing "a failed record resumed long after its last byte folds the dead
+            gap into the downtime total, so the average below measures active
+            time whether the gap was a pause, a failure, or a crash"
+    (let [stale (assoc-in (failed-record) [:stats :last-update] 2000)
+          manager (assoc (mock-manager)
+                         :time-port (mock-time/create {:now 5000}))
+          result (#'core/resume-and-run manager stale)]
+      (is (= :failed (:state result))
+          "the mock swarm still fails every dial")
+      (is (= 3000 (:downtime-ms (:stats result))))
+      (is (= 5000 (:last-update (:stats result)))))))
 
 (deftest resume-and-run-materializes-cached-pieces-once-test
   (testing "an incomplete resume reconciles the cache before announcing and

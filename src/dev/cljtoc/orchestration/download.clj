@@ -256,17 +256,97 @@
   :args (s/cat :time-port any? :stats map? :bytes-received nat-int?)
   :ret map?)
 
-(defn calculate-rate [time-port stats]
-  (let [now (time/now time-port)
-        elapsed-seconds (/ (- now (:last-update stats)) 1000.0)
+(defn- rate-at
+  "Average transfer rate at one clock reading: total bytes downloaded
+   divided by active seconds since :started-at. Paused, failed, and crashed
+   gaps accumulated in :downtime-ms across resumes do not count: the average
+   measures transferring time, not wall time. Records predating started-at
+   tracking report 0."
+  [now stats]
+  (let [started (:started-at stats)
+        downtime (or (:downtime-ms stats) 0)
+        elapsed-seconds (if started
+                          (/ (max 0 (- (- now started) downtime)) 1000.0)
+                          0)
         bytes-downloaded (:bytes-downloaded stats)]
     (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
       (long (/ bytes-downloaded elapsed-seconds))
       0)))
 
+(defn- mark-suspended
+  "Stamp when this run stopped into the stats. A nil clock (callers
+   without a time port) leaves the record untouched: resume falls back
+   to the last verified byte exactly as before."
+  [download now]
+  (if (some? now)
+    (assoc-in download [:stats :suspended-at] now)
+    download))
+
+(defn accumulate-downtime
+  "Fold the dead gap into the stats.
+   The gap runs from the recorded suspension (pause/failure time) when
+   the record carries one, else from the last verified byte -- an
+   unobserved crash leaves no suspension stamp, so the last byte is the
+   only boundary. Live-but-idle time before a recorded suspension stays
+   in the rate denominator: the run was up, just not moving bytes. The
+   stamp is single-use and last-update refreshes, so the next gap starts
+   here. Records predating downtime tracking resume unchanged. Returns
+   the updated download."
+  [time-port download]
+  (let [now (time/now time-port)
+        stats (:stats download)
+        signals (filter some? [(:last-update stats) (:suspended-at stats)])
+        gap (if (seq signals) (max 0 (- now (apply max signals))) 0)]
+    (assoc download :stats (-> stats
+                               (assoc :downtime-ms (+ (or (:downtime-ms stats) 0)
+                                                      gap))
+                               (assoc :last-update (let [last (:last-update stats)]
+                                                     (if (and last (> last now))
+                                                       last
+                                                       now)))
+                               (dissoc :suspended-at)))))
+
+(s/fdef accumulate-downtime
+  :args (s/cat :time-port any? :download map?)
+  :ret map?)
+
+(defn calculate-rate
+  "Average transfer rate over the run: total bytes downloaded divided by
+   active seconds since :started-at. Averaging over the run (instead of the
+   gap since :last-update) keeps the reported speed stable: right after the
+   final block the last-gap quotient explodes into fantasy GB/s. Paused,
+   failed, and crashed gaps accumulated in :downtime-ms do not count. Once
+   :completed-at is stamped the rate freezes there, so late status calls
+   agree with the persisted record instead of decaying toward zero.
+   Records predating started-at tracking report 0."
+  [time-port stats]
+  (if-let [completed (:completed-at stats)]
+    (rate-at completed stats)
+    (rate-at (time/now time-port) stats)))
+
 (s/fdef calculate-rate
   :args (s/cat :time-port any? :stats map?)
   :ret nat-int?)
+
+(defn complete-download
+  "Mark the download completed, finalizing its stats for persistence.
+   Stamps completed-at, refreshes last-update, and pins the rate at the
+   run average instead of the last block's instantaneous value, so the
+   saved record describes the finished run rather than its final block.
+   Returns the updated download."
+  [time-port download]
+  (let [now (time/now time-port)
+        stats (:stats download)]
+    (assoc download
+           :state :completed
+           :stats (assoc stats
+                         :completed-at now
+                         :last-update now
+                         :rate (rate-at now stats)))))
+
+(s/fdef complete-download
+  :args (s/cat :time-port any? :download map?)
+  :ret (s/keys :req-un [::state]))
 
 (defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
@@ -358,13 +438,17 @@
 (defn pause-download
   "Pause an active download.
    - Closes all peer connections
+   - Stamps when the run stopped, so resume excludes only the dead gap
    - Persists state to disk via IDiskPort
    - Returns updated download with :paused state"
   ([download]
-   (pause-download nil download))
+   (pause-download nil nil download))
   ([disk-port download]
+   (pause-download nil disk-port download))
+  ([time-port disk-port download]
    (if (= :downloading (:state download))
-     (let [paused-download (assoc download :state :paused :peers #{})]
+     (let [paused-download (mark-suspended (assoc download :state :paused :peers #{})
+                                           (when time-port (time/now time-port)))]
        (if disk-port
          (let [save-result (disk/save-state disk-port paused-download)]
            (if (:error save-result)
@@ -374,7 +458,9 @@
      {:error :not-running :message "Download is not running"})))
 
 (s/fdef pause-download
-  :args (s/cat :disk-port (s/? any?) :download map?)
+  :args (s/alt :bare (s/cat :download map?)
+               :with-disk (s/cat :disk-port any? :download map?)
+               :with-time (s/cat :time-port any? :disk-port any? :download map?))
   :ret (s/or :ok (s/keys :req-un [::state])
              :error map?))
 
@@ -1081,7 +1167,7 @@
           (println "  Download complete!")
           (doseq [[_ peer-info] (:active-peers state)]
             (network/close-peer network-port (:peer-data peer-info)))
-          (assoc download :state :completed))
+          (complete-download time-port download))
 
         (let [event (async/<!! events-ch)]
           (if (nil? event)
@@ -1089,8 +1175,9 @@
             (do
               (println)
               (println "  All peers disconnected.")
-              (assoc download :state :failed
-                     :error {:reason :no-peers :message "All peers disconnected"}))
+              (mark-suspended (assoc download :state :failed
+                                     :error {:reason :no-peers :message "All peers disconnected"})
+                              (time/now time-port)))
 
             (let [now (time/now time-port)
                   show-progress? (> (- now last-progress-time) 2000)]
@@ -1116,7 +1203,8 @@
                       ;; disconnect instead of waiting on a silent channel.
                       ;; (Message handling otherwise never removes peers,
                       ;; so this check is inert for all other paths.)
-                      (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
+                      (mark-suspended (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
+                                      (time/now time-port))
                       (let [wrote? (boolean (some :write-verified effects))]
                         (when (and show-progress? wrote?)
                           (print-download-progress (:download performed) (:active-peers performed)))
@@ -1124,7 +1212,8 @@
                     (let [download (:download performed)]
                       (println)
                       (println (str "  Fatal effect error: " (get-in outcome [:fatal :message])))
-                      (assoc download :state :failed :error (:fatal outcome)))))
+                      (mark-suspended (assoc download :state :failed :error (:fatal outcome))
+                                      (time/now time-port)))))
 
                 :peer-disconnected
                 (let [{:keys [address reason]} event
@@ -1142,7 +1231,8 @@
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (if (swarm-exhausted? performed)
-                    (fail-no-peers download conn-stats total-attempted reason)
+                    (mark-suspended (fail-no-peers download conn-stats total-attempted reason)
+                                    (time/now time-port))
                     (recur performed
                            (if show-progress? now last-progress-time))))
 
@@ -1247,7 +1337,7 @@
   ([manager download]
    (run-download manager download nil))
   ([manager download opts]
-   (let [{:keys [disk-port config]} manager
+   (let [{:keys [disk-port time-port config]} manager
          carried (:layout opts)
          ;; The O(1) shape gate, not the O(files) invariant check: the
          ;; layout came out of compile-output-layout in this same process,
@@ -1307,7 +1397,7 @@
                       (:message materialized))
 
            (pieces/complete? (:piece-state revived))
-           (assoc revived :state :completed)
+           (complete-download time-port revived)
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.

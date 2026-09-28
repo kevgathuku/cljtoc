@@ -9,6 +9,7 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
+            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.test-utils :as test-utils]
@@ -100,6 +101,108 @@
   (let [time (mock-time/create {:now 2000})
         stats (download/->DownloadStats 1000 nil 16384 0 1000)]
     (is (= 16384 (download/calculate-rate time stats)))))
+
+(deftest calculate-rate-averages-over-the-run-test
+  (testing "the reported speed is total bytes over run duration, not over
+            the gap since the last block: milliseconds after the final
+            block the old quotient exploded into fantasy GB/s"
+    (let [time (mock-time/create {:now 2000})
+          stats (download/->DownloadStats 1000 nil 20000 0 1900)]
+      (is (= 20000 (download/calculate-rate time stats))))))
+
+(deftest calculate-rate-without-a-start-time-reports-zero-test
+  (testing "decoded records predating started-at tracking report 0 rather
+            than throwing or dividing by a nil clock"
+    (let [time (mock-time/create {:now 2000})
+          stats (assoc (download/->DownloadStats 1000 nil 20000 0 1900)
+                       :started-at nil)]
+      (is (= 0 (download/calculate-rate time stats))))))
+
+(deftest calculate-rate-freezes-at-completion-test
+  (testing "once completed-at is stamped, the rate stops decaying: a status
+            call long after completion reports the finishing average, in
+            agreement with the persisted record"
+    (let [time (mock-time/create {:now 9000})
+          stats (assoc (download/->DownloadStats 1000 nil 20000 0 4500)
+                       :completed-at 5000
+                       :rate 5000)]
+      (is (= 5000 (download/calculate-rate time stats))))))
+
+(deftest calculate-rate-excludes-downtime-test
+  (testing "paused, failed, and crashed gaps accumulated across resumes do
+            not dilute the average: only active wall time counts"
+    (let [time (mock-time/create {:now 9000})
+          stats (assoc (download/->DownloadStats 1000 nil 20000 0 8500)
+                       :downtime-ms 4000)]
+      (is (= 5000 (download/calculate-rate time stats))))))
+
+(deftest accumulate-downtime-folds-the-dead-gap-test
+  (testing "resuming folds everything since the last verified byte into the
+            downtime total -- no byte moved in that gap by definition -- and
+            refreshes last-update so the next gap starts here"
+    (let [time (mock-time/create {:now 5000})
+          download {:state :paused
+                    :stats (download/->DownloadStats 1000 nil 20000 0 2000)}
+          result (download/accumulate-downtime time download)]
+      (is (= 3000 (:downtime-ms (:stats result))))
+      (is (= 5000 (:last-update (:stats result)))))))
+
+(deftest accumulate-downtime-keeps-time-monotonic-test
+  (testing "a clock reading behind last-update accumulates nothing and never
+            moves last-update backwards"
+    (let [time (mock-time/create {:now 1000})
+          download {:state :failed
+                    :stats (assoc (download/->DownloadStats 1000 nil 20000 0 2000)
+                                  :downtime-ms 500)}
+          result (download/accumulate-downtime time download)]
+      (is (= 500 (:downtime-ms (:stats result))))
+      (is (= 2000 (:last-update (:stats result)))))))
+
+(deftest accumulate-downtime-tolerates-legacy-records-test
+  (testing "records persisted before downtime tracking resume unchanged:
+            no total to add to, no stamp to refresh from"
+    (let [time (mock-time/create {:now 5000})
+          download {:state :paused :stats {:bytes-downloaded 20000}}
+          result (download/accumulate-downtime time download)]
+      (is (= 0 (:downtime-ms (:stats result))))
+      (is (= 5000 (:last-update (:stats result)))))))
+
+(deftest accumulate-downtime-measures-from-suspension-test
+  (testing "when the record carries the pause/failure time, only the dead
+            interval counts: last byte at 2s, paused at 9s, resumed at 12s
+            excludes 3s -- the live-but-idle 2s-9s stays in the denominator"
+    (let [time (mock-time/create {:now 12000})
+          download {:state :paused
+                    :stats (assoc (download/->DownloadStats 1000 nil 20000 0 2000)
+                                  :suspended-at 9000)}
+          result (download/accumulate-downtime time download)]
+      (is (= 3000 (:downtime-ms (:stats result))))
+      (is (= 12000 (:last-update (:stats result))))
+      (is (nil? (:suspended-at (:stats result)))))))
+
+(deftest accumulate-downtime-consumes-the-suspension-stamp-test
+  (testing "the stamp is single-use: a second resume without a new
+            suspension falls back to last-update instead of re-adding"
+    (let [time (mock-time/create {:now 12000})
+          download {:state :paused
+                    :stats (assoc (download/->DownloadStats 1000 nil 20000 0 2000)
+                                  :suspended-at 9000)}
+          resumed (download/accumulate-downtime time download)
+          again (download/accumulate-downtime time resumed)]
+      (is (= 3000 (:downtime-ms (:stats again)))))))
+
+(deftest complete-download-finalizes-stats-test
+  (testing "completion stamps completed-at, refreshes last-update, and pins
+            the rate at the run average instead of the last block's
+            instantaneous value"
+    (let [time (mock-time/create {:now 5000})
+          download {:state :downloading
+                    :stats (download/->DownloadStats 1000 nil 20000 0 4500)}
+          result (download/complete-download time download)]
+      (is (= :completed (:state result)))
+      (is (= 5000 (:completed-at (:stats result))))
+      (is (= 5000 (:last-update (:stats result))))
+      (is (= 5000 (:rate (:stats result)))))))
 
 (deftest advance-time-drives-rate-test
   (let [time (mock-time/create {:now 1000})
@@ -301,6 +404,16 @@
         result (download/pause-download disk d)]
     (is (= :paused (get-in result [:ok :state])))
     (is (empty? (get-in result [:ok :peers])))))
+
+(deftest pause-download-stamps-suspension-time-test
+  (testing "pausing records when the run stopped, so resume excludes only
+            the dead gap instead of everything since the last byte"
+    (let [time (mock-time/create {:now 9000})
+          d {:state :downloading
+             :stats (download/->DownloadStats 1000 nil 20000 0 2000)}
+          result (download/pause-download time nil d)]
+      (is (= :paused (get-in result [:ok :state])))
+      (is (= 9000 (:suspended-at (:stats (:ok result))))))))
 
 ;; start-download builds peers through the peer-address seam
 
@@ -1101,7 +1214,7 @@
              :output-layout (:ok (torrent/compile-output-layout info))
              :ports {:network-port (or (:net opts) (mock-net/create))
                      :disk-port disk
-                     :time-port (mock-time/create)}
+                     :time-port (or (:time opts) (mock-time/create))}
              :conn-stats (or (:conn-stats opts) (atom {:connected 0 :failed 0}))
              :total-attempted 1}
         state {:download download
@@ -1152,6 +1265,50 @@
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
+
+(deftest run-coordinator-completion-finalizes-stats-test
+  (testing "the coordinator's completion edge stamps the stats, so the
+            persisted record carries a completion time instead of the
+            last block's instantaneous values"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (some? (:completed-at (:stats result)))))))
+
+(deftest run-download-materialize-complete-finalizes-stats-test
+  (testing "a download completing out of the piece cache carries a
+            completion time, not just the last block's stats"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info {:pieces [(bencode/sha1-hash piece-0)]
+                :piece-length 4
+                :name "fin.bin"
+                :length 4}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          download (assoc (download/initial-download (mock-time/create)
+                                                     torrent "/out" "fin")
+                          :state :downloading
+                          :peers #{}
+                          :piece-state (-> (pieces/initial-piece-state 1)
+                                           (#(:ok (pieces/mark-in-flight % 0)))
+                                           (#(:ok (pieces/mark-verified % 0)))))
+          disk (mock-disk/create)
+          _ (disk/write-piece disk 0 piece-0)
+          manager {:network-port (mock-net/create)
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          result (download/run-download manager download)]
+      (is (= :completed (:state result)))
+      (is (some? (:completed-at (:stats result)))))))
 
 (deftest run-coordinator-choke-requeues-through-loop-test
   (testing "choke mid-piece returns the piece to needed"
@@ -1325,6 +1482,40 @@
       (is (empty? (get-in result [:piece-state :verified])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
 
+(deftest run-coordinator-failure-stamps-suspension-time-test
+  (testing "a failed run carries when it stopped, so resume measures the
+            dead gap from the failure instead of the last verified byte"
+    (let [disk (mock-disk/create)
+          time (mock-time/create {:now 7000})
+          events [{:type :peer-disconnected :address "peer-a" :reason "refused"}
+                  {:type :peer-disconnected :address "peer-b" :reason "timeout"}]
+          result (scripted-run events (loop-download) disk
+                               {:pending-dials #{"peer-a" "peer-b"}
+                                :time time})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= 7000 (:suspended-at (:stats result)))))))
+
+(deftest run-coordinator-failure-stamp-follows-effect-time-test
+  (testing "the suspension stamp is read after effect handling: with the
+            clock advancing 1ms per send, the failed record's stamp equals
+            the final clock reading rather than the pre-effects time"
+    (let [disk (mock-disk/create)
+          time (mock-time/create {:now 7000})
+          net (mock-net/create {:on-send (fn [_ _] (mock-time/advance-time time 1))})
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}]
+          result (scripted-run events (loop-download) disk {:net net
+                                                            :time time
+                                                            :close? false
+                                                            :timeout 3000})]
+      (is (not= :timed-out result))
+      (is (= :failed (:state result)))
+      (is (= (time/now time) (:suspended-at (:stats result)))))))
+
 (deftest run-coordinator-send-error-requeues-through-loop-test
   (testing "a failed block send returns the piece to needed, nothing strands"
     (let [disk (mock-disk/create)
@@ -1420,8 +1611,9 @@
 ;; not by accident — the generator cannot conjure a protocol implementation,
 ;; so anything behind an effect port fails before its :ret is even reached
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
-;; calculate-rate, update-stats-bytes, initial-stats, initial-download,
-;; progress (time port); start-download, run-coordinator, run-download,
+;; calculate-rate, complete-download, accumulate-downtime,
+;; update-stats-bytes, initial-stats, initial-download, progress (time
+;; port); start-download, run-coordinator, run-download,
 ;; load-persisted-state, persist-download-state (ports, channels, workers);
 ;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------
