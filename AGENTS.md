@@ -81,6 +81,9 @@ With timeout (milliseconds)
 
 The REPL session persists between evaluations - namespaces and state are maintained.
 Always use `:reload` when requiring namespaces to pick up changes.
+The port changes on every restart — always use the announced or discovered port, never a hardcoded one.
+
+**Stale sessions:** the persisted session can lag the working tree (branch switches, new commits), and `:reload` refreshes only the namespaces named — their already-loaded dependencies stay stale. Signature: `No such var: <ns>/<name>` for a var that `rg` proves exists in the tree, or results contradicting current source. When that happens, stop: no result from the session is trustworthy. Prompt the user to stop and restart the nREPL server, then re-verify with a probe eval before continuing. Never `:reload-all` across protocol namespaces to recover: `defrecord` classes keep their old protocol identity past `remove-ns`, so only a fresh server heals that split.
 
 ## Clojure Parenthesis Repair
 
