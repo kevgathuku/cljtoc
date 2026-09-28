@@ -109,7 +109,7 @@
     {:ok (io/file piece-cache-dir download-id (str "piece-" piece-index ".dat"))}
     {:error :invalid-download-id
      :message (str "Download id cannot name a piece-cache entry: "
-                    (pr-str download-id))}))
+                   (pr-str download-id))}))
 
 (defn- resolve-layout
   "Resolve every declared path under output-dir for writing. Each path is

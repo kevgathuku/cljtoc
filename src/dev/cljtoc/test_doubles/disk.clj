@@ -37,7 +37,7 @@
         {:ok (get @piece-cache [download-id piece-index])}
         {:error :invalid-download-id
          :message (str "Download id cannot name a piece-cache entry: "
-                        (pr-str download-id))})))
+                       (pr-str download-id))})))
 
   (write-piece [_ download-id piece-index bytes]
     (if-let [err (:write-error config)]
@@ -48,7 +48,7 @@
           {:ok :written})
         {:error :invalid-download-id
          :message (str "Download id cannot name a piece-cache entry: "
-                        (pr-str download-id))})))
+                       (pr-str download-id))})))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
