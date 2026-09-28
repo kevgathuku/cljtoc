@@ -145,11 +145,11 @@
   :args (s/cat :mock-disk any? :path string? :torrent-metadata any?)
   :ret map?)
 
-(defn get-piece [mock-disk piece-index]
-  (get @(:piece-cache mock-disk) piece-index))
+(defn get-piece [mock-disk download-id piece-index]
+  (get @(:piece-cache mock-disk) [download-id piece-index]))
 
 (s/fdef get-piece
-  :args (s/cat :mock-disk any? :piece-index nat-int?)
+  :args (s/cat :mock-disk any? :download-id any? :piece-index nat-int?)
   :ret any?)
 
 (defn get-output-piece [mock-disk piece-index]

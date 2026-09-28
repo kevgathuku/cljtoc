@@ -802,7 +802,7 @@
           (:write-verified effect)
           (let [{:keys [piece-idx data]} (:write-verified effect)
                 download (:download state)
-                result (disk/write-piece disk-port piece-idx data)]
+                result (disk/write-piece disk-port (:id download) piece-idx data)]
             (if (:error result)
               ;; Bytes never landed in the cache: unwind and fail.
               (fail-verified-write state effects piece-idx (:message result) network-port)
@@ -1016,7 +1016,7 @@
       {:ok download}
       (let [piece-index (first remaining)
             rest-pieces (rest remaining)
-            cached (disk/read-piece disk-port piece-index)]
+            cached (disk/read-piece disk-port (:id download) piece-index)]
         (cond
           (:error cached)
           (assoc cached :download download)

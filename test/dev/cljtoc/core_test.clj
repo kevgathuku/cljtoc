@@ -83,8 +83,8 @@
                                        (#(:ok (pieces/mark-in-flight % 1)))
                                        (#(:ok (pieces/mark-verified % 1)))))
           disk (mock-disk/create)
-          _ (disk/write-piece disk 0 piece-0)
-          _ (disk/write-piece disk 1 piece-1)
+          _ (disk/write-piece disk "done" 0 piece-0)
+          _ (disk/write-piece disk "done" 1 piece-1)
           captured (atom nil)
           manager (assoc (mock-manager)
                          :disk-port disk
@@ -128,7 +128,7 @@
                                          (#(:ok (pieces/mark-in-flight % 0)))
                                          (#(:ok (pieces/mark-verified % 0)))))
           disk (mock-disk/create)
-          _ (disk/write-piece disk 0 piece-0)
+          _ (disk/write-piece disk "once" 0 piece-0)
           manager (assoc (mock-manager) :disk-port disk)
           result (#'core/resume-and-run manager paused)]
       (is (= :failed (:state result))
