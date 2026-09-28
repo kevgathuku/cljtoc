@@ -17,7 +17,40 @@
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
 
-(defn initial-coordinator-state
+;; ---------------------------------------------------------------------------
+;; State and event shapes (the planning interface)
+;; ---------------------------------------------------------------------------
+;; Addresses flow opaquely (presence is the contract; element typing is
+;; deferred), so relations below pin what handlers add and remove, never
+;; the values themselves.
+
+(s/def ::download (s/nilable map?))
+;; Nilable: handlers dissoc absent keys into nils (dissocing a missing key
+;; yields nil, not {}). Benign downstream (nil and {} answer every consumer
+;; identically) and unreachable from initial-state,
+;; which always builds full maps — but the specs must accept what the
+;; implementation deterministically produces, not just the happy path.
+(s/def ::active-peers (s/nilable map?))
+(s/def ::blocks-received (s/nilable map?))
+(s/def ::expected-blocks (s/nilable map?))
+(s/def ::pending-dials (s/coll-of any? :kind set?))
+
+(s/def ::coordinator-state
+  (s/keys :opt-un [::download
+                   ::active-peers
+                   ::blocks-received
+                   ::expected-blocks
+                   ::pending-dials]))
+
+(s/def ::address any?)
+
+(s/def ::addressed-event
+  (s/keys :req-un [::address]))
+
+(s/def ::effects (s/coll-of map? :kind vector?))
+(s/def ::no-effects (s/and ::effects empty?))
+
+(defn initial-state
   "The coordinator state for a download about to dial peer-addresses.
     Every dialed address starts pending; handlers resolve addresses out
     as :peer-connected/:peer-disconnected events arrive. Pure."
@@ -28,9 +61,16 @@
    :expected-blocks {}
    :pending-dials (set peer-addresses)})
 
-(s/fdef initial-coordinator-state
+(s/fdef initial-state
   :args (s/cat :download map? :peer-addresses coll?)
-  :ret map?)
+  :ret ::coordinator-state
+  :fn #(let [{:keys [download peer-addresses]} (:args %)
+             state (:ret %)]
+         (and (= (:download state) download)
+              (= (:pending-dials state) (set peer-addresses))
+              (= {} (:active-peers state))
+              (= {} (:blocks-received state))
+              (= {} (:expected-blocks state)))))
 
 (defn requeue-assignment
   "Requeue address's assigned piece and clear its bookkeeping.
@@ -48,8 +88,12 @@
         (update :blocks-received dissoc address))))
 
 (s/fdef requeue-assignment
-  :args (s/cat :state map? :address any? :piece-idx nat-int?)
-  :ret map?)
+  :args (s/cat :state ::coordinator-state :address any? :piece-idx nat-int?)
+  :ret ::coordinator-state
+  :fn #(let [address (-> % :args :address)
+             updated (:ret %)]
+         (and (nil? (get-in updated [:active-peers address :assigned-piece]))
+              (not (contains? (:blocks-received updated) address)))))
 
 (defn- resolve-dial
   "Drop address from :pending-dials: its dial resolved, whether by
@@ -73,8 +117,13 @@
      []]))
 
 (s/fdef on-connected
-  :args (s/cat :state map? :event map?)
-  :ret vector?)
+  :args (s/cat :state ::coordinator-state :event ::addressed-event)
+  :ret (s/tuple ::coordinator-state ::no-effects)
+  :fn #(let [address (-> % :args :event :address)
+             [updated _] (:ret %)]
+         (and (contains? (:active-peers updated) address)
+              (nil? (get-in updated [:active-peers address :assigned-piece]))
+              (not (contains? (:pending-dials updated) address)))))
 
 (defn swarm-exhausted?
   "True when the swarm can no longer make progress: no active peers,
@@ -88,8 +137,16 @@
        (not (pieces/complete? (get-in state [:download :piece-state])))))
 
 (s/fdef swarm-exhausted?
-  :args (s/cat :state map?)
-  :ret boolean?)
+  :args (s/cat :state ::coordinator-state)
+  :ret boolean?
+  ;; One direction only: true pins empty actives and dials. The
+  ;; pieces-incomplete half is covered by example tests (a generated
+  ;; piece-state cannot honestly say what complete? must answer).
+  :fn #(if (:ret %)
+         (let [state (-> % :args :state)]
+           (and (empty? (:active-peers state))
+                (empty? (:pending-dials state))))
+         true))
 
 (defn on-disconnected
   "Drop a peer, requeueing its assigned piece if any. Pure.
@@ -112,8 +169,14 @@
      []]))
 
 (s/fdef on-disconnected
-  :args (s/cat :state map? :event map?)
-  :ret vector?)
+  :args (s/cat :state ::coordinator-state :event ::addressed-event)
+  :ret (s/tuple ::coordinator-state ::no-effects)
+  :fn #(let [address (-> % :args :event :address)
+             [updated _] (:ret %)]
+         (and (not (contains? (:active-peers updated) address))
+              (not (contains? (:blocks-received updated) address))
+              (not (contains? (:expected-blocks updated) address))
+              (not (contains? (:pending-dials updated) address)))))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."
@@ -253,6 +316,10 @@
             [planned (into effects send-effects)])
           [updated effects])))))
 
+;; No :fn here by design: generated plain-map messages always take the
+;; :else branch, so any relation written today would pass vacuously.
+;; Real peer-record generators belong with #4/#5/#6; the example tests
+;; below discriminate the branches instead.
 (s/fdef on-message
-  :args (s/cat :state map? :event map? :ctx map?)
+  :args (s/cat :state ::coordinator-state :event map? :ctx map?)
   :ret vector?)

@@ -731,7 +731,7 @@
 ;;
 ;; The pure [state effects] planning kernel now lives in
 ;; dev.cljtoc.orchestration.coordinator (zero port requires).
-;; run-coordinator below calls into it; the loop edge (perform-effects!)
+;; run-event-loop below calls into it; the loop edge (perform-effects!)
 ;; and run wiring stay here.
 
 (defn- fail-verified-write
@@ -872,12 +872,12 @@
   :args (s/cat :worker-chs coll? :events-ch any?)
   :ret any?)
 
-(defn run-coordinator
+(defn run-event-loop
   "Drive one download from events-ch to completion or swarm exhaustion.
    Handlers plan state transitions, the edge performs effects.
    Returns the final Download record.
 
-   state — initial coordinator state map (see coordinator/initial-coordinator-state):
+   state — initial coordinator state map (see coordinator/initial-state):
            {:download ... :active-peers ... :blocks-received ... :expected-blocks ...
             :pending-dials #{...}}
    events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
@@ -972,7 +972,7 @@
                 ;; Unknown event type
                 (recur state last-progress-time)))))))))
 
-(s/fdef run-coordinator
+(s/fdef run-event-loop
   :args (s/cat :state map? :events-ch any? :env map?)
   :ret map?)
 
@@ -1169,18 +1169,18 @@
                (watch-workers! worker-chs events-ch))
 
       ;; Hand the event channel to the coordinator loop
-             (run-coordinator (coordinator/initial-coordinator-state revived peer-addresses)
-                              events-ch
-                              {:message-ctx {:piece-hashes piece-hashes
-                                             :piece-length piece-length
-                                             :total-length total-length
-                                             :total-pieces total-pieces}
-                               :output-layout layout
-                               :ports {:network-port network-port
-                                       :disk-port disk-port
-                                       :time-port time-port}
-                               :conn-stats conn-stats
-                               :total-attempted total-attempted}))))))))
+             (run-event-loop (coordinator/initial-state revived peer-addresses)
+                             events-ch
+                             {:message-ctx {:piece-hashes piece-hashes
+                                            :piece-length piece-length
+                                            :total-length total-length
+                                            :total-pieces total-pieces}
+                              :output-layout layout
+                              :ports {:network-port network-port
+                                      :disk-port disk-port
+                                      :time-port time-port}
+                              :conn-stats conn-stats
+                              :total-attempted total-attempted}))))))))
 
 (s/fdef run-download
   :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))

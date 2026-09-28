@@ -25,7 +25,7 @@
 (deftest coordinator-round-trip-test
   (testing "connect then disconnect resolves the dial and requeues nothing"
     (let [download {:piece-state (one-piece-state)}
-          state (coordinator/initial-coordinator-state download ["peer-a" "peer-b"])]
+          state (coordinator/initial-state download ["peer-a" "peer-b"])]
       (is (= #{"peer-a" "peer-b"} (:pending-dials state)))
       (let [[connected effects] (coordinator/on-connected state {:address "peer-a"
                                                                  :peer-data :pd
@@ -87,5 +87,5 @@
 
 (deftest unknown-peer-message-is-noop-test
   (testing "messages from unknown peers plan no effects"
-    (let [state (coordinator/initial-coordinator-state {:piece-state (one-piece-state)} [])]
+    (let [state (coordinator/initial-state {:piece-state (one-piece-state)} [])]
       (is (= [state []] (coordinator/on-message state {:address "ghost" :message {}} {}))))))

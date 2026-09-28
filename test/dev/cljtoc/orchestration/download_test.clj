@@ -735,7 +735,7 @@
              (get-in updated [:active-peers "peer-a"])))))
   (testing "a resolving dial leaves the pending set"
     (let [peer-state-value (peer-state/initial-peer-state 2)
-          state (coordinator/initial-coordinator-state {} ["peer-a" "peer-b"])
+          state (coordinator/initial-state {} ["peer-a" "peer-b"])
           [updated effects] (coordinator/on-connected state {:address "peer-a"
                                                              :peer-data {:id "data-a"}
                                                              :peer-state peer-state-value})]
@@ -1186,7 +1186,7 @@
           (is (nil? (mock-disk/get-output-piece disk 1))))))))
 
 ;; Scripted events-ch through the extracted loop (issue #2.4): feed
-;; run-coordinator a pre-loaded channel and assert piece-state
+;; run-event-loop a pre-loaded channel and assert piece-state
 ;; transitions, including requeue on choke and disconnect.
 
 (defn- two-piece-torrent []
@@ -1227,14 +1227,14 @@
       (async/>!! events-ch event))
     (when (get opts :close? true)
       (async/close! events-ch))
-    (deref (future (download/run-coordinator state events-ch env))
+    (deref (future (download/run-event-loop state events-ch env))
            (get opts :timeout 15000) :timed-out)))
 
 (defn- loop-download []
   (assoc (download/initial-download (mock-time/create) (two-piece-torrent) "/out" "loop")
          :state :downloading))
 
-(deftest run-coordinator-verifies-pieces-test
+(deftest run-event-loop-verifies-pieces-test
   (testing "connected -> unchoke -> both pieces completes the download"
     (let [disk (mock-disk/create)
           events [{:type :peer-connected :address "peer-a"
@@ -1251,7 +1251,7 @@
       (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-piece disk 0))))
       (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-piece disk 1)))))))
 
-(deftest run-coordinator-completion-closes-peers-test
+(deftest run-event-loop-completion-closes-peers-test
   (testing "a completed download closes every active connection"
     (let [disk (mock-disk/create)
           net (mock-net/create)
@@ -1267,7 +1267,7 @@
       (is (= :completed (:state result)))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
 
-(deftest run-coordinator-completion-finalizes-stats-test
+(deftest run-event-loop-completion-finalizes-stats-test
   (testing "the coordinator's completion edge stamps the stats, so the
             persisted record carries a completion time instead of the
             last block's instantaneous values"
@@ -1311,7 +1311,7 @@
       (is (= :completed (:state result)))
       (is (some? (:completed-at (:stats result)))))))
 
-(deftest run-coordinator-choke-requeues-through-loop-test
+(deftest run-event-loop-choke-requeues-through-loop-test
   (testing "choke mid-piece returns the piece to needed"
     (let [disk (mock-disk/create)
           events [{:type :peer-connected :address "peer-a"
@@ -1324,7 +1324,7 @@
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
 
-(deftest run-coordinator-disconnect-requeues-through-loop-test
+(deftest run-event-loop-disconnect-requeues-through-loop-test
   (testing "disconnect mid-piece returns the piece to needed"
     (let [disk (mock-disk/create)
           events [{:type :peer-connected :address "peer-a"
@@ -1338,7 +1338,7 @@
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight]))))))
 
-(deftest run-coordinator-closed-channel-fails-no-peers-test
+(deftest run-event-loop-closed-channel-fails-no-peers-test
   (testing "a closed event channel fails the download instead of parking"
     (let [disk (mock-disk/create)
           result (scripted-run [] (loop-download) disk)]
@@ -1373,7 +1373,7 @@
 ;; events are enqueued, so only the watcher closing events-ch (the nil?
 ;; branch) can end the run — a missing watcher loses the timeout race.
 ;; Raced against a timeout so a regression fails instead of hanging.
-(deftest run-coordinator-worker-exits-fail-no-peers-test
+(deftest run-event-loop-worker-exits-fail-no-peers-test
   (testing "an exited worker set ends the download with :no-peers"
     (let [disk (mock-disk/create)
           torrent (two-piece-torrent)
@@ -1396,7 +1396,7 @@
                  :blocks-received {}
                  :expected-blocks {}
                  :pending-dials #{"peer-a" "peer-b"}}
-          result-ch (async/thread (download/run-coordinator state events-ch env))]
+          result-ch (async/thread (download/run-event-loop state events-ch env))]
       ;; Workers exit without producing events: only the watcher can end this.
       (async/close! worker-a)
       (async/close! worker-b)
@@ -1410,9 +1410,9 @@
 ;; other dials are still in flight; failure waits until every dial has
 ;; resolved with zero connections.
 
-(deftest run-coordinator-waits-for-pending-dials-test
+(deftest run-event-loop-waits-for-pending-dials-test
   (testing "the coordinator starts with every dialed address pending"
-    (let [state (coordinator/initial-coordinator-state (loop-download) ["peer-a" "peer-b"])]
+    (let [state (coordinator/initial-state (loop-download) ["peer-a" "peer-b"])]
       (is (= #{"peer-a" "peer-b"} (:pending-dials state)))
       (is (empty? (:active-peers state)))))
   (testing "first disconnect with dials outstanding keeps waiting, then completes"
@@ -1443,7 +1443,7 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (= 2 (:failed @conn-stats))))))
 
-(deftest run-coordinator-send-failure-counts-peer-once-test
+(deftest run-event-loop-send-failure-counts-peer-once-test
   (testing "a dropped peer's late disconnect is not double-counted"
     (let [disk (mock-disk/create)
           net (mock-net/create)
@@ -1464,7 +1464,7 @@
       (is (= 2 (:connected @conn-stats)))
       (is (= 2 (:failed @conn-stats))))))
 
-(deftest run-coordinator-send-failure-drops-peer-and-fails-test
+(deftest run-event-loop-send-failure-drops-peer-and-fails-test
   (testing "a dead last peer ends the download instead of waiting forever"
     (let [disk (mock-disk/create)
           net (mock-net/create)
@@ -1483,7 +1483,7 @@
       (is (empty? (get-in result [:piece-state :verified])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
 
-(deftest run-coordinator-failure-stamps-suspension-time-test
+(deftest run-event-loop-failure-stamps-suspension-time-test
   (testing "a failed run carries when it stopped, so resume measures the
             dead gap from the failure instead of the last verified byte"
     (let [disk (mock-disk/create)
@@ -1497,7 +1497,7 @@
       (is (= :failed (:state result)))
       (is (= 7000 (:suspended-at (:stats result)))))))
 
-(deftest run-coordinator-failure-stamp-follows-effect-time-test
+(deftest run-event-loop-failure-stamp-follows-effect-time-test
   (testing "the suspension stamp is read after effect handling: with the
             clock advancing 1ms per send, the failed record's stamp equals
             the final clock reading rather than the pre-effects time"
@@ -1517,7 +1517,7 @@
       (is (= :failed (:state result)))
       (is (= (time/now time) (:suspended-at (:stats result)))))))
 
-(deftest run-coordinator-send-error-requeues-through-loop-test
+(deftest run-event-loop-send-error-requeues-through-loop-test
   (testing "a failed block send returns the piece to needed, nothing strands"
     (let [disk (mock-disk/create)
           net (mock-net/create)
@@ -1533,7 +1533,7 @@
       (is (empty? (get-in result [:piece-state :in-flight])))
       (is (nil? (mock-disk/get-piece disk 0))))))
 
-(deftest run-coordinator-write-error-fails-download-test
+(deftest run-event-loop-write-error-fails-download-test
   (testing "a failed piece write fails the download instead of verifying air"
     (testing "the unwritten piece returns to needed, never to verified"
       (let [disk (mock-disk/create {:write-error {:error :write-error
@@ -1552,7 +1552,7 @@
         (is (empty? (get-in result [:piece-state :in-flight])))
         (is (empty? (get-in result [:piece-state :verified])))))))
 
-(deftest run-coordinator-write-error-closes-peers-test
+(deftest run-event-loop-write-error-closes-peers-test
   (testing "a fatal write closes every active connection"
     (let [disk (mock-disk/create {:write-error {:error :write-error
                                                 :message "disk full"}})
@@ -1568,7 +1568,7 @@
       (is (= :disk-error (get-in result [:error :reason])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
 
-(deftest run-coordinator-writes-output-layout-test
+(deftest run-event-loop-writes-output-layout-test
   (testing "verified pieces land in the output layout as well as the piece cache"
     (let [disk (mock-disk/create)
           events [{:type :peer-connected :address "peer-a"
@@ -1590,7 +1590,7 @@
       ;; assertions green but fails this one (PR #36 r4115143527).
       (is (= [expected-layout expected-layout] (mock-disk/get-output-layouts disk))))))
 
-(deftest run-coordinator-output-write-error-fails-download-test
+(deftest run-event-loop-output-write-error-fails-download-test
   (testing "a failed output-layout write fails the download like a cache write"
     (let [disk (mock-disk/create {:output-write-error {:error :write-error
                                                        :message "output full"}})
@@ -1615,7 +1615,7 @@
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
 ;; calculate-rate, complete-download, accumulate-downtime,
 ;; update-stats-bytes, initial-stats, initial-download, progress (time
-;; port); start-download, run-coordinator, run-download
+;; port); start-download, run-event-loop, run-download
 ;; (ports, channels, workers);
 ;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------
@@ -1631,7 +1631,7 @@
                       dev.cljtoc.orchestration.coordinator/on-disconnected
                       dev.cljtoc.orchestration.coordinator/on-message
                       dev.cljtoc.orchestration.coordinator/requeue-assignment
-                      dev.cljtoc.orchestration.coordinator/initial-coordinator-state
+                      dev.cljtoc.orchestration.coordinator/initial-state
                       dev.cljtoc.orchestration.download/handle-no-peers
                       dev.cljtoc.orchestration.download/retry-download
                       dev.cljtoc.orchestration.download/transition-to-failed
