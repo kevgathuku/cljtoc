@@ -2,7 +2,8 @@
   "Mock network port for testing download orchestration.
    
    Provides predictable responses for testing without actual network I/O."
-  (:require [dev.cljtoc.ports.network :as network])
+  (:require [dev.cljtoc.ports.network :as network]
+            [dev.cljtoc.protocol.tracker :as tracker])
   (:import [java.util UUID]))
 
 (defrecord MockNetworkPort
@@ -42,19 +43,46 @@
     nil)
 
   network/ITrackerPort
-  (announce [_ torrent-metadata progress]
+  (announce-to-url [_ tracker-url _request]
+    (when-let [capture (:announce-to-url-capture config)]
+      (swap! capture conj tracker-url))
+    (if-let [global-error (:announce-to-url-error config)]
+      global-error
+      (get (:announce-to-url-responses config) tracker-url
+           {:ok (set (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"]))})))
+
+  (announce [this torrent-metadata progress]
     (when-let [capture (:announce-capture config)]
       (reset! capture {:torrent torrent-metadata :progress progress}))
     (if-let [announce-error (:announce-error config)]
       announce-error
-      {:ok (get config :mock-peers ["127.0.0.1:6881" "127.0.0.1:6882"])})))
+      (let [tracker-urls (tracker/pick-tracker-order torrent-metadata)]
+        (if (empty? tracker-urls)
+          {:error :no-tracker :message "No tracker URL available"}
+          (loop [urls tracker-urls
+                 all-peers #{}
+                 last-error nil]
+            (if (empty? urls)
+              (if (empty? all-peers)
+                (or last-error
+                    {:error :all-trackers-failed :message "All trackers failed"})
+                {:ok all-peers})
+              (let [result (network/announce-to-url this (first urls) nil)]
+                (if (:ok result)
+                  (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) last-error)
+                  (recur (rest urls) all-peers result))))))))))
 
 (defn create
   "Create a mock network port for testing.
    
    Options:
    - :default-bitfield - set of piece indices this mock peer has (default: #{0 1 2 3 4})
-   - :mock-peers - vector of peer addresses to return on announce
+   - :mock-peers - vector of peer addresses returned per tracker URL
+     (combined across URLs into a set, mirroring the real port)
+   - :announce-to-url-responses - {tracker-url result} per-URL scripts,
+     overriding :mock-peers for that URL only
+   - :announce-to-url-error - error map every per-URL query returns
+   - :announce-to-url-capture - atom conjed with each queried URL, in order
    - :announce-error - error map to return from announce instead of peers
    - :announce-capture - atom reset to {:torrent _ :progress _} on announce,
      so tests can assert the reported downloaded/left

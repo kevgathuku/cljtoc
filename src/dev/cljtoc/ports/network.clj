@@ -114,6 +114,16 @@
 (defprotocol ITrackerPort
   "Abstraction for tracker communication operations."
 
+  (announce-to-url [this tracker-url request]
+    "Announce to ONE tracker URL and get its peers.
+     request is the announce payload (:info-hash :peer-id :port
+     :uploaded :downloaded :left, plus optional :event :compact
+     :num-want): built once by the caller, reused per URL so a
+     coordinator loop can query URLs incrementally and emit
+     :tracker-peers as responses land.
+     Returns {:ok #{peer-address}} or {:error reason :message msg}."
+     )
+
   (announce [this torrent-metadata progress]
     "Announce to the tracker and get a list of peers.
      progress is {:downloaded bytes-on-disk :left bytes-remaining}: the

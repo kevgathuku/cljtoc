@@ -77,28 +77,6 @@
           {:ok (.toByteArray baos)})
         {:error (str "HTTP " response-code)}))))
 
-(def ^:private fallback-trackers
-  "Well-known public trackers used as fallbacks when torrent trackers fail."
-  ["udp://tracker.opentrackr.org:1337"
-   "udp://open.demonii.com:1337"
-   "udp://open.stealth.si:80"
-   "udp://tracker.torrent.eu.org:451"
-   "udp://explodie.org:6969"
-   "udp://exodus.desync.com:6969"])
-
-(defn- collect-tracker-urls
-  "Build a flat, deduplicated list of tracker URLs from announce + announce-list,
-   with well-known public trackers appended as fallbacks."
-  [torrent-metadata]
-  (let [primary (:announce torrent-metadata)
-        from-list (mapcat identity (:announce-list torrent-metadata))
-        all (concat (if primary (cons primary from-list) from-list)
-                    fallback-trackers)]
-    (distinct (filter #(and (some? %)
-                            (or (str/starts-with? % "http")
-                                (str/starts-with? % "udp")))
-                      all))))
-
 (defn- udp-exchange
   "Send a UDP datagram and wait for a response. Returns byte array or throws."
   [^DatagramSocket socket ^bytes send-data ^InetSocketAddress addr timeout-ms]
@@ -269,6 +247,13 @@
       (catch Exception _ nil)))
 
   network/ITrackerPort
+  (announce-to-url [network tracker-url request]
+    "Announce to ONE tracker URL. The per-URL effect half of the fan-out
+     policy: ordering (tracker/pick-tracker-order) and merging
+     (tracker/combine-peers) stay pure so a coordinator loop can query
+     URLs incrementally. Returns {:ok #{peer-address}} or {:error ...}."
+    (try-single-tracker network tracker-url request))
+
   (announce [network torrent-metadata progress]
     "Announce to trackers and get a list of peers.
      Queries ALL tracker URLs and combines peers for maximum coverage.
@@ -276,7 +261,7 @@
      by the caller from the download record -- this port only transmits it.
      Returns {:ok #{peer-address}} or {:error reason :message msg}."
     (try
-      (let [tracker-urls (collect-tracker-urls torrent-metadata)]
+      (let [tracker-urls (tracker/pick-tracker-order torrent-metadata)]
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
           (let [request {:info-hash (:info-hash torrent-metadata)
@@ -306,7 +291,7 @@
                   (if (:ok result)
                     (do
                       (log! network (str "    Got " (count (:ok result)) " peers"))
-                      (recur (rest urls) (into all-peers (:ok result)) last-error))
+                      (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) last-error))
                     (do
                       (log! network (str "    Failed: " (:message result)))
                       (recur (rest urls) all-peers result)))))))))

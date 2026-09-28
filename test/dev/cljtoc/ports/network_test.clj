@@ -311,3 +311,57 @@
                   (peer-in (byte-array [0 0 0 1 2])))]
       (is (nil? (:error result)) (pr-str result))
       (is (instance? dev.cljtoc.protocol.peer.Interested (:ok result))))))
+
+;; Issue #44: the per-URL seam streaming consumes. announce-to-url queries
+;; ONE tracker URL so a coordinator loop can emit :tracker-peers
+;; incrementally; whole-list announce keeps combining over it.
+
+(defn- valid-announce-request
+  "A well-shaped announce request: 20-byte hashes, so any failure below
+   comes from the URL/transport, never from request validation."
+  []
+  {:info-hash (byte-array 20)
+   :peer-id (byte-array 20)
+   :port 6881
+   :uploaded 0
+   :downloaded 0
+   :left 1000})
+
+(deftest per-url-announce-is-a-scriptable-seam-test
+  (testing "mock announce-to-url returns its mock peers by default"
+    (let [result (network/announce-to-url
+                  (mock-network/create) "http://a.example.com" (valid-announce-request))]
+      (is (= {:ok #{"127.0.0.1:6881" "127.0.0.1:6882"}} result))))
+  (testing "per-URL scripts override the default for that URL only"
+    (let [mock (mock-network/create
+                {:announce-to-url-responses
+                 {"http://a.example.com" {:ok #{"10.0.0.1:1111"}}}})]
+      (is (= {:ok #{"10.0.0.1:1111"}}
+             (network/announce-to-url mock "http://a.example.com" (valid-announce-request))))
+      (is (= {:ok #{"127.0.0.1:6881" "127.0.0.1:6882"}}
+             (network/announce-to-url mock "http://b.example.com" (valid-announce-request))))))
+  (testing "announce combines peers across the ordered URLs"
+    ;; Two scripted URLs far apart in the order: a single-URL
+    ;; implementation could never produce both peer sets at once.
+    (let [mock (mock-network/create
+                {:mock-peers []
+                 :announce-to-url-responses
+                 {"http://a.example.com" {:ok #{"10.0.0.1:1111"}}
+                  "udp://tracker.opentrackr.org:1337" {:ok #{"10.0.0.2:2222"}}}})
+          result (network/announce mock {:announce "http://a.example.com"}
+                                   {:downloaded 0 :left 1000})]
+      (is (nil? (:error result)) (pr-str result))
+      (is (contains? (:ok result) "10.0.0.1:1111") (pr-str result))
+      (is (contains? (:ok result) "10.0.0.2:2222") (pr-str result))))
+  (testing "announce reports the failure when every URL fails"
+    (let [mock (mock-network/create {:announce-to-url-error {:error :boom :message "down"}})
+          result (network/announce mock {:announce "http://a.example.com"}
+                                   {:downloaded 0 :left 1000})]
+      (is (= :boom (:error result))))))
+
+(deftest real-announce-to-url-never-throws-test
+  (testing "a malformed URL is an error envelope, with no socket touched"
+    (let [result (network/announce-to-url
+                  (network-impl/create) "not-a-url" (valid-announce-request))]
+      (is (an-envelope? result))
+      (is (some? (:error result)) (pr-str result)))))
