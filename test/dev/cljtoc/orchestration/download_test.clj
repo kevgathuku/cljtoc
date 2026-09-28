@@ -127,6 +127,45 @@
                        :rate 5000)]
       (is (= 5000 (download/calculate-rate time stats))))))
 
+(deftest calculate-rate-excludes-downtime-test
+  (testing "paused, failed, and crashed gaps accumulated across resumes do
+            not dilute the average: only active wall time counts"
+    (let [time (mock-time/create {:now 9000})
+          stats (assoc (download/->DownloadStats 1000 nil 20000 0 8500)
+                       :downtime-ms 4000)]
+      (is (= 5000 (download/calculate-rate time stats))))))
+
+(deftest accumulate-downtime-folds-the-dead-gap-test
+  (testing "resuming folds everything since the last verified byte into the
+            downtime total -- no byte moved in that gap by definition -- and
+            refreshes last-update so the next gap starts here"
+    (let [time (mock-time/create {:now 5000})
+          download {:state :paused
+                    :stats (download/->DownloadStats 1000 nil 20000 0 2000)}
+          result (download/accumulate-downtime time download)]
+      (is (= 3000 (:downtime-ms (:stats result))))
+      (is (= 5000 (:last-update (:stats result)))))))
+
+(deftest accumulate-downtime-keeps-time-monotonic-test
+  (testing "a clock reading behind last-update accumulates nothing and never
+            moves last-update backwards"
+    (let [time (mock-time/create {:now 1000})
+          download {:state :failed
+                    :stats (assoc (download/->DownloadStats 1000 nil 20000 0 2000)
+                                  :downtime-ms 500)}
+          result (download/accumulate-downtime time download)]
+      (is (= 500 (:downtime-ms (:stats result))))
+      (is (= 2000 (:last-update (:stats result)))))))
+
+(deftest accumulate-downtime-tolerates-legacy-records-test
+  (testing "records persisted before downtime tracking resume unchanged:
+            no total to add to, no stamp to refresh from"
+    (let [time (mock-time/create {:now 5000})
+          download {:state :paused :stats {:bytes-downloaded 20000}}
+          result (download/accumulate-downtime time download)]
+      (is (= 0 (:downtime-ms (:stats result))))
+      (is (= 5000 (:last-update (:stats result)))))))
+
 (deftest complete-download-finalizes-stats-test
   (testing "completion stamps completed-at, refreshes last-update, and pins
             the rate at the run average instead of the last block's
@@ -1503,8 +1542,9 @@
 ;; not by accident — the generator cannot conjure a protocol implementation,
 ;; so anything behind an effect port fails before its :ret is even reached
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
-;; calculate-rate, complete-download, update-stats-bytes, initial-stats,
-;; initial-download, progress (time port); start-download, run-coordinator, run-download,
+;; calculate-rate, complete-download, accumulate-downtime,
+;; update-stats-bytes, initial-stats, initial-download, progress (time
+;; port); start-download, run-coordinator, run-download,
 ;; load-persisted-state, persist-download-state (ports, channels, workers);
 ;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------

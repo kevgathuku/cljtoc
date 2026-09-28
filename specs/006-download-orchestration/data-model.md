@@ -61,6 +61,7 @@ DownloadStats
 ├── completed-at : instant    (when completed, if applicable)
 ├── bytes-downloaded : nat-int (total bytes verified)
 ├── bytes-uploaded : nat-int   (total bytes sent, for seeding)
+├── downtime-ms : nat-int      (paused/failed/crashed gaps excluded from the rate)
 └── last-update : instant      (for rate calculation)
 ```
 

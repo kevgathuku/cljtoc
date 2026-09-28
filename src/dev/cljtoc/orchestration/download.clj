@@ -258,21 +258,50 @@
 
 (defn- rate-at
   "Average transfer rate at one clock reading: total bytes downloaded
-   divided by seconds since :started-at. Records predating started-at
+   divided by active seconds since :started-at. Paused, failed, and crashed
+   gaps accumulated in :downtime-ms across resumes do not count: the average
+   measures transferring time, not wall time. Records predating started-at
    tracking report 0."
   [now stats]
   (let [started (:started-at stats)
-        elapsed-seconds (if started (/ (- now started) 1000.0) 0)
+        downtime (or (:downtime-ms stats) 0)
+        elapsed-seconds (if started
+                          (/ (max 0 (- (- now started) downtime)) 1000.0)
+                          0)
         bytes-downloaded (:bytes-downloaded stats)]
     (if (and (> elapsed-seconds 0) (> bytes-downloaded 0))
       (long (/ bytes-downloaded elapsed-seconds))
       0)))
 
+(defn accumulate-downtime
+  "Fold the dead gap since the last verified byte into the stats.
+   Between :last-update and now no byte moved by definition, so the whole
+   gap was pause, failure, or crash -- resuming excludes it from the rate
+   denominator and refreshes last-update so the next gap starts here.
+   Records predating downtime tracking resume unchanged. Returns the
+   updated download."
+  [time-port download]
+  (let [now (time/now time-port)
+        stats (:stats download)
+        last (:last-update stats)
+        gap (if last (max 0 (- now last)) 0)]
+    (assoc download :stats (assoc stats
+                                  :downtime-ms (+ (or (:downtime-ms stats) 0)
+                                                  gap)
+                                  :last-update (if (and last (> last now))
+                                                 last
+                                                 now)))))
+
+(s/fdef accumulate-downtime
+  :args (s/cat :time-port any? :download map?)
+  :ret map?)
+
 (defn calculate-rate
   "Average transfer rate over the run: total bytes downloaded divided by
-   seconds since :started-at. Averaging over the run (instead of the gap
-   since :last-update) keeps the reported speed stable: right after the
-   final block the last-gap quotient explodes into fantasy GB/s. Once
+   active seconds since :started-at. Averaging over the run (instead of the
+   gap since :last-update) keeps the reported speed stable: right after the
+   final block the last-gap quotient explodes into fantasy GB/s. Paused,
+   failed, and crashed gaps accumulated in :downtime-ms do not count. Once
    :completed-at is stamped the rate freezes there, so late status calls
    agree with the persisted record instead of decaying toward zero.
    Records predating started-at tracking report 0."

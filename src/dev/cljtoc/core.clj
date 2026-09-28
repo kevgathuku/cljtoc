@@ -167,16 +167,19 @@
    swarm has nothing to fetch, and re-running it would only redo the
    materialization run-download just proved unnecessary -- its stats are
    finalized here instead, since the skipped run never finalizes them.
-   Otherwise the reconciled materialization travels into run-download, so
-   the cached pieces are not read, verified, and written a second time
-   before the swarm is dialed. Returns the refusal envelope when the
-   record cannot be resumed, else the final Download record."
+   The dead gap since the last verified byte (pause, failure, or crash)
+   is folded out of the rate denominator on every resume, so the average
+   below measures active time. Otherwise the reconciled materialization
+   travels into run-download, so the cached pieces are not read, verified,
+   and written a second time before the swarm is dialed. Returns the
+   refusal envelope when the record cannot be resumed, else the final
+   Download record."
   [manager state]
   (let [{:keys [disk-port network-port time-port]} manager
         resumed (download/resume-download disk-port network-port state)]
     (if (:error resumed)
       resumed
-      (let [revived (:ok resumed)]
+      (let [revived (download/accumulate-downtime time-port (:ok resumed))]
         (if (= :completed (:state revived))
           (download/complete-download time-port revived)
           (download/run-download manager revived {:materialized? true
