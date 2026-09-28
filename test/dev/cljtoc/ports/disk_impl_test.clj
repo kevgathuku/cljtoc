@@ -11,6 +11,7 @@
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
             [dev.cljtoc.test-utils :as test-utils :refer [an-envelope? channel?]]
+            [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
@@ -38,8 +39,8 @@
           layout (compile-layout {:name "t" :piece-length 4 :length 4})
           piece-bytes (byte-array [0 1 2 3])
           calls {:read-torrent-file #(disk/read-torrent-file % torrent-path)
-                 :read-piece #(disk/read-piece % "contract" 0)
-                 :write-piece #(disk/write-piece % "contract" 0 piece-bytes)
+                 :read-piece #(disk/read-piece % (byte-array 20) 0)
+                 :write-piece #(disk/write-piece % (byte-array 20) 0 piece-bytes)
                  :write-output-piece #(disk/write-output-piece % layout output-dir 0 piece-bytes)
                  :initialize-output-layout #(disk/initialize-output-layout % layout output-dir)
                  :ensure-directory #(disk/ensure-directory % output-dir)
@@ -57,63 +58,89 @@
               (str port-name " " method " returned neither :ok nor :error: "
                    (pr-str result))))))))
 
-(deftest piece-cache-namespaced-by-download-id-test
-  (testing "two downloads share no cache entries: same piece index, distinct bytes, both read back intact"
+(deftest piece-cache-scoped-by-torrent-content-test
+  (testing "distinct torrents share no cache entries: same piece index, distinct bytes, both intact"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          hash-a (bencode/sha1-hash (test-utils/to-bytes "torrent-a"))
+          hash-b (bencode/sha1-hash (test-utils/to-bytes "torrent-b"))
           piece-a (byte-array [0 1 2 3])
           piece-b (byte-array [4 5 6 7])]
-      (is (= {:ok :written} (disk/write-piece port "download-a" 0 piece-a)))
-      (is (= {:ok :written} (disk/write-piece port "download-b" 0 piece-b)))
-      (let [read-a (:ok (disk/read-piece port "download-a" 0))
-            read-b (:ok (disk/read-piece port "download-b" 0))]
+      (is (= {:ok :written} (disk/write-piece port hash-a 0 piece-a)))
+      (is (= {:ok :written} (disk/write-piece port hash-b 0 piece-b)))
+      (let [read-a (:ok (disk/read-piece port hash-a 0))
+            read-b (:ok (disk/read-piece port hash-b 0))]
         (is (java.util.Arrays/equals piece-a read-a))
         (is (java.util.Arrays/equals piece-b read-b))))))
 
-(def hostile-cache-ids
-  "Download ids that must never name a cache entry: blanks, dots, and
-   anything carrying a path separator or a non-string shape."
-  ["" "." ".." "a/b" "/abs" "a\\b" "\\\\host\\share" nil 42 ["a"]])
+(deftest identical-torrents-share-cache-entries-test
+  (testing "same info-hash, different names: one entry, last write wins"
+    ;; Content-addressing is the point: equal hashes mean equal bytes,
+    ;; so sharing is correct, not a collision.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          shared-hash (bencode/sha1-hash (test-utils/to-bytes "same-bytes"))]
+      (is (= {:ok :written} (disk/write-piece port shared-hash 0 (byte-array [1 1 1 1]))))
+      (is (= {:ok :written} (disk/write-piece port shared-hash 0 (byte-array [2 2 2 2]))))
+      (is (java.util.Arrays/equals (byte-array [2 2 2 2])
+                                   (:ok (disk/read-piece port shared-hash 0)))))))
 
-(deftest hostile-download-ids-are-refused-test
-  (testing "a download id that cannot name one cache entry fails closed on both ports, real and mock alike"
+(deftest case-variant-names-with-different-content-stay-isolated-test
+  (testing "Foo.torrent vs foo.torrent: distinct ids, distinct content, no clobber on any filesystem"
+    ;; The ids stay case-distinct (that is id-from-path's contract), yet the
+    ;; cache must not follow: on a case-insensitive filesystem raw names
+    ;; would resolve to one directory. Hex scopes have no case variants.
+    (is (= "Foo" (disk/id-from-path "/dl/Foo.torrent")))
+    (is (= "foo" (disk/id-from-path "/dl/foo.torrent")))
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          hash-foo (bencode/sha1-hash (test-utils/to-bytes "FOO-content"))
+          hash-foo-lower (bencode/sha1-hash (test-utils/to-bytes "foo-content"))]
+      (is (= {:ok :written} (disk/write-piece port hash-foo 0 (byte-array [0 1 2 3]))))
+      (is (= {:ok :written} (disk/write-piece port hash-foo-lower 0 (byte-array [4 5 6 7]))))
+      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                   (:ok (disk/read-piece port hash-foo 0))))
+      (is (java.util.Arrays/equals (byte-array [4 5 6 7])
+                                   (:ok (disk/read-piece port hash-foo-lower 0)))))))
+
+(def hostile-info-hashes
+  "Info hashes that must never name a cache entry: missing, empty, or not bytes at all."
+  [nil "" 42 ["a"] (byte-array 0)])
+
+(deftest hostile-info-hashes-are-refused-test
+  (testing "a missing or malformed info hash fails closed on both ports, real and mock alike"
     (let [ports [(make-port (test-utils/temp-dir "disk-state-"))
                  (mock-disk/create)]]
       (doseq [port ports
-              hostile-id hostile-cache-ids]
-        (is (:error (disk/write-piece port hostile-id 0 (byte-array [0])))
-            (str "write accepted hostile id " (pr-str hostile-id)))
-        (is (:error (disk/read-piece port hostile-id 0))
-            (str "read accepted hostile id " (pr-str hostile-id)))))))
+              hostile-hash hostile-info-hashes]
+        (is (:error (disk/write-piece port hostile-hash 0 (byte-array [0])))
+            (str "write accepted hostile hash " (pr-str hostile-hash)))
+        (is (:error (disk/read-piece port hostile-hash 0))
+            (str "read accepted hostile hash " (pr-str hostile-hash)))))))
 
-(deftest hostile-download-id-writes-nothing-test
-  (testing "a refused cache write leaves no file behind: no escape, no flat fallback"
+(deftest hostile-info-hash-writes-nothing-test
+  (testing "a refused cache write leaves no file behind"
     (let [cache-dir (test-utils/temp-dir "cache-escape-")
           port (disk-impl/create {:state-dir (test-utils/temp-dir "disk-state-")
                                   :piece-cache-dir cache-dir})]
-      (doseq [hostile-id ["" "." ".." "a/b" "a\\b"]]
-        (is (:error (disk/write-piece port hostile-id 0 (byte-array [0])))))
+      (doseq [hostile-hash [nil "" (byte-array 0)]]
+        (is (:error (disk/write-piece port hostile-hash 0 (byte-array [0])))))
       (is (empty? (seq (.listFiles (io/file cache-dir))))))))
 
-(defspec malformed-cache-ids-are-refused-or-accepted-spec 100
-  ;; The guard's vocabulary, generated: hostile shapes fail closed on both
-  ;; ports, every other string is a usable namespace. The literal doseq
-  ;; above pins each hostile spelling; this pins the combinations.
-  (prop/for-all [id (gen/one-of [(gen/not-empty gen/string-alphanumeric)
-                                 (gen/elements ["" "." ".."])
-                                 (gen/fmap #(str % "/x") gen/string-alphanumeric)
-                                 (gen/fmap #(str "x\\" %) gen/string-alphanumeric)
-                                 (gen/elements [42 nil])])]
+(defspec malformed-info-hashes-are-refused-or-accepted-spec 100
+  ;; The guard's vocabulary, generated: byte arrays of any length are usable
+  ;; scopes, everything else fails closed on both ports. The literal doseq
+  ;; above pins each hostile shape; this pins the combinations.
+  (prop/for-all [info-hash (gen/one-of [(gen/fmap #(byte-array %) (gen/vector (gen/choose 0 255) 1 20))
+                                        (gen/elements [nil "" 42 (byte-array 0)])])]
                 (let [ports [(make-port (test-utils/temp-dir "disk-state-"))
                              (mock-disk/create)]
-                      expect-ok? (disk/valid-cache-id? id)]
-                  ;; boolean, not true?: refusal yields the :invalid-download-id
+                      expect-ok? (some? (disk/cache-scope info-hash))]
+                  ;; boolean, not true?: refusal yields the :invalid-info-hash
                   ;; keyword, which is truthy but not literally true.
                   (every? boolean
                           (for [port ports]
                             (if expect-ok?
                               (= {:ok :written}
-                                 (disk/write-piece port id 0 (byte-array [1])))
-                              (:error (disk/write-piece port id 0 (byte-array [1])))))))))
+                                 (disk/write-piece port info-hash 0 (byte-array [1])))
+                              (:error (disk/write-piece port info-hash 0 (byte-array [1])))))))))
 
 (deftest save-load-round-trip-with-bytes-test
   (testing "a download containing byte arrays round-trips through the disk port"

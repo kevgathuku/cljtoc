@@ -639,8 +639,8 @@
                         :peers #{}
                         :piece-state piece-state)
         disk (mock-disk/create)]
-    (disk/write-piece disk "done" 0 piece-0)
-    (disk/write-piece disk "done" 1 piece-1)
+    (disk/write-piece disk (:info-hash torrent) 0 piece-0)
+    (disk/write-piece disk (:info-hash torrent) 1 piece-1)
     {:download download :disk disk}))
 
 (deftest resume-download-completes-from-cache-without-announcing-test
@@ -1041,8 +1041,8 @@
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
-      (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk "swarm" 0))))
-      (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk "swarm" 1)))))))
+      (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk (:info-hash torrent) 0))))
+      (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk (:info-hash torrent) 1)))))))
 
 (deftest run-download-fails-on-output-layout-error-test
   (testing "a failed layout init fails the download instead of reporting completion"
@@ -1248,8 +1248,8 @@
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
-      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-piece disk "loop" 0))))
-      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-piece disk "loop" 1)))))))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-piece disk (:info-hash (:torrent (loop-download))) 0))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-piece disk (:info-hash (:torrent (loop-download))) 1)))))))
 
 (deftest run-event-loop-completion-closes-peers-test
   (testing "a completed download closes every active connection"
@@ -1302,7 +1302,7 @@
                                            (#(:ok (pieces/mark-in-flight % 0)))
                                            (#(:ok (pieces/mark-verified % 0)))))
           disk (mock-disk/create)
-          _ (disk/write-piece disk "fin" 0 piece-0)
+          _ (disk/write-piece disk (:info-hash torrent) 0 piece-0)
           manager {:network-port (mock-net/create)
                    :disk-port disk
                    :time-port (mock-time/create)
@@ -1531,7 +1531,7 @@
       (is (= :failed (:state result)))
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :in-flight])))
-      (is (nil? (mock-disk/get-piece disk "loop" 0))))))
+      (is (nil? (mock-disk/get-piece disk (:info-hash (:torrent (loop-download))) 0))))))
 
 (deftest run-event-loop-write-error-fails-download-test
   (testing "a failed piece write fails the download instead of verifying air"
@@ -1676,7 +1676,7 @@
                                                    "mat")
                         :piece-state piece-state)
         disk (mock-disk/create)]
-    (disk/write-piece disk "mat" 0 piece-0)
+    (disk/write-piece disk (:info-hash torrent) 0 piece-0)
     {:download download
      :layout (:ok (torrent/compile-output-layout info))
      :disk disk
@@ -1720,7 +1720,7 @@
             trusting the verified set alone would complete the download with
             corrupt content on disk"
     (let [{:keys [download layout disk]} (materialize-fixture)
-          _ (disk/write-piece disk "mat" 0 (test-utils/to-bytes "XXXX"))
+          _ (disk/write-piece disk (:info-hash (:torrent download)) 0 (test-utils/to-bytes "XXXX"))
           result (#'download/materialize-verified-pieces download disk layout)
           piece-state (:piece-state (:ok result))]
       (is (= #{} (:verified piece-state)))
@@ -1732,7 +1732,7 @@
             piece writes through exactly as before the verification step"
     (let [{:keys [download layout disk piece-0]} (materialize-fixture)
           result (#'download/materialize-verified-pieces
-                  (dissoc download :torrent) disk layout)]
+                  (update-in download [:torrent :info] dissoc :pieces) disk layout)]
       (is (not (:error result)))
       (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
 
@@ -1791,7 +1791,7 @@
     (let [{:keys [download layout]} (materialize-fixture)
           disk (mock-disk/create {:output-write-error {:error :write-error
                                                        :message "disk full"}})
-          _ (disk/write-piece disk "mat" 0 (test-utils/to-bytes "abcd"))
+          _ (disk/write-piece disk (:info-hash (:torrent download)) 0 (test-utils/to-bytes "abcd"))
           result (#'download/materialize-verified-pieces download disk layout)]
       (is (= :write-error (:error result)))
       (is (= "disk full" (:message result))))))
@@ -1837,8 +1837,8 @@
                                                      "whole")
                           :piece-state piece-state
                           :state :downloading)
-          _ (disk/write-piece port "whole" 0 piece-0)
-          _ (disk/write-piece port "whole" 1 piece-1)
+          _ (disk/write-piece port (:info-hash torrent) 0 piece-0)
+          _ (disk/write-piece port (:info-hash torrent) 1 piece-1)
           result (download/run-download {:network-port (mock-net/create)
                                          :disk-port port
                                          :time-port (mock-time/create)
@@ -1876,7 +1876,7 @@
                           :piece-state piece-state
                           :state :paused
                           :peers #{})
-          _ (disk/write-piece port "empty" 0 piece-0)
+          _ (disk/write-piece port (:info-hash torrent) 0 piece-0)
           captured (atom nil)
           net (mock-net/create {:announce-error {:error :tracker-error
                                                  :message "tracker down"}
@@ -2011,7 +2011,7 @@
                         :piece-state piece-state
                         :peers #{{:address "10.0.0.9:6881" :port 6881}}
                         :error {:reason :no-peers :message "swarm exhausted"})
-          _ (disk/write-piece disk-port "cycle" 0 (nth piece-bytes 0))
+          _ (disk/write-piece disk-port (:info-hash torrent) 0 (nth piece-bytes 0))
           net (mock-net/create
                {:mock-peers ["10.0.0.9:6881"]
                 :handshake-response {:ok {:info-hash info-hash
@@ -2059,7 +2059,7 @@
                           :state :downloading)
           disk (mock-disk/create {:output-write-error {:error :write-error
                                                        :message "disk full"}})
-          _ (disk/write-piece disk "matfail" 0 piece-0)
+          _ (disk/write-piece disk (:info-hash torrent) 0 piece-0)
           result (download/run-download {:network-port (mock-net/create)
                                          :disk-port disk
                                          :time-port (mock-time/create)
@@ -2082,7 +2082,7 @@
                                    (#(:ok (pieces/mark-verified % 1)))))
           disk (mock-disk/create {:output-write-error {:error :write-error
                                                        :message "disk full"}})
-          _ (disk/write-piece disk "mat" 1 (test-utils/to-bytes "efgh"))
+          _ (disk/write-piece disk (:info-hash (:torrent both-verified)) 1 (test-utils/to-bytes "efgh"))
           result (#'download/materialize-verified-pieces both-verified disk layout)
           failed-record (:download result)]
       (is (= :write-error (:error result)))
@@ -2115,7 +2115,7 @@
                         :state :paused
                         :piece-state piece-state
                         :peers #{})
-          _ (disk/write-piece disk-port "paused" 0 (nth piece-bytes 0))
+          _ (disk/write-piece disk-port (:info-hash torrent) 0 (nth piece-bytes 0))
           net (mock-net/create
                {:mock-peers ["10.0.0.9:6881"]
                 :handshake-response {:ok {:info-hash info-hash

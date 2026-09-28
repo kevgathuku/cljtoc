@@ -24,31 +24,27 @@
       {:ok data}
       {:error :file-not-found :message (str "File not found: " path)}))
 
-  (read-piece [_ download-id piece-index]
+  (read-piece [_ info-hash piece-index]
     ;; Mirrors DiskPortImpl: a cache hit and a miss are both {:ok ...},
     ;; the miss carrying nil, and an unreadable cache file is an
-    ;; {:error :read-error}. Entries are keyed [download-id piece-index]
-    ;; on both ports, and a hostile id is refused on both ports — a mock
-    ;; that stored flat or accepted hostile ids would pass tests the real
-    ;; port fails.
+    ;; {:error :read-error}. Entries are keyed [hash-scope piece-index]
+    ;; on both ports, and a missing hash is refused on both ports — a mock
+    ;; that stored flat or accepted hashless reads would pass tests the
+    ;; real port fails.
     (if-let [err (:read-error config)]
       err
-      (if (disk/valid-cache-id? download-id)
-        {:ok (get @piece-cache [download-id piece-index])}
-        {:error :invalid-download-id
-         :message (str "Download id cannot name a piece-cache entry: "
-                       (pr-str download-id))})))
+      (if-let [scope (disk/cache-scope info-hash)]
+        {:ok (get @piece-cache [scope piece-index])}
+        disk/invalid-info-hash-error)))
 
-  (write-piece [_ download-id piece-index bytes]
+  (write-piece [_ info-hash piece-index bytes]
     (if-let [err (:write-error config)]
       err
-      (if (disk/valid-cache-id? download-id)
+      (if-let [scope (disk/cache-scope info-hash)]
         (do
-          (swap! piece-cache assoc [download-id piece-index] bytes)
+          (swap! piece-cache assoc [scope piece-index] bytes)
           {:ok :written})
-        {:error :invalid-download-id
-         :message (str "Download id cannot name a piece-cache entry: "
-                       (pr-str download-id))})))
+        disk/invalid-info-hash-error)))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
@@ -145,11 +141,11 @@
   :args (s/cat :mock-disk any? :path string? :torrent-metadata any?)
   :ret map?)
 
-(defn get-piece [mock-disk download-id piece-index]
-  (get @(:piece-cache mock-disk) [download-id piece-index]))
+(defn get-piece [mock-disk info-hash piece-index]
+  (get @(:piece-cache mock-disk) [(disk/cache-scope info-hash) piece-index]))
 
 (s/fdef get-piece
-  :args (s/cat :mock-disk any? :download-id any? :piece-index nat-int?)
+  :args (s/cat :mock-disk any? :info-hash any? :piece-index nat-int?)
   :ret any?)
 
 (defn get-output-piece [mock-disk piece-index]

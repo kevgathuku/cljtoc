@@ -110,8 +110,8 @@ Disk effect abstraction.
 ```clojure
 (defprotocol IDiskPort
   (read-torrent-file [this path] "Parse .torrent file")
-  (read-piece [this download-id piece-index] "Read cached piece data")
-  (write-piece [this download-id piece-index bytes] "Write verified piece to the piece cache")
+  (read-piece [this info-hash piece-index] "Read cached piece data")
+  (write-piece [this info-hash piece-index bytes] "Write verified piece to the piece cache")
   (write-output-piece [this layout output-dir piece-index bytes]
     "Write one verified piece into the torrent file layout under output-dir")
   (initialize-output-layout [this layout output-dir]

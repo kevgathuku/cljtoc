@@ -97,19 +97,15 @@
       nil)))
 
 (defn- cache-file
-  "File for one download's cached piece: <cache-dir>/<download-id>/piece-<index>.dat.
-   Scoping by download id is what keeps concurrent downloads from overwriting
-   each other's cached bytes. A hostile id fails closed here (see
-   disk/valid-cache-id?) so it can neither escape the cache directory nor
-   collapse to the flat shared layout — and nothing is created before the
-   check runs.
-   Returns {:ok File} or {:error :invalid-download-id ...}."
-  [piece-cache-dir download-id piece-index]
-  (if (disk/valid-cache-id? download-id)
-    {:ok (io/file piece-cache-dir download-id (str "piece-" piece-index ".dat"))}
-    {:error :invalid-download-id
-     :message (str "Download id cannot name a piece-cache entry: "
-                   (pr-str download-id))}))
+  "File for one torrent's cached piece: <cache-dir>/<info-hash-hex>/piece-<index>.dat.
+   Scoping by content is what keeps concurrent downloads from overwriting
+   each other's cached bytes. A missing or malformed hash fails closed here
+   (see disk/cache-scope) — and nothing is created before the check runs.
+   Returns {:ok File} or disk/invalid-info-hash-error."
+  [piece-cache-dir info-hash piece-index]
+  (if-let [scope (disk/cache-scope info-hash)]
+    {:ok (io/file piece-cache-dir scope (str "piece-" piece-index ".dat"))}
+    disk/invalid-info-hash-error))
 
 (defn- resolve-layout
   "Resolve every declared path under output-dir for writing. Each path is
@@ -225,8 +221,8 @@
       (catch Exception e
         {:error :read-error :message (.getMessage e)})))
 
-  (read-piece [_ download-id piece-index]
-    (let [file-result (cache-file piece-cache-dir download-id piece-index)]
+  (read-piece [_ info-hash piece-index]
+    (let [file-result (cache-file piece-cache-dir info-hash piece-index)]
       (if (:error file-result)
         file-result
         (try
@@ -237,8 +233,8 @@
           (catch Exception e
             {:error :read-error :message (.getMessage e)})))))
 
-  (write-piece [_ download-id piece-index bytes]
-    (let [file-result (cache-file piece-cache-dir download-id piece-index)]
+  (write-piece [_ info-hash piece-index bytes]
+    (let [file-result (cache-file piece-cache-dir info-hash piece-index)]
       (if (:error file-result)
         file-result
         (try

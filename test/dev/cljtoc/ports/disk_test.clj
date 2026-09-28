@@ -41,6 +41,13 @@
   (prop/for-all [file-name (gen/such-that (comp not empty?) gen/string-alphanumeric)]
                 (= file-name (disk/id-from-path (str "/dl/" file-name ".torrent")))))
 
+(deftest id-from-path-falls-back-to-filename-for-dotfiles-test
+  (testing "stripping the extension must never yield an unusable id"
+    (is (= ".torrent" (disk/id-from-path "/dl/.torrent")))
+    (is (= "..torrent" (disk/id-from-path "/dl/..torrent")))
+    (is (= "ubuntu" (disk/id-from-path "/dl/ubuntu.torrent")))
+    (is (= "README" (disk/id-from-path "/dl/README")))))
+
 (def hex-char-gen
   "Generator for single lowercase hex chars."
   (gen/elements [\0 \1 \2 \3 \4 \5 \6 \7 \8 \9 \a \b \c \d \e \f]))
