@@ -1045,3 +1045,57 @@
         (is (= 1800 (:interval (:ok parse-result))))
         (is (= 1 (count (:peers (:ok parse-result)))))
         (is (= "10.0.0.1" (:ip (first (:peers (:ok parse-result))))))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 11: Tracker fan-out policy (issue #44)
+;; ---------------------------------------------------------------------------
+;; Seam: pure ordering + merge policy. No sockets: ordering derives from
+;; declared metadata, merging is set-union so late arrivals fold in.
+
+(deftest pick-tracker-order-test
+  (testing "primary announce comes first, then announce-list tiers flattened"
+    (let [order (tracker/pick-tracker-order
+                 {:announce "http://primary.example.com/announce"
+                  :announce-list [["http://tier1a.example.com" "http://tier1b.example.com"]
+                                  ["udp://tier2.example.com:6969"]]})]
+      (is (= "http://primary.example.com/announce" (first order)))
+      (is (= ["http://primary.example.com/announce"
+              "http://tier1a.example.com"
+              "http://tier1b.example.com"
+              "udp://tier2.example.com:6969"]
+             (take 4 order)))))
+
+  (testing "deduplicates while keeping first occurrence"
+    (let [order (tracker/pick-tracker-order
+                 {:announce "http://a.example.com"
+                  :announce-list [["http://a.example.com" "http://b.example.com"]]})]
+      (is (= 1 (count (filter #(= "http://a.example.com" %) order))))
+      (is (= "http://b.example.com" (second order)))))
+
+  (testing "drops non-http/non-udp and nil entries"
+    (let [order (tracker/pick-tracker-order
+                 {:announce nil
+                  :announce-list [[nil "ftp://files.example.com" "http://ok.example.com"]]})]
+      (is (not (some #(= "ftp://files.example.com" %) order)))
+      (is (some #(= "http://ok.example.com" %) order))))
+
+  (testing "appends well-known public fallbacks after declared trackers"
+    (let [order (tracker/pick-tracker-order {:announce "http://mine.example.com"})]
+      (is (= "http://mine.example.com" (first order)))
+      (is (some #(= "udp://tracker.opentrackr.org:1337" %) order)))))
+
+(deftest combine-peers-test
+  (testing "union of address sets"
+    (is (= #{"a:1" "b:2" "c:3"}
+             (tracker/combine-peers #{"a:1" "b:2"} #{"b:2" "c:3"}))))
+
+  (testing "empty inputs stay empty"
+    (is (= #{} (tracker/combine-peers))))
+
+  (testing "late arrivals fold into already-dialed sets incrementally"
+    (let [dialed (tracker/combine-peers #{"a:1"} #{"b:2"})
+          merged (tracker/combine-peers dialed #{"c:3"})]
+      (is (= #{"a:1" "b:2" "c:3"} merged))))
+
+  (testing "single set returns itself as a set"
+    (is (= #{"a:1"} (tracker/combine-peers ["a:1"])))))

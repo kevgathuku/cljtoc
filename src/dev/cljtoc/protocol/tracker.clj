@@ -867,3 +867,74 @@
        :success #(= (inc (-> % :args :schedule :retry-attempt))
                     (-> % :ret second :ok :retry-attempt))
        :error   #(= :error (first (:ret %)))))
+
+;; ---------------------------------------------------------------------------
+;; Tracker fan-out policy (issue #44)
+;; ---------------------------------------------------------------------------
+;; Pure ordering + merge policy for tracker queries. No sockets here: the
+;; network adapter calls pick-tracker-order once, then announces to ONE
+;; URL at a time so a coordinator loop can emit :tracker-peers
+;; incrementally (streaming). combine-peers stays merge-shaped
+;; (set-union) so late arrivals fold into already-dialed sets.
+
+(def fallback-trackers
+  "Well-known public trackers appended after declared tracker URLs."
+  ["udp://tracker.opentrackr.org:1337"
+   "udp://open.demonii.com:1337"
+   "udp://open.stealth.si:80"
+   "udp://tracker.torrent.eu.org:451"
+   "udp://explodie.org:6969"
+   "udp://exodus.desync.com:6969"])
+
+(defn pick-tracker-order
+  "Order tracker URLs for sequential querying.
+
+   Primary :announce first, then :announce-list tiers flattened in order,
+   then well-known public fallbacks. Deduplicated keeping the first
+   occurrence; nil and non-http/non-udp entries dropped.
+
+   Parameters:
+     torrent-metadata - Map with :announce and optional :announce-list
+
+   Returns: vector of tracker URL strings."
+  [torrent-metadata]
+  (let [primary (:announce torrent-metadata)
+        from-list (mapcat identity (:announce-list torrent-metadata))
+        all (concat (if primary (cons primary from-list) from-list)
+                    fallback-trackers)]
+    (vec (distinct (filter #(and (string? %)
+                                 (or (string/starts-with? % "http")
+                                     (string/starts-with? % "udp")))
+                            all)))))
+
+(s/fdef pick-tracker-order
+  :args (s/cat :torrent-metadata map?)
+  :ret (s/coll-of string? :kind vector?)
+  :fn #(let [metadata (-> % :args :torrent-metadata)
+              order (:ret %)]
+         (and (if (and (string? (:announce metadata))
+                        (or (string/starts-with? (:announce metadata) "http")
+                            (string/starts-with? (:announce metadata) "udp")))
+                (= (:announce metadata) (first order))
+                true)
+              (= order (vec (distinct order))))))
+
+(defn combine-peers
+  "Merge peer address collections into one set.
+
+   Set-union over address sets, so a coordinator can fold late tracker
+   arrivals into the already-dialed set incrementally.
+
+   Parameters:
+     peer-sets - any number of address collections (nil counts as empty)
+
+   Returns: a set of peer addresses."
+  [& peer-sets]
+  (into #{} (mapcat #(or (seq %) [])) peer-sets))
+
+(s/fdef combine-peers
+  :args (s/cat :peer-sets (s/* (s/nilable coll?)))
+  :ret set?
+  :fn (fn [{:keys [args ret]}]
+        (= ret (into #{} (mapcat (fn [peer-set] (or (seq peer-set) []))
+                                 (:peer-sets args))))))
