@@ -9,6 +9,7 @@
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.orchestration.download :as download]
+            [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
@@ -56,6 +57,39 @@
     (let [result (#'core/resume-and-run (mock-manager) (failed-record))]
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason]))))))
+
+(deftest resume-and-run-skips-the-swarm-when-the-cache-completes-test
+  (testing "a resume the cache already completes never contacts the tracker
+            or the swarm: reconcile marks it :completed and resume-and-run
+            returns it instead of re-running"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          piece-1 (test-utils/to-bytes "efgh")
+          info {:pieces [(bencode/sha1-hash piece-0)
+                         (bencode/sha1-hash piece-1)]
+                :piece-length 4
+                :name "done.bin"
+                :length 8}
+          torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :info info}
+          done (assoc (download/initial-download (mock-time/create)
+                                                 torrent "/out" "done")
+                      :state :paused
+                      :peers #{}
+                      :piece-state (-> (pieces/initial-piece-state 2)
+                                       (#(:ok (pieces/mark-in-flight % 0)))
+                                       (#(:ok (pieces/mark-verified % 0)))
+                                       (#(:ok (pieces/mark-in-flight % 1)))
+                                       (#(:ok (pieces/mark-verified % 1)))))
+          disk (mock-disk/create)
+          _ (disk/write-piece disk 0 piece-0)
+          _ (disk/write-piece disk 1 piece-1)
+          captured (atom nil)
+          manager (assoc (mock-manager)
+                         :disk-port disk
+                         :network-port (mock-net/create {:announce-capture captured}))
+          result (#'core/resume-and-run manager done)]
+      (is (= :completed (:state result)))
+      (is (nil? @captured) "neither announce nor swarm was touched"))))
 
 (deftest refusal-distinguishes-envelopes-from-records-test
   (testing "resume-and-run returns either a refusal envelope (:error, no

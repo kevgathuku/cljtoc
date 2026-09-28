@@ -498,6 +498,68 @@
       (is (= :downloading (get-in result [:ok :state])))
       (is (= {:downloaded 4 :left 4} (:progress @captured))))))
 
+(defn- complete-resume-fixture
+  "A 2-piece single-file download with both pieces verified and both bytes
+    in the piece cache: a resume with nothing left to fetch.
+    Returns {:download :disk}."
+  []
+  (let [piece-0 (test-utils/to-bytes "abcd")
+        piece-1 (test-utils/to-bytes "efgh")
+        info {:pieces [(bencode/sha1-hash piece-0)
+                       (bencode/sha1-hash piece-1)]
+              :piece-length 4
+              :name "done.bin"
+              :length 8}
+        torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :info info}
+        piece-state (-> (pieces/initial-piece-state 2)
+                        (#(:ok (pieces/mark-in-flight % 0)))
+                        (#(:ok (pieces/mark-verified % 0)))
+                        (#(:ok (pieces/mark-in-flight % 1)))
+                        (#(:ok (pieces/mark-verified % 1))))
+        download (assoc (download/initial-download (mock-time/create)
+                                                   torrent
+                                                   "/out"
+                                                   "done")
+                        :state :paused
+                        :peers #{}
+                        :piece-state piece-state)
+        disk (mock-disk/create)]
+    (disk/write-piece disk 0 piece-0)
+    (disk/write-piece disk 1 piece-1)
+    {:download download :disk disk}))
+
+(deftest resume-download-completes-from-cache-without-announcing-test
+  (testing "an all-verified resume reconciles the piece cache before the
+            tracker announce: with every cached piece valid the download is
+            already complete, so no announce is attempted even when the
+            tracker is down"
+    (let [{:keys [download disk]} (complete-resume-fixture)
+          captured (atom nil)
+          net (mock-net/create {:announce-error {:error :tracker-error
+                                                 :message "tracker down"}
+                                :announce-capture captured})
+          result (download/resume-download disk net download)]
+      (is (nil? @captured) "no tracker announce was attempted")
+      (is (= :completed (get-in result [:ok :state])))
+      (is (pieces/complete? (get-in result [:ok :piece-state]))))))
+
+(deftest resume-download-announces-reconciled-progress-test
+  (testing "a verified piece the cache no longer holds is requeued before
+            the announce, so the tracker hears the corrected progress
+            instead of the stale verified set"
+    (let [{:keys [download]} (complete-resume-fixture)
+          ;; Fresh port: the record still claims both pieces verified, but
+          ;; the cache holds neither.
+          disk (mock-disk/create)
+          captured (atom nil)
+          net (mock-net/create {:mock-peers ["10.9.9.1:6881"]
+                                :announce-capture captured})
+          result (download/resume-download disk net download)]
+      (is (= :downloading (get-in result [:ok :state])))
+      (is (= {:downloaded 0 :left 8} (:progress @captured)))
+      (is (= #{0 1} (:needed (get-in result [:ok :piece-state])))))))
+
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
 

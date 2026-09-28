@@ -402,15 +402,44 @@
           piece-state
           (:in-flight piece-state)))
 
+(declare materialize-verified-pieces)
+
+(defn- reconcile-verified-pieces
+  "Reconcile the record's verified set against the piece cache before any
+   tracker announce.
+
+    The announce below would otherwise report stale verified bytes and fail
+    a download the cache already completes. Returns {:ok download} carrying
+    the reconciled record, or the original record when there is nothing to
+    reconcile against: no disk port, an uncompilable layout, or a failed
+    materialization. Those fall through to the announce path, where
+    run-download reports the layout failure exactly as before."
+  [disk-port download]
+  (if (nil? disk-port)
+    {:ok download}
+    (let [compiled (torrent/compile-output-layout (:info (:torrent download)))]
+      (if (:error compiled)
+        {:ok download}
+        (let [materialized (materialize-verified-pieces
+                            download disk-port (:ok compiled))]
+          (if (:error materialized)
+            {:ok download}
+            materialized))))))
+
 (defn resume-download
   "Resume a paused or failed download.
 
    - Loads persisted state from disk when a disk port is given
+   - Reconciles verified pieces against the piece cache before
+     announcing: a record the cache already completes comes back
+     :completed without contacting the tracker, and the announce
+     otherwise reports the corrected progress
    - Re-announces to the tracker when a network port is given: the saved
      peer set is the one that just failed (pause clears it outright), and
      run-download derives every worker from :peers
    - Requeues pieces the dead run left in flight
-   - Returns the download in :downloading state"
+   - Returns the download in :downloading state, or :completed when the
+     cache already holds every verified piece"
   ([download]
    (resume-download nil nil download))
   ([disk-port network-port download]
@@ -430,10 +459,20 @@
                           :piece-state (requeue-stranded-pieces
                                         (:piece-state revived)))]
        (if network-port
-         (let [announce-result (announce-to-tracker network-port revived)]
-           (if (:error announce-result)
-             announce-result
-             {:ok (assoc revived :peers (build-peers (:ok announce-result)))}))
+          ;; Announce the reconciled record, not the revived one: pieces
+          ;; the cache no longer holds went back to :needed above, so the
+          ;; tracker hears the corrected progress. A reconciled-complete
+          ;; record skips the announce and the swarm outright: there is
+          ;; nothing left to fetch, and gating completion on a tracker
+          ;; answer stranded fully-cached resumes on a dead tracker.
+         (let [reconciled (:ok (reconcile-verified-pieces disk-port revived))]
+           (if (pieces/complete? (:piece-state reconciled))
+             {:ok (assoc reconciled :state :completed)}
+             (let [announce-result (announce-to-tracker network-port reconciled)]
+               (if (:error announce-result)
+                 announce-result
+                 {:ok (assoc reconciled
+                             :peers (build-peers (:ok announce-result)))}))))
          {:ok revived}))
      {:error :not-paused
       :message (str "Download is not resumable from state "

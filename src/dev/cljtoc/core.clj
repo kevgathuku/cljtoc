@@ -163,14 +163,19 @@
    Hands the record to run-download rather than returning the resumed
    record: a resumed record is peerless until the announce fills it in, and
    would otherwise be saved and printed as :downloading with nothing
-   downloading it. Returns the refusal envelope when the record cannot be
-   resumed, else the final Download record."
+   downloading it. A record the cache already completes skips the run: the
+   swarm has nothing to fetch, and re-running it would only redo the
+   materialization run-download just proved unnecessary. Returns the refusal
+   envelope when the record cannot be resumed, else the final Download record."
   [manager state]
   (let [{:keys [disk-port network-port]} manager
         resumed (download/resume-download disk-port network-port state)]
     (if (:error resumed)
       resumed
-      (download/run-download manager (:ok resumed)))))
+      (let [revived (:ok resumed)]
+        (if (= :completed (:state revived))
+          revived
+          (download/run-download manager revived))))))
 
 (defn- refusal?
   "True when result is a refusal envelope rather than a Download record.
