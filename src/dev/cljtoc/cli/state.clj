@@ -23,8 +23,6 @@
 (defn load-most-recent
   "Load the most recently started download. Dir-scanning by recency lives
    here (the port has no equivalent); the bytes move through the port."
-  ([disk-port]
-   (load-most-recent disk-port default-state-dir))
   ([disk-port state-dir]
    (let [dir (io/file state-dir)]
      (when (.exists dir)
