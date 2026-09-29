@@ -137,9 +137,9 @@
         (is (= 16384 (:length first-message))))))
   (testing "one poisoned block fails the whole request, nothing after it builds"
     (doseq [poisoned [[{:piece-index 0 :offset 0 :length 16384}
-                        {:piece-index -1 :offset 0 :length 16384}
-                        {:piece-index 0 :offset 16384 :length 16384}]
-                       [{:piece-index 0 :offset 0 :length 20000}]]]
+                       {:piece-index -1 :offset 0 :length 16384}
+                       {:piece-index 0 :offset 16384 :length 16384}]
+                      [{:piece-index 0 :offset 0 :length 20000}]]]
       (let [ready (peer-connection/on-message
                    (peer-connection/initial-state 4) (peer/->Unchoke))
             result (peer-connection/request ready poisoned)]
