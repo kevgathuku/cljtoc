@@ -193,6 +193,7 @@ Each feature has a dedicated page under `doc/` (overview plus contract pages):
 - Never use `with-redefs` in tests; drive seams through injected port doubles instead
 - Write `testing` context strings as behavior claims and use `are` for envelope tables
 - Log user-visible behavior changes in CHANGELOG.md under `[Unreleased]` (Keep a Changelog `Added`/`Fixed`); internal refactors and docs-only `[skip ci]` commits are exempt
+- Locate code through the graft graph before grepping: `graft ask --source`, `graft grep`, `graft skeleton`, `graft callers` (see the Graft section); raw `grep -rn` is the fallback for unindexed files only
 
 ## Common Errors to Avoid
 

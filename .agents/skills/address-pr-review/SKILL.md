@@ -17,7 +17,7 @@ Done when every unresolved thread is listed with its location.
 
 ## 2. Validate each finding
 
-For every finding, open the cited file:line and reproduce the claim. One verdict per thread: confirmed / false positive (with proof: a passing test, a compiler result, a spec reference) / partially true. Never implement on an unvalidated finding — an unconfirmed bug is not a seam, and the `tdd` skill forbids building on one.
+For every finding, open the cited file:line and reproduce the claim. Trace surrounding context (callers, definitions) through the graft graph per the `AGENTS.md` Graft section; raw `grep -rn` is the fallback for unindexed files only. One verdict per thread: confirmed / false positive (with proof: a passing test, a compiler result, a spec reference) / partially true. Never implement on an unvalidated finding — an unconfirmed bug is not a seam, and the `tdd` skill forbids building on one.
 
 ## 3. Fix confirmed findings with TDD
 
