@@ -533,6 +533,42 @@
                                    (java.nio.file.Files/readAllBytes (.toPath target)))
           "the refused write leaves the touched file intact"))))
 
+(deftest write-prepared-piece-refuses-alias-in-untouched-parent-dir-test
+  ;; The full-parent poll is load-bearing, not belt-and-braces: with a and
+  ;; b in separate dirs, an alias planted in b's dir leaves a's own parent
+  ;; mtime unchanged, so a touched-parents-only gate would take the fast
+  ;; path, pass every touched-side check, and land a's bytes while b —
+  ;; written earlier and now symlinked onto a — silently reads them back.
+  ;; The gate must poll the untouched dir too and refuse before any open.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-distinct-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["sub1" "a"] :length 4} {:path ["sub2" "b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        target (io/file output-dir "t" "sub1" "a")
+        alias-link (io/file output-dir "t" "sub2" "b")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (is (= {:ok :written}
+           (disk/write-prepared-piece port prepared output-dir 1
+                                      (byte-array [5 6 7 8])))
+        "b's piece lands before the alias exists")
+    (.delete alias-link)
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath alias-link)
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    ;; Force the gate trip deterministically: the plant itself bumps
+    ;; sub2's mtime, but possibly inside the snapshot's millisecond.
+    (.setLastModified (io/file output-dir "t" "sub2") 0)
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= :unsafe-path (:error result)))
+      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
+                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+          "the refused write leaves the touched file intact"))))
+
 (deftest write-prepared-piece-writes-through-benign-post-prepare-change-test
   ;; Tripping the parent-mtime gate must not break honest writes: a new
   ;; unrelated file after prepare forces the full re-resolve, which finds

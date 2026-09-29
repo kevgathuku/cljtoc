@@ -287,6 +287,32 @@
                            :canonical (.getCanonicalPath ^File out-file)
                            :identity (file-identity out-file)}))))))))
 
+(defn- write-touched!
+  "Open, size, and write only the touched files: each touched path is
+   truncated to its declared length, then every span landing in it is
+   written at its file offset. live maps every touched declared path to
+   a {:file File} entry — both write-prepared! arms produce that shape.
+   Returns {:ok :written} or {:error :write-error ...}."
+  [live sizes touched spans bytes]
+  (try
+    (doseq [declared-path touched]
+      (let [out-file (get-in live [declared-path :file])]
+        (with-open [raf (RandomAccessFile. out-file "rw")]
+          (.setLength raf (get sizes declared-path))
+          (doseq [{file-offset :file-offset
+                   data-offset :data-offset
+                   span-length :length}
+                  (filter #(= declared-path (:path %)) spans)]
+            (let [slice (Arrays/copyOfRange
+                         ^bytes bytes
+                         (int data-offset)
+                         (int (+ data-offset span-length)))]
+              (.seek raf file-offset)
+              (.write raf slice))))))
+    {:ok :written}
+    (catch Exception error
+      {:error :write-error :message (.getMessage error)})))
+
 (defn- write-prepared!
   "Blocking write of one piece through the prepared layout: re-validate
    touched files against the prepared snapshot, then open, size, and write
@@ -356,24 +382,7 @@
                                " changed on disk since layout preparation under " output-dir)}
                 (if-let [collision (alias-error live output-dir)]
                   collision
-                  (try
-                    (doseq [declared-path touched]
-                      (let [out-file (get-in live [declared-path :file])]
-                        (with-open [raf (RandomAccessFile. out-file "rw")]
-                          (.setLength raf (get sizes declared-path))
-                          (doseq [{file-offset :file-offset
-                                   data-offset :data-offset
-                                   span-length :length}
-                                  (filter #(= declared-path (:path %)) spans)]
-                            (let [slice (Arrays/copyOfRange
-                                         ^bytes bytes
-                                         (int data-offset)
-                                         (int (+ data-offset span-length)))]
-                              (.seek raf file-offset)
-                              (.write raf slice))))))
-                    {:ok :written}
-                    (catch Exception error
-                      {:error :write-error :message (.getMessage error)}))))))))
+                  (write-touched! live sizes touched spans bytes)))))))
       ;; Fast path: no parent dir changed, so the prepared snapshot is still
       ;; valid for untouched paths. Re-validate only the touched paths.
       ;; O(touched) syscalls.
@@ -391,24 +400,7 @@
               {:error :unsafe-path
                :message (str "Output path " (pr-str moved)
                              " changed on disk since layout preparation under " output-dir)}
-              (try
-                (doseq [declared-path touched]
-                  (let [out-file (get-in live [declared-path :file])]
-                    (with-open [raf (RandomAccessFile. out-file "rw")]
-                      (.setLength raf (get sizes declared-path))
-                      (doseq [{file-offset :file-offset
-                               data-offset :data-offset
-                               span-length :length}
-                              (filter #(= declared-path (:path %)) spans)]
-                        (let [slice (Arrays/copyOfRange
-                                     ^bytes bytes
-                                     (int data-offset)
-                                     (int (+ data-offset span-length)))]
-                          (.seek raf file-offset)
-                          (.write raf slice))))))
-                {:ok :written}
-                (catch Exception error
-                  {:error :write-error :message (.getMessage error)})))))))))
+              (write-touched! live sizes touched spans bytes))))))))
 
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Every declared
