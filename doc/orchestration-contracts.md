@@ -154,9 +154,9 @@ Called with peer list from tracker.
 ### Disk writes (prepared layout)
 
 ```clojure
-(prepare-output-layout [this layout output-dir]
+(prepare-output-layout [this layout output-dir])
   ;; Resolve the whole declared layout once; returns {:ok prepared})
-(write-prepared-piece [this prepared output-dir piece-index bytes]
+(write-prepared-piece [this prepared output-dir piece-index bytes])
   ;; Write one verified piece through the prepared layout)
 ```
 
