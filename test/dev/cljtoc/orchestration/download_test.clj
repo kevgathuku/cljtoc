@@ -1793,6 +1793,19 @@
       (is (not (:error result)))
       (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
 
+(deftest materialize-falls-back-when-prepare-is-refused-test
+  (testing "a layout preparation cannot satisfy still fails closed piece by piece"
+    ;; prepare refuses a layout whose files are not declared in sizes; the
+    ;; 3-arity then loops with nil prepared, and the full fallback refuses
+    ;; each write — an error envelope carrying the download, never a throw.
+    (let [{:keys [download disk]} (materialize-fixture)
+          layout {:sizes {}
+                  :files [{:path ["mat.bin"] :length 8 :start 0}]
+                  :total 8 :piece-length 4}
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (:error result))
+      (is (some? (:download result))))))
+
 (deftest materialize-uses-prepared-write-when-given-test
   (testing "materialize with a prepared layout writes through the fast path"
     (let [{:keys [download layout disk piece-0]} (materialize-fixture)

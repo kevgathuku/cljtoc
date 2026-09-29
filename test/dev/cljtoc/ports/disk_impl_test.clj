@@ -849,6 +849,20 @@
                                      (java.nio.file.Files/readAllBytes
                                       (.toPath (io/file output-dir "t" "a")))))))))
 
+(deftest write-prepared-piece-refuses-unknown-piece-test
+  (testing "a piece index beyond the layout is refused, nothing written"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-range-")
+          info {:name "t" :piece-length 4 :length 4}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
+            result (disk/write-prepared-piece port prepared output-dir 99 (byte-array [0 1 2 3]))]
+        (is (= :invalid-info (:error result)))
+        (is (java.util.Arrays/equals (byte-array 4)
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t")))))))))
+
 (deftest write-prepared-piece-refuses-incomplete-prepared-test
   (testing "a prepared value missing the touched entry is refused"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
