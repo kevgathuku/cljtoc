@@ -78,6 +78,13 @@
 (s/def ::error-result
   (s/keys :req-un [::error ::message]))
 
+;; Generic success value: :ok payloads are heterogeneous by design
+;; (byte arrays from builders, records from parsers), so any? — same
+;; precedent as protocol.tracker.spec/::ok. any? changes no conformance
+;; (everything accepted before stays accepted) but gives s/gen a
+;; registered spec to draw from.
+(s/def ::ok any?)
+
 (s/def ::ok-result
   (s/keys :req-un [::ok]))
 

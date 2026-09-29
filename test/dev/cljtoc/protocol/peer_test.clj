@@ -498,5 +498,11 @@
       (is (s/valid? ::peer/peer-handshake valid-handshake))
       (is (not (s/valid? ::peer/peer-handshake invalid-handshake))))))
 
+(deftest envelope-value-spec-test
+  (testing "::ok-result accepts any success value and generates"
+    (is (s/valid? ::peer/ok-result {:ok (byte-array 4)}))
+    (is (s/valid? ::peer/ok-result {:ok (peer/->Choke)}))
+    (is (= 5 (count (tc-gen/sample (s/gen ::peer/ok-result) 5))))))
+
 ;; gen-byte-array moved to dev.cljtoc.utils; its sampling coverage lives
 ;; in utils-test now.
