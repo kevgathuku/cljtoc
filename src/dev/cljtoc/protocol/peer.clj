@@ -98,6 +98,14 @@
 ;;   :peer-id - byte[20], unique peer identifier
 (defrecord PeerHandshake [protocol reserved info-hash peer-id])
 
+;; Handshake constants, defined before first use (the ->peer-handshake
+;; fdef quotes protocol-string in its :fn invariant).
+(def ^:const handshake-length 68)
+(def ^:const protocol-string "BitTorrent protocol")
+(def protocol-string-bytes
+  "Byte array of protocol string (computed at runtime)"
+  (.getBytes ^String protocol-string "US-ASCII"))
+
 (defn validate-handshake-fields
   "Validate handshake fields using clojure.spec.
    
@@ -142,15 +150,16 @@
     info-hash
     peer-id)))
 
+(s/fdef ->peer-handshake
+  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :fn   (s/or
+         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
+         :error #(= :error (-> % :ret first))))
+
 ;; ============================================================================
 ;; Handshake Parsing
 ;; ============================================================================
-
-(def ^:const handshake-length 68)
-(def ^:const protocol-string "BitTorrent protocol")
-(def protocol-string-bytes
-  "Byte array of protocol string (computed at runtime)"
-  (.getBytes ^String protocol-string "US-ASCII"))
 
 (defn parse-handshake
   "Parse a 68-byte BitTorrent handshake.
@@ -184,6 +193,13 @@
              :reserved reserved
              :info-hash info-hash
              :peer-id peer-id})})))
+
+(s/fdef parse-handshake
+  :args (s/cat :b bytes?)
+  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :fn   (s/or
+         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
+         :error #(= :error (-> % :ret first))))
 
 ;; ============================================================================
 ;; Handshake Building
@@ -224,6 +240,13 @@
            info-hash                   ; 20-byte info hash
            peer-id)})))               ; 20-byte peer id
 
+(s/fdef build-handshake
+  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :fn   (s/or
+         :ok    #(= 68 (count (-> % :ret second :ok)))
+         :error #(= :error (-> % :ret first))))
+
 ;; ============================================================================
 ;; Peer Message Records
 ;; ============================================================================
@@ -242,6 +265,12 @@
 ;; ============================================================================
 ;; Peer Message Specs
 ;; ============================================================================
+
+;; Shared message fields
+(s/def ::piece-index nat-int?)
+(s/def ::begin nat-int?)
+(s/def ::length (s/int-in 0 16385)) ;; Max 16 KiB + 1 for upper bound
+(s/def ::data ::bytes)
 
 (s/def ::keep-alive (s/keys))
 (s/def ::choke (s/keys))
@@ -265,12 +294,6 @@
         :request ::request
         :piece ::piece
         :cancel ::cancel))
-
-;; Shared message fields
-(s/def ::piece-index nat-int?)
-(s/def ::begin nat-int?)
-(s/def ::length (s/int-in 0 16385)) ;; Max 16 KiB + 1 for upper bound
-(s/def ::data ::bytes)
 
 ;; ============================================================================
 ;; Peer Message Parsing
@@ -388,6 +411,10 @@
           (System/arraycopy b 5 payload-bytes 0 (- message-length 1))
           (parse-message-payload (bit-and message-id 0xFF) payload-bytes))))))
 
+(s/fdef parse-message
+  :args (s/cat :b bytes?)
+  :ret  (s/or :ok ::ok-result :error ::error-result))
+
 (defn parse-messages
   "Parse multiple BitTorrent peer wire messages from a byte buffer.
    
@@ -412,6 +439,14 @@
               parse-result)) ;; Propagate error
           {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))})) ;; Incomplete message
       {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))}))) ;; No full message or too short for length prefix
+
+(s/fdef parse-messages
+  :args (s/cat :b bytes?)
+  :ret  (s/or :ok    (s/keys :req-un [::ok ::remaining])
+              :error (s/keys :req-un [::error ::message]))
+  :fn   (s/or
+         :ok    #(bytes? (-> % :ret second :remaining))
+         :error #(= :error (-> % :ret first))))
 
 ;; ============================================================================
 ;; Peer Message Building
@@ -542,6 +577,14 @@
       payload-result)
     {:error :unknown-message-type :message (str "No builder for message type: " (type message-record))}))
 
+(s/fdef build-message
+  :args (s/cat :msg any?)
+  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :fn   (s/or
+         ;; A keep-alive is exactly 4 bytes; all others are >= 5 bytes.
+         :ok    #(>= (count (-> % :ret second :ok)) 4)
+         :error #(= :error (-> % :ret first))))
+
 (defn build-messages
   "Build a collection of PeerMessage records into a single concatenated byte array.
    
@@ -562,62 +605,13 @@
           build-result)) ;; Propagate error
       {:ok (apply utils/concat-bytes acc-bytes)})))
 
-;; NOTE: byte-array generation lives in dev.cljtoc.utils
-;; (utils/gen-byte-array for direct draws, with-gen on ::byte-array-20
-;; for spec-integrated ones).
-;; Function Specs
-;; ============================================================================
-
-;; --- Handshake ---
-
-(s/fdef ->peer-handshake
-  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok ::ok-result :error ::error-result)
-  :fn   (s/or
-         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
-         :error #(= :error (-> % :ret first))))
-
-(s/fdef parse-handshake
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok ::ok-result :error ::error-result)
-  :fn   (s/or
-         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
-         :error #(= :error (-> % :ret first))))
-
-(s/fdef build-handshake
-  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok ::ok-result :error ::error-result)
-  :fn   (s/or
-         :ok    #(= 68 (count (-> % :ret second :ok)))
-         :error #(= :error (-> % :ret first))))
-
-;; --- Message parsing ---
-
-(s/fdef parse-message
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok ::ok-result :error ::error-result))
-
-(s/fdef parse-messages
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok ::remaining])
-              :error (s/keys :req-un [::error ::message]))
-  :fn   (s/or
-         :ok    #(bytes? (-> % :ret second :remaining))
-         :error #(= :error (-> % :ret first))))
-
-;; --- Message building ---
-
-(s/fdef build-message
-  :args (s/cat :msg any?)
-  :ret  (s/or :ok ::ok-result :error ::error-result)
-  :fn   (s/or
-         ;; A keep-alive is exactly 4 bytes; all others are >= 5 bytes.
-         :ok    #(>= (count (-> % :ret second :ok)) 4)
-         :error #(= :error (-> % :ret first))))
-
 (s/fdef build-messages
   :args (s/cat :message-records (s/coll-of any?))
   :ret  (s/or :ok ::ok-result :error ::error-result)
   :fn   (s/or
          :ok    #(bytes? (-> % :ret second :ok))
          :error #(= :error (-> % :ret first))))
+
+;; NOTE: byte-array generation lives in dev.cljtoc.utils
+;; (utils/gen-byte-array for direct draws, with-gen on ::byte-array-20
+;; for spec-integrated ones).
