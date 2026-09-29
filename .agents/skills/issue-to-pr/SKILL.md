@@ -44,6 +44,7 @@ Re-run each gate after its fixes until clean.
 Before self-review, prove the new code is exercised — green tests alone hide untested branches. Run `lein cloverage` scoped to the touched namespaces, then intersect uncovered/partial lines with the PR's added lines (`git diff main...HEAD`):
 
 - Fully-uncovered added lines are missing tests: add them, then re-run the gates in step 5.
+- Every new public function is covered in both directions: at least one test driving its success path and at least one driving each failure envelope it documents. A function whose tests only pass valid inputs has an unproven contract on exactly the paths callers branch on.
 - Partial branch lines need judgement, not reflex fixes: fail-closed branches on hostile input (guards, validators, error envelopes) get **mutation-based generative specs** — generate a valid input, break one field per mutation, assert rejection — plus one positive invariant (valid input always accepted). Prefer these over envelope-only example doseqs: examples cover shapes, mutations cover branch combinations. But keep the mutation vocabulary as shape-diverse as the examples it replaces (an empty string exercises a different subform than an empty vector); verify by re-running coverage.
 - Acceptable residues, documented in the PR body rather than fixed: loop/recur macro internals (both semantic branches covered), fdef `:fn` false-branches (fail-only-on-bug by design), single short-circuit subforms where every semantic direction has a test.
 
