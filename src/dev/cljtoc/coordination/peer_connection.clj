@@ -15,7 +15,8 @@
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
-            [dev.cljtoc.protocol.peer-state :as peer-state]))
+            [dev.cljtoc.protocol.peer-state :as peer-state]
+            [dev.cljtoc.utils :as utils]))
 
 ;; Length-exact hash/id specs single-source validation on protocol.peer
 ;; (::byte-array-20) and wrap feasible generation locally (repo
@@ -25,10 +26,10 @@
 ;; verify-handshake pin cannot draw a single case.
 (s/def ::info-hash
   (s/with-gen :dev.cljtoc.protocol.peer/info-hash
-    #(peer/gen-byte-array 20)))
+    #(utils/gen-byte-array 20)))
 (s/def ::peer-id
   (s/with-gen :dev.cljtoc.protocol.peer/peer-id
-    #(peer/gen-byte-array 20)))
+    #(utils/gen-byte-array 20)))
 (s/def ::peer-handshake
   (s/keys :req-un [::info-hash]))
 
@@ -37,8 +38,7 @@
    matches ours.
    Returns {:ok peer-handshake} or {:error :info-hash-mismatch}."
   [info-hash peer-handshake]
-  (if (java.util.Arrays/equals ^bytes info-hash
-                               ^bytes (:info-hash peer-handshake))
+  (if (utils/bytes-equal? info-hash (:info-hash peer-handshake))
     {:ok peer-handshake}
     {:error :info-hash-mismatch}))
 
