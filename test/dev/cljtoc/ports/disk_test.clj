@@ -272,3 +272,31 @@
                                     {:clojure.spec.test.check/opts {:num-tests 50}})]
       (is (nil? (-> check-result first :failure))
           "Function should pass all generative tests"))))
+
+(deftest writable-prepared-test
+  (testing "the per-piece gate needs only the touched entries"
+    (let [layout (test-utils/compiled-test-layout 4 [4 4])
+          prepared (prepared-for layout)
+          touched (keys (:sizes layout))]
+      (is (true? (disk/writable-prepared? prepared touched)))
+      (is (true? (disk/writable-prepared? prepared [(first touched)])))
+      (is (true? (disk/writable-prepared? prepared [])))
+      (is (false? (disk/writable-prepared? nil touched)))
+      (is (false? (disk/writable-prepared? "prepared" touched)))
+      (is (false? (disk/writable-prepared?
+                   (assoc prepared :layout nil) touched)))
+      (is (false? (disk/writable-prepared?
+                   (assoc prepared :layout (assoc layout :piece-length 0)) touched)))
+      (is (false? (disk/writable-prepared?
+                   (update prepared :resolved dissoc (first touched)) touched)))
+      (is (false? (disk/writable-prepared?
+                   (assoc-in prepared [:resolved (first touched) :canonical] nil)
+                   touched)))
+      (is (false? (disk/writable-prepared? prepared [["t" "missing"]]))))))
+
+(deftest writable-prepared-fdef-check-test
+  (testing "writable-prepared? conforms to fdef spec over any input"
+    (let [check-result (stest/check 'dev.cljtoc.ports.disk/writable-prepared?
+                                    {:clojure.spec.test.check/opts {:num-tests 50}})]
+      (is (nil? (-> check-result first :failure))
+          "Function should pass all generative tests"))))

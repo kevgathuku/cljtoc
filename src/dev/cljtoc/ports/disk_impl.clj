@@ -251,13 +251,25 @@
 
 (defn- write-prepared!
   "Blocking write of one piece through the prepared layout: re-validate the
-   touched paths against the frozen whole-layout snapshot, then open, size,
-   and write only the touched files. The re-validation catches a touched
-   file redirected since prepare (stability), a fresh alias among the
-   touched files, and a fresh alias between a touched file and a
-   prepare-time target — the last two by pure comparison against the
-   snapshot, with no per-untouched syscalls. Returns {:ok :written} or
-   {:error ...}."
+   touched paths, then open, size, and write only the touched files. The
+   re-validation is O(touched): containment plus the mkdirs probe, current
+   canonical target and identity per touched path (revalidate-touched),
+   stability of each touched path against its frozen entry, and a
+   collision check among the touched files' current targets.
+
+   The untouched snapshot is deliberately NOT re-scanned: given stability,
+   no live touched target can equal a frozen untouched one (prepare proved
+   every frozen target distinct, and stability pins each touched file to
+   its own frozen target), so that comparison is dead code that would cost
+   O(files) pure work per piece for nothing. What it cannot see — an
+   untouched path newly aliased onto a touched target after prepare — is
+   refused when the untouched path itself is written, and when the touched
+   side moved at all. Callers prepare AFTER init (run-download does), so a
+   frozen entry normally carries an identity; a nil frozen identity (target
+   absent at prepare) is accepted on the canonical alone, and a nil live
+   identity falls back to the canonical check with the write recreating a
+   merely deleted file, exactly as the full path would.
+   Returns {:ok :written} or {:error ...}."
   [prepared output-dir spans bytes]
   (let [sizes (:sizes (:layout prepared))
         touched (distinct (map :path spans))
@@ -275,18 +287,13 @@
           {:error :unsafe-path
            :message (str "Output path " (pr-str moved)
                          " changed on disk since layout preparation under " output-dir)}
-          (let [untouched (apply dissoc frozen touched)
-                live-canonicals (map :canonical (vals (select-keys live touched)))
-                frozen-canonicals (map :canonical (vals untouched))
-                canonicals (concat live-canonicals frozen-canonicals)]
-            (if (not= (count (set canonicals)) (count canonicals))
+          (let [live-canonicals (map :canonical (vals (select-keys live touched)))]
+            (if (not= (count (set live-canonicals)) (count live-canonicals))
               {:error :unsafe-path
                :message (str "Output paths resolve to the same file on disk under "
                              output-dir)}
-              (let [live-ids (keep :identity (vals (select-keys live touched)))
-                    frozen-ids (keep :identity (vals untouched))
-                    ids (concat live-ids frozen-ids)]
-                (if (not= (count (set ids)) (count ids))
+              (let [live-ids (keep :identity (vals (select-keys live touched)))]
+                (if (not= (count (set live-ids)) (count live-ids))
                   {:error :unsafe-path
                    :message (str "Output paths refer to the same file on disk under "
                                  output-dir)}
@@ -308,6 +315,7 @@
                     {:ok :written}
                     (catch Exception error
                       {:error :write-error :message (.getMessage error)})))))))))))
+
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Every declared
    target is validated (symlink-contained, alias-free across the whole
@@ -451,7 +459,9 @@
           (not (disk/valid-output-layout? layout))
           disk/invalid-output-layout-error
 
-          (not (disk/valid-prepared-layout? prepared))
+          ;; O(touched), not O(files): the full prepared invariant held at
+          ;; prepare time; this write only needs its own entries present.
+          (not (disk/writable-prepared? prepared (map :path (:ok spans-result))))
           disk/invalid-prepared-layout-error
 
           (not= (.getCanonicalPath (io/file output-dir))

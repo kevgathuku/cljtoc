@@ -830,6 +830,43 @@
           (is (= :unsafe-path (:error result)))
           (is (= "SENTINEL" (slurp target-b))))))))
 
+(deftest write-prepared-piece-recreates-a-deleted-touch-test
+  (testing "a touched file deleted after prepare is recreated by the write"
+    ;; The live identity is nil (nothing to stat), so stability falls back
+    ;; to the canonical check — same shape, same target — and the write
+    ;; itself recreates the file, exactly as the full path would.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-recreate-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))]
+        (.delete (io/file output-dir "t" "a"))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
+        (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "a")))))))))
+
+(deftest write-prepared-piece-refuses-incomplete-prepared-test
+  (testing "a prepared value missing the touched entry is refused"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-incomplete-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
+            thinned (update prepared :resolved dissoc ["t" "a"])
+            result (disk/write-prepared-piece port thinned output-dir 0 (byte-array [0 1 2 3]))]
+        (is (disk/valid-prepared-layout? prepared))
+        (is (not (disk/valid-prepared-layout? thinned)))
+        (is (= :invalid-info (:error result)))
+        (is (java.util.Arrays/equals (byte-array 4)
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "a")))))))))
+
 (deftest write-prepared-piece-refuses-foreign-output-dir-test
   (testing "a prepared value is bound to the dir it was resolved under"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))

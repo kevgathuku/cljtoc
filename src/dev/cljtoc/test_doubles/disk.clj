@@ -125,7 +125,9 @@
                          (not (disk/valid-output-layout? layout))
                          disk/invalid-output-layout-error
 
-                         (not (disk/valid-prepared-layout? prepared))
+                         ;; O(touched), not O(files): mirrors the real port —
+                         ;; the full prepared invariant held at prepare time.
+                         (not (disk/writable-prepared? prepared (map :path (:ok spans-result))))
                          disk/invalid-prepared-layout-error
 
                          (not= output-dir (:output-dir prepared))

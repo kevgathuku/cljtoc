@@ -214,6 +214,27 @@
   {:error :invalid-info
    :message "Invalid prepared layout: not a prepared output layout"})
 
+(defn writable-prepared?
+  "Per-piece gate over a prepared layout: true when prepared is a map
+   carrying an O(1)-shaped compiled layout and a resolved entry with a
+   canonical string for every path in touched. O(touched): the full
+   prepared invariant (resolved entries for exactly the declared paths)
+   was established once at prepare time and is pinned by
+   valid-prepared-layout? — re-proving it per piece would cost O(files)
+   pure work for entries this write never reads."
+  [prepared touched]
+  (and (map? prepared)
+       (valid-output-layout? (:layout prepared))
+       (map? (:resolved prepared))
+       (every? (fn [declared-path]
+                 (let [entry (get (:resolved prepared) declared-path)]
+                   (and (map? entry) (string? (:canonical entry)))))
+               touched)))
+
+(s/fdef writable-prepared?
+  :args (s/cat :prepared any? :touched any?)
+  :ret boolean?)
+
 ;; ---------------------------------------------------------------------------
 ;; Shared state encoding — the single persistence seam.
 ;; Both the async DiskPortImpl and the sync cli-state adapter persist
