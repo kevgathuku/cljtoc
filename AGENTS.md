@@ -222,6 +222,8 @@ After implementing an issue and opening its PR, file two records in the palace (
 
 After addressing PR review findings, file a **per-thread outcome record** in the same room: PR number, one line per thread with its verdict (confirmed / false positive / partially true) and either the fixing commit or the proof that refuted it, plus any deviation from the review as written. A thread left unfixed must be recorded as such, pointing at the issue that now carries it — a consolidated record, not one drawer per round, so the whole review history sits in one place.
 
+One-off work gets the same discipline without the issue/PR trigger: whenever a commit lands from a user-directed change, or the user makes an explicit decision (an adoption, an override, a scope cut), file the decision drawer in the same sitting, plus one lessons drawer per discovery paid for in debugging time. Route repo-scoped items to wing `torrent_client_clj` (`decisions` / `lessons`) and personal preferences to `wing_pi` (`preferences`). When a new decision reverses a filed one, supersede it in the knowledge graph rather than leaving two live contradictions. Close each topic with a diary entry naming what landed and what is next. Verify every filing via `mempalace_search` before moving on.
+
 <!-- MANUAL ADDITIONS END -->
 
 ## Agent skills
