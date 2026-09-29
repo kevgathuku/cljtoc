@@ -274,10 +274,9 @@
    layout needs a :name, a positive :piece-length, carries exactly one of
    :length (single-file) or :files (multi-file), every declared path component must stay inside the
    output directory, every present length must be a natural integer, and no
-   two entries may claim the same path. A duplicate is fatal because the two
-   derivations disagree about it — sizes collapse the entries into one map
-   entry while spans keep them as distinct byte ranges, and both ranges then
-   land in the same physical file. So is carrying both fields: total-size
+   two entries may claim the same path. A duplicate is fatal: two entries
+   would write distinct byte ranges into the same physical file, so no
+   single layout can honor both. So is carrying both fields: total-size
    prefers :length while file-layout prefers :files, and the two
    representations silently cover different bytes. So is a non-integer
    length: spans crash comparing against it while sizes hand the string
