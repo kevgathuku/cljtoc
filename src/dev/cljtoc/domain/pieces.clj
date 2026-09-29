@@ -35,7 +35,8 @@
   (:require [clojure.set :as set]
             [clojure.spec.alpha :as s]
             [clojure.test.check.generators :as gen]
-            [dev.cljtoc.domain.bencode :as bencode]))
+            [dev.cljtoc.domain.bencode :as bencode]
+            [dev.cljtoc.utils :as utils]))
 
 ;; ============================================================================
 ;; Records
@@ -463,7 +464,7 @@
 
     :else
     (let [actual-hash (bencode/sha1-hash assembled-bytes)]
-      (if (java.util.Arrays/equals ^bytes actual-hash ^bytes expected-hash)
+      (if (utils/bytes-equal? actual-hash expected-hash)
         {:ok piece-index}
         {:error :hash-mismatch
          :piece-index piece-index
