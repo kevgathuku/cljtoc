@@ -60,8 +60,12 @@
 (s/def ::byte-array-8
   (s/and bytes? #(= 8 (count %))))
 
+;; Generation fixed centrally: with-gen changes generation only, never
+;; conformance, so every consumer drawing this spec gets feasible
+;; 20-byte arrays instead of a starved such-that filter.
 (s/def ::byte-array-20
-  (s/and bytes? #(= 20 (count %))))
+  (s/with-gen (s/and bytes? #(= 20 (count %)))
+    #(utils/gen-byte-array 20)))
 
 (s/def ::byte-array-68
   (s/and bytes? #(= 68 (count %))))
