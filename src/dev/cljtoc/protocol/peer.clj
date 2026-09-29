@@ -43,8 +43,8 @@
      (build-message (->Request 0 0 99999))
      ;; => {:error :invalid-input :message \"Request length exceeds max block size (99999 > 16384)\"}"
   (:require [clojure.spec.alpha :as s]
-            [clojure.spec.gen.alpha :as gen]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [dev.cljtoc.utils :as utils])
   (:import [java.util BitSet]))
 
 ;; ============================================================================
@@ -680,18 +680,14 @@
 ;; ============================================================================
 ;; Spec Generators for Testing
 ;; ============================================================================
-
-(defn gen-byte-array
-  "Generate a generator for byte arrays of specific length."
-  [len]
-  (gen/fmap byte-array
-            (gen/vector (gen/choose -128 127) len)))
+;; gen-byte-array lives in dev.cljtoc.utils now (single-sourced shared
+;; helper); only the protocol's own sized specs stay here.
 
 (s/def ::gen-byte-array-20
-  (gen-byte-array 20))
+  (utils/gen-byte-array 20))
 
 (s/def ::gen-byte-array-8
-  (gen-byte-array 8))
+  (utils/gen-byte-array 8))
 
 ;; Utility function to check if a byte array equals a sequence
 (defn bytes-eq?

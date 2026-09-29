@@ -6,7 +6,6 @@
   (:require [clojure.test :refer :all]
             [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
-            [clojure.spec.gen.alpha :as gen]
             [clojure.test.check.generators :as tc-gen]
             [clojure.test.check.properties :as prop]
             [clojure.test.check.clojure-test :refer [defspec]]
@@ -561,7 +560,5 @@
       (is (s/valid? ::peer/peer-handshake valid-handshake))
       (is (not (s/valid? ::peer/peer-handshake invalid-handshake))))))
 
-(deftest spec-generates-valid-handshakes
-  (testing "Spec generator produces valid handshakes"
-    (let [samples (gen/sample (peer/gen-byte-array 20) 10)]
-      (is (every? #(= 20 (count %)) samples)))))
+;; gen-byte-array moved to dev.cljtoc.utils; its sampling coverage lives
+;; in utils-test now.
