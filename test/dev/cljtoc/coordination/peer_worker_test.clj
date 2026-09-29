@@ -48,6 +48,7 @@
           worker-exit (take-timeout done-ch 2000)]
       (is (not= :timeout event) "worker produced no event")
       (is (= :peer-disconnected (:type event)))
+      (is (= "boom" (:reason event)) "the envelope carries the failure through")
       (is (not= :timeout worker-exit) "worker thread terminated, nothing leaked")
       (let [closed (mock-net/closed-peers net)]
         (is (= 1 (count closed)) "the dialed peer was closed, not leaked")

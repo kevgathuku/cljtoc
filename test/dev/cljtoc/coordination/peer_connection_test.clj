@@ -107,12 +107,13 @@
           result (peer-connection/connect net (test-info-hash) (test-peer-id)
                                           "127.0.0.1:6881" 4)]
       (is (= :connect-failed (:error result)))))
-  (testing "an escaping port exception closes the peer before propagating"
+  (testing "an escaping port exception closes the peer and returns data, never throws"
     (let [net (mock-net/create {:handshake-response (fn [_peer]
-                                                      (throw (ex-info "boom" {})))})]
-      (is (thrown? clojure.lang.ExceptionInfo
-                   (peer-connection/connect net (test-info-hash) (test-peer-id)
-                                            "127.0.0.1:6881" 4)))
+                                                      (throw (ex-info "boom" {})))})
+          result (peer-connection/connect net (test-info-hash) (test-peer-id)
+                                          "127.0.0.1:6881" 4)]
+      (is (= :handshake-failed (:error result)))
+      (is (= "boom" (:message result)))
       (let [closed (mock-net/closed-peers net)]
         (is (= 1 (count closed)))
         (is (= "127.0.0.1:6881" (:address (first closed))))))))

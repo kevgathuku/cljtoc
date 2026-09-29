@@ -84,7 +84,9 @@
   "Open a peer connection: dial, exchange handshakes, verify the
    peer's info-hash, send Interested, and return the ready posture.
    Blocking: the caller already sits on a worker thread.
-   Returns {:ok {:peer-data _ :peer-state _}} or {:error reason ...}.
+   Returns {:ok {:peer-data _ :peer-state _}} or {:error reason ...} —
+   never throws. A port that throws mid-handshake is closed and
+   reported as {:error :handshake-failed ...}.
    A refused connection closes the socket before returning, so the
    caller only closes what connect handed back as :ok."
   [network-port info-hash our-peer-id address total-pieces]
@@ -93,9 +95,11 @@
       connect-result
       (let [peer-data (:ok connect-result)]
         ;; An injected or alternate port may throw where the real one
-        ;; returns an envelope; close what the dial opened, then let
-        ;; the worker's catch report it. Returned send-error envelopes
-        ;; stay fire-and-forget, exactly as run-peer always treated them.
+        ;; returns an envelope. This fn keeps its contract — data, never
+        ;; a throw — so close what the dial opened and fold the failure
+        ;; into an envelope the worker already knows how to report.
+        ;; Returned send-error envelopes stay fire-and-forget, exactly
+        ;; as run-peer always treated them.
         (try
           (let [handshake-bytes (:ok (peer/build-handshake info-hash our-peer-id))]
             (network/send-message network-port peer-data handshake-bytes)
@@ -114,7 +118,7 @@
                           :peer-state (initial-state total-pieces)}})))))
           (catch Exception thrown-error
             (network/close-peer network-port peer-data)
-            (throw thrown-error)))))))
+            {:error :handshake-failed :message (.getMessage thrown-error)}))))))
 
 ;; connect/close ride the INetworkPort seam, so stest/check cannot
 ;; conjure their port argument (same exclusion the fdef gate records
