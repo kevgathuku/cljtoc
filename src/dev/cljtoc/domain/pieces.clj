@@ -105,7 +105,26 @@
 ;; ============================================================================
 
 (s/def ::piece-index nat-int?)
-(s/def ::total-pieces pos-int?)
+;; Bounded generation only: spec's default pos-int? gen emits magnitudes
+;; up to ~1e18 (measured), and initial-piece-state materializes
+;; (range total-pieces), so an unbounded draw never terminates. Sized
+;; generation keeps realistic scales — single-piece through
+;; multi-thousand-piece torrents — with a hard cap for termination.
+;; Conformance stays pos-int?: instrument/valid? reject nothing they
+;; accepted before.
+(s/def ::total-pieces
+  (s/with-gen pos-int?
+    (constantly (gen/sized
+                 (fn [size] (gen/choose 1 (min 4096 (max 32 (inc size)))))))))
+;; Bounded generation only: piece-blocks materializes one Block record per
+;; 16 KiB of the piece, so an unbounded byte size draws planet-sized
+;; vectors that never terminate (same feasibility class as ::total-pieces).
+;; The 1 MiB cap matches the file's own block-coverage properties.
+;; Conformance stays pos-int?.
+(s/def ::byte-size
+  (s/with-gen pos-int?
+    (constantly (gen/sized
+                 (fn [size] (gen/choose 1 (min 1048576 (max 16384 (inc size)))))))))
 (s/def ::piece-index-set (s/coll-of nat-int? :kind set?))
 ;; ::length validates the :length field on Block records (1 to 16384 bytes)
 (s/def ::length (s/int-in 1 (inc block-size)))
@@ -355,16 +374,19 @@
 
   Total over nat-int inputs: an out-of-range index intersects the torrent
   nowhere and reports zero rather than going negative. Refusing such
-  indices stays with callers that own a range (piece-blocks)."
+  indices stays with callers that own a range (piece-blocks). The span
+  derivation runs promotion-safe (bigint start), so even an index past
+  Long/MAX — which intersects nowhere — reports zero instead of
+  throwing on the long cast; the clamped result always fits a long."
   [piece-index standard-piece-length total-length]
-  (max 0 (- (min (* (long (inc piece-index)) standard-piece-length)
-                 total-length)
-            (* piece-index standard-piece-length))))
+  (let [start (* (bigint piece-index) standard-piece-length)
+        end (min (+ start standard-piece-length) total-length)]
+    (long (max 0 (- end start)))))
 
 (s/fdef piece-length
   :args (s/cat :piece-index           ::piece-index
-               :standard-piece-length pos-int?
-               :total-length          pos-int?)
+               :standard-piece-length ::byte-size
+               :total-length          ::byte-size)
   :ret nat-int?
   :fn #(<= (:ret %) (-> % :args :standard-piece-length)))
 
@@ -402,16 +424,16 @@
 
 (s/fdef piece-blocks
   :args (s/cat :piece-index           ::piece-index
-               :standard-piece-length pos-int?
-               :total-length          pos-int?)
+               :standard-piece-length ::byte-size
+               :total-length          ::byte-size)
   :ret  map?
   :fn   #(or (keyword? (-> % :ret :error))
              (let [blocks (-> % :ret :ok)
                    pi     (-> % :args :piece-index)
                    spl    (-> % :args :standard-piece-length)
                    tl     (-> % :args :total-length)
-                   expected-len (- (min (* (long (inc pi)) spl) tl)
-                                   (* pi spl))]
+                   expected-len (long (max 0 (- (min (+ (* (bigint pi) spl) spl) tl)
+                                                  (* (bigint pi) spl))))]
                (and (seq blocks)
                     (every? (fn [b] (<= (:length b) 16384)) blocks)
                     (= expected-len (reduce + (map :length blocks)))))))

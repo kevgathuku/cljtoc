@@ -433,6 +433,14 @@
       (is (= 0 (:offset (first ok))))
       (is (= 1 (:length (first ok)))))))
 
+(deftest piece-length-huge-index-test
+  (testing "an index past Long/MAX intersects nowhere and reports zero (total over nat-int)"
+    (let [huge 9223372036854775808N]
+      (is (= 0 (pieces/piece-length huge 16384 1000)))
+      (is (= 1000 (pieces/piece-length 0 huge 1000)))
+      (is (= 16384 (pieces/piece-length 0 16384 huge)))
+      (is (= :invalid-input (:error (pieces/piece-blocks huge 16384 1000)))))))
+
 (deftest requeue-verified-test
   (testing "a verified piece whose cache bytes are gone returns to needed"
     (let [state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 5) 2))
@@ -477,6 +485,36 @@
       (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state1))
       (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state2))
       (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state3)))))
+
+;; fdef specs hold generatively (stest/check), mirroring
+;; torrent_test.clj / download_test.clj. assemble-piece is excluded on
+;; principle, not by accident: it throws on malformed blocks instead of
+;; returning an error envelope (issue #41), so it is partial over its
+;; declared (s/coll-of map?) args and no generator can make it
+;; check-grade until that issue lands.
+;; ---------------------------------------------------------------------------
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "every check-grade pieces fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.domain.pieces/initial-piece-state
+                      dev.cljtoc.domain.pieces/needed-count
+                      dev.cljtoc.domain.pieces/in-flight-count
+                      dev.cljtoc.domain.pieces/verified-count
+                      dev.cljtoc.domain.pieces/complete?
+                      dev.cljtoc.domain.pieces/mark-in-flight
+                      dev.cljtoc.domain.pieces/mark-verified
+                      dev.cljtoc.domain.pieces/requeue-piece
+                      dev.cljtoc.domain.pieces/requeue-verified
+                      dev.cljtoc.domain.pieces/select-piece
+                      dev.cljtoc.domain.pieces/piece-length
+                      dev.cljtoc.domain.pieces/piece-blocks
+                      dev.cljtoc.domain.pieces/verify-piece
+                      dev.cljtoc.domain.pieces/endgame?
+                      dev.cljtoc.domain.pieces/select-pieces-endgame]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
 
 (defspec piece-state-generator-yields-partitions 100
   (prop/for-all
