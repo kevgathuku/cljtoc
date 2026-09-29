@@ -100,7 +100,13 @@
                                                      :message "Handshake read timed out"}})
           result (peer-connection/connect net (test-info-hash) (test-peer-id)
                                           "127.0.0.1:6881" 4)]
-      (is (= :timeout (:error result))))))
+      (is (= :timeout (:error result)))))
+  (testing "a refused dial surfaces the port error before any handshake"
+    (let [net (mock-net/create {:connect-response {:error :connect-failed
+                                                   :message "connection refused"}})
+          result (peer-connection/connect net (test-info-hash) (test-peer-id)
+                                          "127.0.0.1:6881" 4)]
+      (is (= :connect-failed (:error result))))))
 
 (deftest close-test
   (testing "close releases the connection through the port"
@@ -128,7 +134,17 @@
         (is (instance? dev.cljtoc.protocol.peer.Request first-message))
         (is (= 0 (:piece-index first-message)))
         (is (= 0 (:begin first-message)))
-        (is (= 16384 (:length first-message)))))))
+        (is (= 16384 (:length first-message))))))
+  (testing "one poisoned block fails the whole request, nothing after it builds"
+    (doseq [poisoned [[{:piece-index 0 :offset 0 :length 16384}
+                        {:piece-index -1 :offset 0 :length 16384}
+                        {:piece-index 0 :offset 16384 :length 16384}]
+                       [{:piece-index 0 :offset 0 :length 20000}]]]
+      (let [ready (peer-connection/on-message
+                   (peer-connection/initial-state 4) (peer/->Unchoke))
+            result (peer-connection/request ready poisoned)]
+        (is (= :invalid-input (:error result))
+            (str "poisoned blocks rejected: " (pr-str poisoned)))))))
 
 ;; Only verify-handshake is pinned generatively: initial-state takes a
 ;; plain pos-int but on-message/can-request?/request take a PeerState

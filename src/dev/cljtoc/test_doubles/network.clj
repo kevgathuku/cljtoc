@@ -15,9 +15,13 @@
 
   network/INetworkPort
   (connect-peer [_ address]
-    {:ok {:id (str address "/" (UUID/randomUUID))
-          :address address
-          :bitfield (:default-bitfield config)}})
+    (let [response (:connect-response config)]
+      (cond
+        (fn? response) (response address)
+        (some? response) response
+        :else {:ok {:id (str address "/" (UUID/randomUUID))
+                    :address address
+                    :bitfield (:default-bitfield config)}})))
 
   (send-message [_ peer message]
     (when-let [on-send (:on-send config)]
@@ -90,6 +94,8 @@
   "Create a mock network port for testing.
    
    Options:
+   - :connect-response - map or (fn [address]) returning {:ok peer-data}
+     or {:error ...} for connect-peer (default: scripted success)
    - :default-bitfield - set of piece indices this mock peer has (default: #{0 1 2 3 4})
    - :mock-peers - vector of peer addresses returned per tracker URL
      (combined across URLs into a set, mirroring the real port)
