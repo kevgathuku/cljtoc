@@ -116,7 +116,14 @@
       (is (= "boom" (:message result)))
       (let [closed (mock-net/closed-peers net)]
         (is (= 1 (count closed)))
-        (is (= "127.0.0.1:6881" (:address (first closed))))))))
+        (is (= "127.0.0.1:6881" (:address (first closed)))))))
+  (testing "a message-less exception falls back to its class name, never nil"
+    (let [silent-net (mock-net/create {:handshake-response (fn [_peer]
+                                                             (throw (ex-info nil {})))})
+          silent-result (peer-connection/connect silent-net (test-info-hash) (test-peer-id)
+                                                 "127.0.0.1:6881" 4)]
+      (is (= :handshake-failed (:error silent-result)))
+      (is (= "clojure.lang.ExceptionInfo" (:message silent-result))))))
 
 (deftest close-test
   (testing "close releases the connection through the port"

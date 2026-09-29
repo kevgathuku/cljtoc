@@ -112,7 +112,9 @@
                           :peer-state (initial-state total-pieces)}})))))
           (catch Exception thrown-error
             (network/close-peer network-port peer-data)
-            {:error :handshake-failed :message (.getMessage thrown-error)}))))))
+            {:error :handshake-failed
+             :message (or (.getMessage thrown-error)
+                          (.getName (class thrown-error)))}))))))
 
 ;; connect/close ride the INetworkPort seam, so stest/check cannot
 ;; conjure their port argument (same exclusion the fdef gate records
