@@ -181,3 +181,126 @@
                                     {:clojure.spec.test.check/opts {:num-tests 50}})]
       (is (nil? (-> check-result first :failure))
           "Function should pass all generative tests"))))
+
+(defn- prepared-for
+  "A prepared value for layout as prepare-output-layout would freeze it:
+   one resolved entry per declared path and an empty parent-mtimes map.
+   The filesystem strings are arbitrary — validity is shape, not
+   reachability."
+  [layout]
+  {:layout layout
+   :output-dir "/tmp/out"
+   :parent-mtimes {}
+   :resolved (into {}
+                   (map (fn [declared-path]
+                          [declared-path {:file (str "/tmp/out/" (last declared-path))
+                                          :canonical (str "/tmp/out/" (last declared-path))
+                                          :identity nil}]))
+                   (keys (:sizes layout)))})
+
+(deftest valid-prepared-layout-test
+  (testing "the frozen shape passes, non-prepared values fail"
+    (let [layout (test-utils/compiled-test-layout 4 [4 4])]
+      (is (true? (disk/valid-prepared-layout? (prepared-for layout))))
+      (is (false? (disk/valid-prepared-layout? nil)))
+      (is (false? (disk/valid-prepared-layout? "prepared")))
+      (is (false? (disk/valid-prepared-layout? {:layout layout})))
+      (is (false? (disk/valid-prepared-layout?
+                   (assoc (prepared-for layout) :output-dir 42))))
+      (is (false? (disk/valid-prepared-layout?
+                   (update (prepared-for layout) :resolved
+                           dissoc (first (keys (:sizes layout)))))))
+      (is (false? (disk/valid-prepared-layout?
+                   (assoc-in (prepared-for layout)
+                             [:resolved (first (keys (:sizes layout))) :file] 42))))
+      (is (false? (disk/valid-prepared-layout?
+                   (assoc-in (prepared-for layout)
+                             [:resolved (first (keys (:sizes layout))) :canonical] nil))))
+      (is (false? (disk/valid-prepared-layout?
+                   (update-in (prepared-for layout)
+                              [:resolved (first (keys (:sizes layout)))]
+                              dissoc :identity))))
+      (is (false? (disk/valid-prepared-layout?
+                   (assoc (prepared-for layout) :layout
+                          (assoc layout :piece-length 0))))))))
+
+(def prepared-mutations
+  "One-field breaks of a valid prepared value; every one must fail the
+   predicate. Each targets a different clause: the carried layout, the
+   output dir, the parent-mtimes map, resolved membership, and entry shapes."
+  [(fn [prepared] (assoc-in prepared [:layout :piece-length] 0))
+   (fn [prepared] (assoc prepared :layout nil))
+   (fn [prepared] (assoc prepared :output-dir 42))
+   (fn [prepared] (assoc prepared :output-dir nil))
+   (fn [prepared] (dissoc prepared :parent-mtimes))
+   (fn [prepared] (assoc prepared :parent-mtimes "not-a-map"))
+   (fn [prepared] (dissoc prepared :resolved))
+   (fn [prepared] (update prepared :resolved
+                          dissoc (first (keys (:resolved prepared)))))
+   (fn [prepared] (update prepared :resolved assoc ["extra"]
+                          {:file "/tmp/out/extra" :canonical "/tmp/out/extra"}))
+   (fn [prepared] (assoc-in prepared [:resolved
+                                      (first (keys (:resolved prepared)))
+                                      :file]
+                            42))
+   (fn [prepared] (assoc-in prepared [:resolved
+                                      (first (keys (:resolved prepared)))
+                                      :canonical]
+                            nil))
+   (fn [prepared] (update-in prepared [:resolved
+                                       (first (keys (:resolved prepared)))]
+                             dissoc :identity))
+   (fn [prepared] (assoc-in prepared [:resolved
+                                      (first (keys (:resolved prepared)))]
+                            "entry"))])
+
+(defspec prepared-layouts-are-valid-spec 100
+  (prop/for-all [piece-length (gen/choose 1 16)
+                 file-lengths (gen/vector (gen/choose 1 20) 1 5)]
+                (true? (disk/valid-prepared-layout?
+                        (prepared-for
+                         (test-utils/compiled-test-layout piece-length file-lengths))))))
+
+(defspec broken-prepared-mutations-are-rejected-spec 100
+  (prop/for-all [piece-length (gen/choose 1 16)
+                 file-lengths (gen/vector (gen/choose 1 20) 1 5)
+                 mutation-idx (gen/choose 0 (dec (count prepared-mutations)))]
+                (false? (disk/valid-prepared-layout?
+                         ((nth prepared-mutations mutation-idx)
+                          (prepared-for
+                           (test-utils/compiled-test-layout piece-length file-lengths)))))))
+
+(deftest valid-prepared-layout-fdef-check-test
+  (testing "valid-prepared-layout? conforms to fdef spec over any input"
+    (let [check-result (stest/check 'dev.cljtoc.ports.disk/valid-prepared-layout?
+                                    {:clojure.spec.test.check/opts {:num-tests 50}})]
+      (is (nil? (-> check-result first :failure))
+          "Function should pass all generative tests"))))
+
+(deftest writable-prepared-test
+  (testing "the per-piece gate needs only the touched entries"
+    (let [layout (test-utils/compiled-test-layout 4 [4 4])
+          prepared (prepared-for layout)
+          touched (keys (:sizes layout))]
+      (is (true? (disk/writable-prepared? prepared touched)))
+      (is (true? (disk/writable-prepared? prepared [(first touched)])))
+      (is (true? (disk/writable-prepared? prepared [])))
+      (is (false? (disk/writable-prepared? nil touched)))
+      (is (false? (disk/writable-prepared? "prepared" touched)))
+      (is (false? (disk/writable-prepared?
+                   (assoc prepared :layout nil) touched)))
+      (is (false? (disk/writable-prepared?
+                   (assoc prepared :layout (assoc layout :piece-length 0)) touched)))
+      (is (false? (disk/writable-prepared?
+                   (update prepared :resolved dissoc (first touched)) touched)))
+      (is (false? (disk/writable-prepared?
+                   (assoc-in prepared [:resolved (first touched) :canonical] nil)
+                   touched)))
+      (is (false? (disk/writable-prepared? prepared [["t" "missing"]]))))))
+
+(deftest writable-prepared-fdef-check-test
+  (testing "writable-prepared? conforms to fdef spec over any input"
+    (let [check-result (stest/check 'dev.cljtoc.ports.disk/writable-prepared?
+                                    {:clojure.spec.test.check/opts {:num-tests 50}})]
+      (is (nil? (-> check-result first :failure))
+          "Function should pass all generative tests"))))

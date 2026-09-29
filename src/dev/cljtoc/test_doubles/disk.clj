@@ -14,6 +14,7 @@
             piece-cache
             output-pieces
             output-layouts
+            prepared-writes
             layouts-initialized
             state-files
             directories-created]
@@ -89,6 +90,71 @@
         (swap! layouts-initialized conj {:layout layout :output-dir output-dir})
         {:ok :initialized})))
 
+  (prepare-output-layout [_ layout output-dir]
+    ;; Mirrors DiskPortImpl's once-per-download gates without touching a
+    ;; filesystem: the full invariant check plus an explicit prepared value
+    ;; carrying one resolved entry per declared path and an empty
+    ;; parent-mtimes map (no filesystem to track), so orchestration tests
+    ;; thread exactly what the real port hands the fast write path.
+    (if (not (disk/consistent-output-layout? layout))
+      disk/invalid-output-layout-error
+      {:ok {:layout layout
+            :output-dir output-dir
+            :parent-mtimes {}
+            :resolved (into {} (map (fn [declared-path]
+                                      [declared-path {:file (pr-str declared-path)
+                                                      :canonical (pr-str declared-path)
+                                                      :identity nil}]))
+                            (keys (:sizes layout)))}}))
+
+  (write-prepared-piece [_ prepared output-dir piece-index bytes]
+    ;; Mirrors DiskPortImpl's per-piece gates minus the filesystem: span
+    ;; derivation, both shape gates, the prepared-for-this-dir binding,
+    ;; then touched-path membership, then the whole-layout alias check.
+    ;; An :alias-error config knob forces the alias check to refuse, so
+    ;; orchestration tests can drive a post-prepare alias without a real
+    ;; filesystem. The try/catch mirrors the real port too: a bad bytes
+    ;; argument (alength throws) comes back as {:error :write-error},
+    ;; never an uncaught throw.
+    (try
+      (if-let [err (or (:output-write-error config) (:write-error config))]
+        err
+        (let [layout (:layout prepared)
+              spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
+          (if-let [err (cond
+                         (:error spans-result)
+                         {:error :invalid-info
+                          :message (str "Cannot map piece " piece-index ": "
+                                        (:message spans-result))}
+
+                         (not (disk/valid-output-layout? layout))
+                         disk/invalid-output-layout-error
+
+                         ;; O(touched), not O(files): mirrors the real port —
+                         ;; the full prepared invariant held at prepare time.
+                         (not (disk/writable-prepared? prepared (map :path (:ok spans-result))))
+                         disk/invalid-prepared-layout-error
+
+                         (not= output-dir (:output-dir prepared))
+                         disk/invalid-prepared-layout-error
+
+                         (not (every? #(contains? (:sizes layout) (:path %))
+                                      (:ok spans-result)))
+                         disk/invalid-output-layout-error
+
+                         (:alias-error config)
+                         (:alias-error config)
+
+                         :else nil)]
+            err
+            (do
+              (swap! output-layouts conj layout)
+              (swap! output-pieces assoc piece-index bytes)
+              (swap! prepared-writes conj piece-index)
+              {:ok :written}))))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
+
   (ensure-directory [_ path]
     (swap! directories-created conj path)
     {:ok :created})
@@ -127,6 +193,7 @@
                    (atom {})
                    (atom [])
                    (atom [])
+                   (atom [])
                    (atom {})
                    (atom #{}))))
 
@@ -157,6 +224,16 @@
 
 (defn get-output-layouts [mock-disk]
   @(:output-layouts mock-disk))
+
+(defn get-prepared-writes
+  "Piece indexes written through write-prepared-piece: empty when every
+   write took the full-path fallback."
+  [mock-disk]
+  @(:prepared-writes mock-disk))
+
+(s/fdef get-prepared-writes
+  :args (s/cat :mock-disk any?)
+  :ret vector?)
 
 (s/fdef get-output-layouts
   :args (s/cat :mock-disk any?)

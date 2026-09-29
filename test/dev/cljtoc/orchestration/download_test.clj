@@ -1213,6 +1213,11 @@
                            :total-length (:length info)
                            :total-pieces (count (:pieces info))}
              :output-layout (:ok (torrent/compile-output-layout info))
+             :prepared-layout (when (:use-prepared opts)
+                                (:ok (disk/prepare-output-layout
+                                      disk
+                                      (:ok (torrent/compile-output-layout info))
+                                      "/out")))
              :ports {:network-port (or (:net opts) (mock-net/create))
                      :disk-port disk
                      :time-port (or (:time opts) (mock-time/create))}
@@ -1590,6 +1595,58 @@
       ;; assertions green but fails this one (PR #36 r4115143527).
       (is (= [expected-layout expected-layout] (mock-disk/get-output-layouts disk))))))
 
+(deftest run-event-loop-writes-through-prepared-layout-test
+  (testing "with a prepared layout in env, verified pieces take the fast write path"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk {:use-prepared true})]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1))))
+      (is (= [0 1] (mock-disk/get-prepared-writes disk))))))
+
+(deftest run-event-loop-falls-back-without-prepared-layout-test
+  (testing "without a prepared layout in env, verified pieces take the full write path"
+    (let [disk (mock-disk/create)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
+                  {:type :peer-message :address "peer-a"
+                   :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
+          result (scripted-run events (loop-download) disk)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
+      (is (empty? (mock-disk/get-prepared-writes disk))))))
+
+(deftest write-output-dispatches-on-prepared-test
+  (testing "nil prepared takes the full path, a prepared value the fast path"
+    (let [info {:pieces [(bencode/sha1-hash (test-utils/to-bytes "abcd"))]
+                :piece-length 4
+                :name "dispatch.bin"
+                :length 4}
+          layout (:ok (torrent/compile-output-layout info))
+          piece-bytes (test-utils/to-bytes "abcd")]
+      (let [disk (mock-disk/create)]
+        (is (= {:ok :written}
+               (#'download/write-output disk layout nil "/out" 0 piece-bytes)))
+        (is (empty? (mock-disk/get-prepared-writes disk)))
+        (is (= [layout] (mock-disk/get-output-layouts disk))))
+      (let [disk (mock-disk/create)
+            prepared (:ok (disk/prepare-output-layout disk layout "/out"))]
+        (is (= {:ok :written}
+               (#'download/write-output disk layout prepared "/out" 0 piece-bytes)))
+        (is (= [0] (mock-disk/get-prepared-writes disk)))))))
+
 (deftest run-event-loop-output-write-error-fails-download-test
   (testing "a failed output-layout write fails the download like a cache write"
     (let [disk (mock-disk/create {:output-write-error {:error :write-error
@@ -1733,6 +1790,43 @@
     (let [{:keys [download layout disk piece-0]} (materialize-fixture)
           result (#'download/materialize-verified-pieces
                   (update-in download [:torrent :info] dissoc :pieces) disk layout)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
+
+(deftest materialize-falls-back-when-prepare-is-refused-test
+  (testing "a layout preparation cannot satisfy still fails closed piece by piece"
+    ;; prepare refuses a layout whose files are not declared in sizes; the
+    ;; 3-arity then loops with nil prepared, and the full fallback refuses
+    ;; each write — an error envelope carrying the download, never a throw.
+    (let [{:keys [download disk]} (materialize-fixture)
+          layout {:sizes {}
+                  :files [{:path ["mat.bin"] :length 8 :start 0}]
+                  :total 8 :piece-length 4}
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (:error result))
+      (is (some? (:download result))))))
+
+(deftest materialize-uses-prepared-write-when-given-test
+  (testing "materialize with a prepared layout writes through the fast path"
+    (let [{:keys [download layout disk piece-0]} (materialize-fixture)
+          prepared (:ok (disk/prepare-output-layout disk layout "/out"))
+          result (#'download/materialize-verified-pieces download disk layout prepared)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0))))
+      (is (= [0] (mock-disk/get-prepared-writes disk))))))
+
+(deftest materialize-falls-back-when-prepared-identities-are-missing-test
+  (testing "the mock prepare reports nil identities on the standalone path
+            (no init to materialize the targets), so the 3-arity loops with
+            a prepared value whose frozen identities are all nil. The real
+            port's whole-layout alias check on every piece write refuses
+            that path; the mock has no filesystem to walk, so the gate does
+            not fire here. The integration safety is asserted end to end in
+            write-prepared-piece-refuses-post-prepare-untouched-symlink-alias-test
+            and the hardlink twin, which run against DiskPortImpl on a real
+            filesystem"
+    (let [{:keys [download layout disk piece-0]} (materialize-fixture)
+          result (#'download/materialize-verified-pieces download disk layout)]
       (is (not (:error result)))
       (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
 

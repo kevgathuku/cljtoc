@@ -53,6 +53,23 @@
 
       Side effects: writes to filesystem")
 
+  (write-prepared-piece [this prepared output-dir piece-index bytes]
+    "Write one verified piece through an explicitly prepared layout
+     (prepare-output-layout), re-validating live on every piece. A
+     parent-directory mtime gate decides the depth: when no parent dir
+     changed since prepare, only the touched files are re-resolved and
+     checked for touched-side stability against the snapshot (one stat
+     per distinct parent plus O(touched) work — flat in file count for
+     the usual layouts where many files share few dirs); when a parent
+     changed, the whole layout is re-resolved and the full alias check
+     runs, catching a post-prepare alias involving an untouched path
+     (e.g. b symlinked onto a after prepare, with the next piece writing
+     only a). A touched-only scan alone is enough for touched-vs-touched
+     collisions but cannot see an untouched path newly redirected onto a
+     touched target, so the fallback — not the gate — carries the alias
+     guarantee. Returns {:ok :written} or {:error reason :message msg}.
+
+     Side effects: writes to filesystem")
   (initialize-output-layout [this layout output-dir]
     "Create every declared output path under output-dir at its declared
      length, including zero-length files. layout is the compiled output
@@ -63,6 +80,18 @@
      Returns {:ok :initialized} or {:error reason :message msg}.
 
      Side effects: creates files and directories")
+
+  (prepare-output-layout [this layout output-dir]
+    "Resolve the whole declared layout under output-dir once, up front.
+     layout is the compiled output layout for the download
+     (domain.torrent/compile-output-layout). Runs the full containment
+     and alias checks a per-piece write cannot afford, and returns the
+     explicit prepared value write-prepared-piece re-validates touched
+     files against — threaded by the caller like the compiled layout,
+     never hidden inside the port.
+     Returns {:ok prepared} or {:error reason :message msg}.
+
+     Side effects: creates missing parent directories (containment probing)")
 
   (ensure-directory [this path]
     "Ensure a directory exists, creating it if necessary.
@@ -155,6 +184,65 @@
    and MockDiskPort cannot drift apart on the message."
   {:error :invalid-info
    :message "Invalid output layout: not a compiled output layout"})
+
+(defn valid-prepared-layout?
+  "True when prepared is the explicit value prepare-output-layout returns:
+   a map carrying the compiled layout it was resolved from, the canonical
+   output dir string it was resolved under, a parent-mtimes map (parent
+   directory path to last-modified time, empty for the mock port), and a
+   resolved entry per declared path (absolute file string, canonical
+   target string, and the filesystem identity seen at prepare time, nil
+   when the target did not exist yet). Both DiskPortImpl and MockDiskPort
+   refuse anything else with :invalid-info before writing anything."
+  [prepared]
+  (and (map? prepared)
+       (valid-output-layout? (:layout prepared))
+       (string? (:output-dir prepared))
+       (map? (:parent-mtimes prepared))
+       (map? (:resolved prepared))
+       (= (set (keys (:resolved prepared)))
+          (set (keys (:sizes (:layout prepared)))))
+       (every? (fn [[declared-path entry]]
+                 (and (vector? declared-path)
+                      (seq declared-path)
+                      (every? string? declared-path)
+                      (map? entry)
+                      (string? (:file entry))
+                      (string? (:canonical entry))
+                      (contains? entry :identity)))
+               (:resolved prepared))))
+
+(s/fdef valid-prepared-layout?
+  :args (s/cat :prepared any?)
+  :ret boolean?)
+
+(def invalid-prepared-layout-error
+  "The :invalid-info envelope both disk ports return when handed something
+   that is not a prepared output layout. One shared literal so the ports
+   cannot drift apart on the message."
+  {:error :invalid-info
+   :message "Invalid prepared layout: not a prepared output layout"})
+
+(defn writable-prepared?
+  "Per-piece gate over a prepared layout: true when prepared is a map
+   carrying an O(1)-shaped compiled layout and a resolved entry with a
+   canonical string for every path in touched. O(touched): the full
+   prepared invariant (resolved entries for exactly the declared paths)
+   was established once at prepare time and is pinned by
+   valid-prepared-layout? — re-proving it per piece would cost O(files)
+   pure work for entries this write never reads."
+  [prepared touched]
+  (and (map? prepared)
+       (valid-output-layout? (:layout prepared))
+       (map? (:resolved prepared))
+       (every? (fn [declared-path]
+                 (let [entry (get (:resolved prepared) declared-path)]
+                   (and (map? entry) (string? (:canonical entry)))))
+               touched)))
+
+(s/fdef writable-prepared?
+  :args (s/cat :prepared any? :touched any?)
+  :ret boolean?)
 
 ;; ---------------------------------------------------------------------------
 ;; Shared state encoding — the single persistence seam.

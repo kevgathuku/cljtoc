@@ -43,6 +43,10 @@
                  :write-piece #(disk/write-piece % (byte-array 20) 0 piece-bytes)
                  :write-output-piece #(disk/write-output-piece % layout output-dir 0 piece-bytes)
                  :initialize-output-layout #(disk/initialize-output-layout % layout output-dir)
+                 :prepare-output-layout #(disk/prepare-output-layout % layout output-dir)
+                 :write-prepared-piece #(let [prepared (:ok (disk/prepare-output-layout
+                                                             % layout output-dir))]
+                                          (disk/write-prepared-piece % prepared output-dir 0 piece-bytes))
                  :ensure-directory #(disk/ensure-directory % output-dir)
                  :save-state #(disk/save-state % {:id "contract"})
                  :load-state #(disk/load-state % "contract")
@@ -473,6 +477,127 @@
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
+(deftest write-prepared-piece-refuses-post-prepare-untouched-symlink-alias-test
+  ;; The prepared fast path must re-validate the whole layout live, not
+  ;; just the piece's paths: b becomes a symlink to a after a clean
+  ;; prepare, and a write touching only a would otherwise corrupt b while
+  ;; every touched-side check still passes.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-alias-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        target (io/file output-dir "t" "a")
+        alias-link (io/file output-dir "t" "b")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (.delete alias-link)
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath alias-link)
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    ;; Force the gate trip deterministically (see the benign-change test):
+    ;; the alias itself must be caught by the full re-resolve, not by luck
+    ;; of the millisecond clock.
+    (.setLastModified (io/file output-dir "t") 0)
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= :unsafe-path (:error result)))
+      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
+                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+          "the refused write leaves the touched file intact"))))
+
+(deftest write-prepared-piece-refuses-post-prepare-untouched-hardlink-alias-test
+  ;; Same post-prepare alias through a hard link: b shares a's inode, so
+  ;; the canonical targets differ and only a live identity comparison
+  ;; across the whole layout can see the alias.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-hardlink-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        target (io/file output-dir "t" "a")
+        alias-link (io/file output-dir "t" "b")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (.delete alias-link)
+    (java.nio.file.Files/createLink (.toPath alias-link) (.toPath target))
+    ;; Force the gate trip deterministically (see the benign-change test).
+    (.setLastModified (io/file output-dir "t") 0)
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= :unsafe-path (:error result)))
+      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
+                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+          "the refused write leaves the touched file intact"))))
+
+(deftest write-prepared-piece-refuses-alias-in-untouched-parent-dir-test
+  ;; The full-parent poll is load-bearing, not belt-and-braces: with a and
+  ;; b in separate dirs, an alias planted in b's dir leaves a's own parent
+  ;; mtime unchanged, so a touched-parents-only gate would take the fast
+  ;; path, pass every touched-side check, and land a's bytes while b —
+  ;; written earlier and now symlinked onto a — silently reads them back.
+  ;; The gate must poll the untouched dir too and refuse before any open.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-distinct-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["sub1" "a"] :length 4} {:path ["sub2" "b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        target (io/file output-dir "t" "sub1" "a")
+        alias-link (io/file output-dir "t" "sub2" "b")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (is (= {:ok :written}
+           (disk/write-prepared-piece port prepared output-dir 1
+                                      (byte-array [5 6 7 8])))
+        "b's piece lands before the alias exists")
+    (.delete alias-link)
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath alias-link)
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    ;; Force the gate trip deterministically: the plant itself bumps
+    ;; sub2's mtime, but possibly inside the snapshot's millisecond.
+    (.setLastModified (io/file output-dir "t" "sub2") 0)
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= :unsafe-path (:error result)))
+      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
+                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+          "the refused write leaves the touched file intact"))))
+
+(deftest write-prepared-piece-writes-through-benign-post-prepare-change-test
+  ;; Tripping the parent-mtime gate must not break honest writes: a new
+  ;; unrelated file after prepare forces the full re-resolve, which finds
+  ;; no alias and writes the piece. The gate is a tripwire, not a refusal.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-benign-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        bystander (io/file output-dir "t" "c")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (spit bystander "bystander")
+    ;; Force the trip deterministically: `.lastModified` has millisecond
+    ;; granularity, so the spit above could land in the same tick as the
+    ;; snapshot and sail through the fast path. Backdating the dir
+    ;; guarantees the gate fires; either branch must still write.
+    (.setLastModified (io/file output-dir "t") 0)
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= {:ok :written} result))
+      (is (java.util.Arrays/equals (byte-array [1 2 3 4])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "a"))))
+          "the piece lands in the touched file")
+      (is (= "bystander" (slurp bystander))
+          "the unrelated file is untouched"))))
+
 (deftest initialize-output-layout-rejects-layout-without-lengths-test
   ;; A layout with neither :length nor :files must be refused as
   ;; :invalid-info before anything is created — not attempted until
@@ -701,6 +826,220 @@
                                     (.toPath (io/file output-dir "t" "a"))))))))
 
 ;; ---------------------------------------------------------------------------
+
+(deftest prepare-output-layout-returns-explicit-prepared-value-test
+  (testing "prepare resolves the whole layout once without creating files"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)
+          result (disk/prepare-output-layout port layout output-dir)]
+      (is (not (:error result)))
+      (let [prepared (:ok result)]
+        (is (disk/valid-prepared-layout? prepared))
+        (is (= layout (:layout prepared)))
+        (is (= #{["t" "a"] ["t" "b"]} (set (keys (:resolved prepared)))))
+        (is (not (.exists (io/file output-dir "t" "a"))))
+        (is (not (.exists (io/file output-dir "t" "b"))))))))
+
+(deftest prepare-output-layout-rejects-filesystem-alias-test
+  (testing "prepare refuses a pre-existing symlink alias across the whole layout"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-alias-")
+          target (io/file output-dir "t" "b")]
+      (.mkdirs (.getParentFile target))
+      (spit target "SENTINEL")
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "t" "a"))
+       (.toPath target)
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+            result (disk/prepare-output-layout port (compile-layout info) output-dir)]
+        (is (= :unsafe-path (:error result)))
+        (is (= "SENTINEL" (slurp target)))))))
+
+(deftest prepare-output-layout-rejects-hardlink-alias-test
+  (testing "prepare refuses a pre-existing hardlink alias"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-hardlink-")
+          target (io/file output-dir "t" "b")]
+      (.mkdirs (.getParentFile target))
+      (spit target "SENTINEL")
+      (java.nio.file.Files/createLink (.toPath (io/file output-dir "t" "a"))
+                                      (.toPath target))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+            result (disk/prepare-output-layout port (compile-layout info) output-dir)]
+        (is (= :unsafe-path (:error result)))
+        (is (= "SENTINEL" (slurp target)))))))
+
+(deftest prepare-output-layout-sees-untouched-targets-test
+  (testing "prepare refuses an alias even when the piece would touch only one side"
+    ;; With piece-length 4, piece 0 touches only a — but prepare still
+    ;; sees b, so the per-piece path never needs the full scan to stay safe.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-partial-")
+          target (io/file output-dir "t" "b")]
+      (.mkdirs (.getParentFile target))
+      (spit target "SENTINEL")
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "t" "a"))
+       (.toPath target)
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+            ;; Sanity: piece 0 spans only a.
+            spans (:ok (torrent/layout-spans (compile-layout info) 0 4))]
+        (is (= #{["t" "a"]} (set (map :path spans))))
+        (let [result (disk/prepare-output-layout port (compile-layout info) output-dir)]
+          (is (= :unsafe-path (:error result)))
+          (is (= "SENTINEL" (slurp target))))))))
+
+(deftest prepare-output-layout-refuses-invalid-layout-test
+  (testing "prepare refuses a non-compiled layout without touching the filesystem"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-invalid-")
+          result (disk/prepare-output-layout port {:sizes {}} output-dir)]
+      (is (= :invalid-info (:error result)))
+      (is (not (.exists (io/file output-dir "t")))))))
+
+(deftest write-prepared-piece-writes-touched-files-test
+  (testing "init, prepare, then per-piece writes assemble the content"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-write-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))]
+        (is (disk/valid-prepared-layout? prepared))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 1 (byte-array [4 5 6 7]))))
+        (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "a")))))
+        (is (java.util.Arrays/equals (byte-array [4 5 6 7])
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "b")))))))))
+
+(deftest write-prepared-piece-refuses-redirected-touch-test
+  (testing "a touched file swapped after prepare is refused, nothing written"
+    ;; The TOCTOU the prepared value narrows: prepare froze a pointing at
+    ;; its own target; replacing a with a symlink to b afterwards must
+    ;; fail the write even though b itself is untouched by this piece.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-redirect-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
+            target-a (io/file output-dir "t" "a")
+            target-b (io/file output-dir "t" "b")]
+        (spit target-b "SENTINEL")
+        (.delete target-a)
+        (java.nio.file.Files/createSymbolicLink
+         (.toPath target-a)
+         (.toPath target-b)
+         (into-array java.nio.file.attribute.FileAttribute []))
+        (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                                (byte-array [0 1 2 3]))]
+          (is (= :unsafe-path (:error result)))
+          (is (= "SENTINEL" (slurp target-b))))))))
+
+(deftest write-prepared-piece-recreates-a-deleted-touch-test
+  (testing "a touched file deleted after prepare is recreated by the write"
+    ;; The live identity is nil (nothing to stat), so stability falls back
+    ;; to the canonical check — same shape, same target — and the write
+    ;; itself recreates the file, exactly as the full path would.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-recreate-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))]
+        (.delete (io/file output-dir "t" "a"))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
+        (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "a")))))))))
+
+(deftest write-prepared-piece-leaves-zero-length-files-alone-test
+  (testing "a prepared write touches only spanned files, keeping declared empties"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-empty-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4}
+                        {:path ["empty"] :length 0}
+                        {:path ["b"] :length 4}]}
+          layout (compile-layout info)
+          empty-file (io/file output-dir "t" "empty")]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))]
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 1 (byte-array [4 5 6 7]))))
+        (is (.exists empty-file))
+        (is (zero? (.length empty-file)))))))
+
+(deftest write-prepared-piece-refuses-unknown-piece-test
+  (testing "a piece index beyond the layout is refused, nothing written"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-range-")
+          info {:name "t" :piece-length 4 :length 4}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
+            result (disk/write-prepared-piece port prepared output-dir 99 (byte-array [0 1 2 3]))]
+        (is (= :invalid-info (:error result)))
+        (is (java.util.Arrays/equals (byte-array 4)
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t")))))))))
+
+(deftest write-prepared-piece-refuses-incomplete-prepared-test
+  (testing "a prepared value missing the touched entry is refused"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-incomplete-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
+            thinned (update prepared :resolved dissoc ["t" "a"])
+            result (disk/write-prepared-piece port thinned output-dir 0 (byte-array [0 1 2 3]))]
+        (is (disk/valid-prepared-layout? prepared))
+        (is (not (disk/valid-prepared-layout? thinned)))
+        (is (= :invalid-info (:error result)))
+        (is (java.util.Arrays/equals (byte-array 4)
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "a")))))))))
+
+(deftest write-prepared-piece-refuses-foreign-output-dir-test
+  (testing "a prepared value is bound to the dir it was resolved under"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-home-")
+          foreign-dir (test-utils/temp-dir "output-prepared-foreign-")
+          info {:name "t" :piece-length 4 :length 4}
+          layout (compile-layout info)
+          prepared (:ok (disk/prepare-output-layout port layout output-dir))
+          result (disk/write-prepared-piece port prepared foreign-dir 0 (byte-array [0 1 2 3]))]
+      (is (= :invalid-info (:error result)))
+      (is (not (.exists (io/file foreign-dir "t")))))))
+
+(deftest write-prepared-piece-refuses-invalid-prepared-test
+  (testing "a forged prepared value is refused before anything is written"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-forged-")
+          result (disk/write-prepared-piece port {:layout nil} output-dir 0 (byte-array [0 1 2 3]))]
+      (is (= :invalid-info (:error result)))
+      (is (not (.exists (io/file output-dir "t")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The property this branch exists to guarantee: a completed download is

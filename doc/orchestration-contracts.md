@@ -151,6 +151,20 @@ Called with peer list from tracker.
   )
 ```
 
+### Disk writes (prepared layout)
+
+```clojure
+(prepare-output-layout [this layout output-dir])
+  ;; Resolve the whole declared layout once; returns {:ok prepared})
+(write-prepared-piece [this prepared output-dir piece-index bytes])
+  ;; Write one verified piece through the prepared layout)
+```
+
+| Result | Method |
+|---|---|
+| `{:ok :written}` | `write-piece`, `write-output-piece`, `write-prepared-piece` |
+| `{:ok prepared}` | `prepare-output-layout` |
+
 ---
 
 ## Error responses
