@@ -16,8 +16,20 @@
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
 
-(s/def ::info-hash bytes?)
-(s/def ::peer-handshake (s/keys :req-un [::info-hash]))
+;; Length-exact hash/id specs single-source validation on protocol.peer
+;; (::byte-array-20) and wrap feasible generation locally (repo
+;; precedent: pieces.clj ::total-pieces — conformance unchanged,
+;; generation only). The bare s/and bytes? + count form starves
+;; such-that generation (proven red); without the wrapper the
+;; verify-handshake pin cannot draw a single case.
+(s/def ::info-hash
+  (s/with-gen :dev.cljtoc.protocol.peer/info-hash
+    #(peer/gen-byte-array 20)))
+(s/def ::peer-id
+  (s/with-gen :dev.cljtoc.protocol.peer/peer-id
+    #(peer/gen-byte-array 20)))
+(s/def ::peer-handshake
+  (s/keys :req-un [::info-hash]))
 
 (defn verify-handshake
   "Pure handshake verification: check the peer's handshake info-hash
@@ -30,7 +42,8 @@
     {:error :info-hash-mismatch}))
 
 (s/fdef verify-handshake
-  :args (s/cat :info-hash ::info-hash :peer-handshake ::peer-handshake)
+  :args (s/cat :info-hash ::info-hash
+               :peer-handshake ::peer-handshake)
   :ret map?)
 
 (defn initial-state
@@ -108,8 +121,8 @@
 ;; pin them instead.
 (s/fdef connect
   :args (s/cat :network-port any?
-               :info-hash bytes?
-               :our-peer-id bytes?
+               :info-hash ::info-hash
+               :our-peer-id ::peer-id
                :address string?
                :total-pieces pos-int?)
   :ret map?)
