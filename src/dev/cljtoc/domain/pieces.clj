@@ -408,7 +408,11 @@
   Returns {:ok [Block]} or {:error :invalid-input :message string} if
   piece-index is out of range (>= total piece count)."
   [piece-index standard-piece-length total-length]
-  (let [total-pieces (long (Math/ceil (/ (double total-length) standard-piece-length)))]
+  ;; Exact integer ceiling: double division loses precision past 2^53 and
+  ;; rejects the true final piece. The bigint sum cannot overflow (the
+  ;; quotient never exceeds total-length, so the closing long is exact).
+  (let [total-pieces (long (quot (+ (bigint total-length) standard-piece-length -1)
+                                 standard-piece-length))]
     (if (>= piece-index total-pieces)
       (piece-error :invalid-input
                    (str "Piece index " piece-index

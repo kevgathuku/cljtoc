@@ -441,6 +441,17 @@
       (is (= 16384 (pieces/piece-length 0 16384 huge)))
       (is (= :invalid-input (:error (pieces/piece-blocks huge 16384 1000)))))))
 
+(deftest piece-blocks-double-precision-test
+  (testing "the final piece past 2^53 is accepted (double math rounded its count down)"
+    ;; total-length 2^53+1 at 2 bytes/piece is 4503599627370497 pieces;
+    ;; (double total-length) loses the +1 and the old ceiling rejected
+    ;; the true last index.
+    (let [total-length 9007199254740993
+          {:keys [ok error]} (pieces/piece-blocks 4503599627370496 2 total-length)]
+      (is (nil? error))
+      (is (= 1 (count ok)))
+      (is (= 1 (:length (first ok)))))))
+
 (deftest requeue-verified-test
   (testing "a verified piece whose cache bytes are gone returns to needed"
     (let [state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 5) 2))
