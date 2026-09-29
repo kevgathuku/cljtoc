@@ -11,6 +11,10 @@
             [clojure.spec.alpha :as s])
   (:import [java.util Arrays]))
 
+;; Byte arrays flow through info-hash and layout math here; fail the compile on
+;; reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 ;; ---------------------------------------------------------------------------
 ;; Info dict extraction
 ;; ---------------------------------------------------------------------------

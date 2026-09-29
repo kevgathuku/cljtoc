@@ -47,6 +47,10 @@
             [dev.cljtoc.utils :as utils])
   (:import [java.util BitSet]))
 
+;; Byte arrays flow through message parsing and building here; fail the compile
+;; on reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 ;; ============================================================================
 ;; Specs
 ;; ============================================================================

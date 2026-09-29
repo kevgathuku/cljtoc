@@ -14,6 +14,10 @@
   (:import [java.security MessageDigest]
            [java.io ByteArrayOutputStream]))
 
+;; Byte arrays flow through the parse loops here; fail the compile on
+;; reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 ;; ---------------------------------------------------------------------------
 ;; Error constructors
 ;; ---------------------------------------------------------------------------

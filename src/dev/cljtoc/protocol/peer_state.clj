@@ -47,6 +47,10 @@
   (:require [clojure.spec.alpha :as s])
   (:import [java.util BitSet]))
 
+;; Bitfields arrive as byte arrays here; fail the compile on reflective calls
+;; so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 ;; ============================================================================
 ;; Specs
 ;; ============================================================================

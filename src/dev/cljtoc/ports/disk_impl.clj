@@ -13,6 +13,10 @@
            [java.nio.file.attribute BasicFileAttributes]
            [java.util Arrays]))
 
+;; Byte arrays flow through the piece cache and layout writes here; fail the
+;; compile on reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (defn- containment-prefix
   "A canonical directory as a path prefix for containment checks. The
    separator is appended only when missing: a canonical dir that is itself the

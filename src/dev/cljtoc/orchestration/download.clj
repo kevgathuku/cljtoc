@@ -932,7 +932,7 @@
                                      :error {:reason :no-peers :message "All peers disconnected"})
                               (time/now time-port)))
 
-            (let [now (time/now time-port)
+            (let [now (long (time/now time-port))
                   show-progress? (> (- now last-progress-time) 2000)]
 
               (case (:type event)

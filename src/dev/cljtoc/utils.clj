@@ -5,6 +5,10 @@
   (:require [clojure.spec.alpha :as s]
             [clojure.test.check.generators :as gen]))
 
+;; Every hash comparison bottoms out in the byte helpers here; fail the compile
+;; on reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (defn bytes-equal?
   "True when two byte arrays hold the same bytes. Thin wrapper over
    java.util.Arrays/equals, shared so every hash comparison spells it

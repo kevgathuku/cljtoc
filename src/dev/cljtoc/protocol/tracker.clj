@@ -11,6 +11,10 @@
   (:import [java.nio ByteBuffer]
            [java.net InetAddress]))
 
+;; Byte arrays flow through tracker message builders and parsers here; fail the
+;; compile on reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 ;; ---------------------------------------------------------------------------
 ;; Error constructors
 ;; ---------------------------------------------------------------------------

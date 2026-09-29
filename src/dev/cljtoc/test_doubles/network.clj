@@ -6,6 +6,10 @@
             [dev.cljtoc.protocol.tracker :as tracker])
   (:import [java.util UUID]))
 
+;; The mock mirrors the real port's byte paths here; fail the compile on
+;; reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (defrecord MockNetworkPort
            [config
             peers

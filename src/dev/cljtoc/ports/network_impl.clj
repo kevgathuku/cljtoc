@@ -13,6 +13,10 @@
            [java.io ByteArrayOutputStream InputStream]
            [java.security SecureRandom]))
 
+;; Byte arrays flow through socket reads and tracker datagrams here; fail the
+;; compile on reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (def ^:private random (SecureRandom.))
 
 (def ^:private default-timeouts

@@ -38,6 +38,10 @@
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.utils :as utils]))
 
+;; Byte arrays flow through verification and assembly here; fail the compile on
+;; reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 ;; ============================================================================
 ;; Records
 ;; ============================================================================
