@@ -295,20 +295,25 @@
    Returns {:ok :written} or {:error :write-error ...}."
   [live sizes touched spans bytes]
   (try
-    (doseq [declared-path touched]
-      (let [out-file (get-in live [declared-path :file])]
-        (with-open [raf (RandomAccessFile. out-file "rw")]
-          (.setLength raf (get sizes declared-path))
-          (doseq [{file-offset :file-offset
-                   data-offset :data-offset
-                   span-length :length}
-                  (filter #(= declared-path (:path %)) spans)]
-            (let [slice (Arrays/copyOfRange
-                         ^bytes bytes
-                         (int data-offset)
-                         (int (+ data-offset span-length)))]
-              (.seek raf file-offset)
-              (.write raf slice))))))
+    ;; One grouping for the whole write: scanning spans once per touched
+    ;; path turns quadratic when layout-spans emits one span per small
+    ;; file. Iterating touched keeps the existing path order; group-by
+    ;; keeps each path's spans in span order.
+    (let [spans-by-path (group-by :path spans)]
+      (doseq [declared-path touched]
+        (let [out-file (get-in live [declared-path :file])]
+          (with-open [raf (RandomAccessFile. out-file "rw")]
+            (.setLength raf (get sizes declared-path))
+            (doseq [{file-offset :file-offset
+                     data-offset :data-offset
+                     span-length :length}
+                    (get spans-by-path declared-path)]
+              (let [slice (Arrays/copyOfRange
+                           ^bytes bytes
+                           (int data-offset)
+                           (int (+ data-offset span-length)))]
+                (.seek raf file-offset)
+                (.write raf slice)))))))
     {:ok :written}
     (catch Exception error
       {:error :write-error :message (.getMessage error)})))
