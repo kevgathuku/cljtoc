@@ -125,7 +125,7 @@ torrent-client-clj/
 │   ├── domain/                   # Pure torrent logic (bencode, torrent, pieces, peer-address)
 │   ├── protocol/                 # Pure parsing/encoding (tracker, peer, peer-state)
 │   ├── orchestration/            # Download lifecycle (download)
-│   ├── coordination/             # core.async flows (peer-worker)
+│   ├── coordination/             # core.async flows (peer-worker, peer-connection)
 │   ├── ports/                    # Effect protocols + real implementations (network, disk, time)
 │   └── test_doubles/             # In-memory ports for tests
 ├── test/dev/cljtoc/              # Mirrors src layout, plus integration/
