@@ -476,6 +476,32 @@
   (testing "a short partition (missing index) is invalid"
     (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
                        {:total-pieces 2 :needed #{0} :in-flight #{} :verified #{}}))))
+  (testing "a non-positive total is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 0 :needed #{} :in-flight #{} :verified #{}}))))
+  (testing "non-set buckets are invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 2 :needed [0 1] :in-flight #{} :verified #{}}))))
+  (testing "a missing bucket is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 1 :needed #{0} :in-flight #{}}))))
+  (testing "a non-map is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state nil)))
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state []))))
+  (testing "fail-closed branches direct (s/keys rejects these first, so the\n   predicate's own guards are reachable only by direct call)"
+    (let [valid? @#'pieces/valid-partition?]
+      (is (true? (valid? {:total-pieces 2 :needed #{0} :in-flight #{1} :verified #{}})))
+      (is (false? (valid? nil)))
+      (is (false? (valid? [])))
+      (is (false? (valid? {:total-pieces 0 :needed #{} :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces "2" :needed #{0 1} :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces 2 :needed [0 1] :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0 1} :in-flight #{} :verified [0]})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0} :in-flight #{0} :verified #{1}})))
+      (is (false? (valid? {:total-pieces 3 :needed #{0 2} :in-flight #{1} :verified #{0}})))
+      (is (false? (valid? {:total-pieces 3 :needed #{2} :in-flight #{0 1} :verified #{1}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0 1 5} :in-flight #{} :verified #{}})))))
   (testing "every reachable shape stays valid"
     (let [state0 (pieces/initial-piece-state 3)
           state1 (:ok (pieces/mark-in-flight state0 1))
