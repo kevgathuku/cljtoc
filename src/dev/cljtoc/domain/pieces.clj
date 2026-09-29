@@ -34,6 +34,7 @@
     ;; => {:ok 7}  or  {:error :hash-mismatch ...}"
   (:require [clojure.set :as set]
             [clojure.spec.alpha :as s]
+            [clojure.test.check.generators :as gen]
             [dev.cljtoc.domain.bencode :as bencode]))
 
 ;; ============================================================================
@@ -60,6 +61,46 @@
   16384)
 
 ;; ============================================================================
+;; Piece-state shape — partition invariant + index bounds (issue #40)
+;; ============================================================================
+
+(defn- valid-partition?
+  "Returns true when needed / in-flight / verified partition
+  range(total-pieces): pairwise disjoint with a union of exactly
+  #{0 .. total-pieces-1}. Union equality pins index bounds and element
+  types at once — a member outside the range (or of the wrong type) can
+  never survive the comparison against (range total-pieces). Total over
+  maps; anything else answers false instead of throwing."
+  [state]
+  (and (map? state)
+       (let [{:keys [total-pieces needed in-flight verified]} state]
+         (and (pos-int? total-pieces)
+              (set? needed)
+              (set? in-flight)
+              (set? verified)
+              (empty? (set/intersection needed in-flight))
+              (empty? (set/intersection needed verified))
+              (empty? (set/intersection in-flight verified))
+              (= (set (range total-pieces))
+                 (set/union needed in-flight verified))))))
+
+(def ^:private gen-piece-state
+  "Generates reachable PieceState records: a total in [1, 12] plus a
+  random needed / in-flight / verified partition of its range, so every
+  generated state is one the transitions could actually produce."
+  (gen/bind (gen/choose 1 12)
+              (fn [total-pieces]
+                (gen/fmap (fn [buckets]
+                            (let [assigned (map vector (range total-pieces) buckets)
+                                  in-bucket (fn [bucket]
+                                              (set (map first (filter #(= bucket (second %)) assigned))))]
+                              (->PieceState total-pieces
+                                            (in-bucket 0)
+                                            (in-bucket 1)
+                                            (in-bucket 2))))
+                          (gen/vector (gen/choose 0 2) total-pieces)))))
+
+;; ============================================================================
 ;; Specs — primitive types
 ;; ============================================================================
 
@@ -78,7 +119,10 @@
 (s/def ::verified ::piece-index-set)
 
 (s/def ::piece-state
-  (s/keys :req-un [::total-pieces ::needed ::in-flight ::verified]))
+  (s/with-gen
+    (s/and (s/keys :req-un [::total-pieces ::needed ::in-flight ::verified])
+           valid-partition?)
+    (constantly gen-piece-state)))
 
 (s/def ::offset nat-int?)
 
