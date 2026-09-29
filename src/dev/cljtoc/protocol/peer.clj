@@ -60,6 +60,9 @@
 (s/def ::byte-array-8
   (s/and bytes? #(= 8 (count %))))
 
+(s/def ::byte-array-2
+  (s/and bytes? #(= 2 (count %))))
+
 ;; Generation fixed centrally: with-gen changes generation only, never
 ;; conformance, so every consumer drawing this spec gets feasible
 ;; 20-byte arrays instead of a starved such-that filter.
@@ -721,7 +724,7 @@
 
 (s/fdef int16-to-bytes
   :args (s/cat :value ::int16)
-  :ret  (s/and bytes? #(= 2 (count %)))
+  :ret  ::byte-array-2
   :fn   #(= (:value (:args %)) (bytes-to-int16 (:ret %))))
 
 (s/fdef concat-bytes
@@ -734,24 +737,21 @@
 
 (s/fdef ->peer-handshake
   :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
   :fn   (s/or
          :ok    #(= protocol-string (-> % :ret second :ok :protocol))
          :error #(= :error (-> % :ret first))))
 
 (s/fdef parse-handshake
   :args (s/cat :b bytes?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
   :fn   (s/or
          :ok    #(= protocol-string (-> % :ret second :ok :protocol))
          :error #(= :error (-> % :ret first))))
 
 (s/fdef build-handshake
   :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
   :fn   (s/or
          :ok    #(= 68 (count (-> % :ret second :ok)))
          :error #(= :error (-> % :ret first))))
@@ -760,8 +760,7 @@
 
 (s/fdef parse-message
   :args (s/cat :b bytes?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message])))
+  :ret  (s/or :ok ::ok-result :error ::error-result))
 
 (s/fdef parse-messages
   :args (s/cat :b bytes?)
@@ -775,8 +774,7 @@
 
 (s/fdef build-message
   :args (s/cat :msg any?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
   :fn   (s/or
          ;; A keep-alive is exactly 4 bytes; all others are >= 5 bytes.
          :ok    #(>= (count (-> % :ret second :ok)) 4)
@@ -784,8 +782,7 @@
 
 (s/fdef build-messages
   :args (s/cat :message-records (s/coll-of any?))
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
+  :ret  (s/or :ok ::ok-result :error ::error-result)
   :fn   (s/or
          :ok    #(bytes? (-> % :ret second :ok))
          :error #(= :error (-> % :ret first))))
