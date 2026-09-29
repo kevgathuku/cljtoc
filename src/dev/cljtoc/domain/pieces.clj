@@ -66,10 +66,10 @@
 
 (defn- valid-partition?
   "Returns true when needed / in-flight / verified partition
-  range(total-pieces): pairwise disjoint with a union of exactly
-  #{0 .. total-pieces-1}. Union equality pins index bounds and element
-  types at once — a member outside the range (or of the wrong type) can
-  never survive the comparison against (range total-pieces). Total over
+  range(total-pieces): pairwise disjoint, jointly total-pieces large,
+  and every member a nat-int below total-pieces. Disjointness plus an
+  exact count pins the union to the range without building it, so even
+  a huge total with empty sets rejects in constant time. Total over
   maps; anything else answers false instead of throwing."
   [state]
   (and (map? state)
@@ -81,8 +81,9 @@
               (empty? (set/intersection needed in-flight))
               (empty? (set/intersection needed verified))
               (empty? (set/intersection in-flight verified))
-              (= (set (range total-pieces))
-                 (set/union needed in-flight verified))))))
+              (= total-pieces (+ (count needed) (count in-flight) (count verified)))
+              (every? (fn [member] (and (nat-int? member) (< member total-pieces)))
+                      (concat needed in-flight verified))))))
 
 (def ^:private gen-piece-state
   "Generates reachable PieceState records: a total in [1, 12] plus a
