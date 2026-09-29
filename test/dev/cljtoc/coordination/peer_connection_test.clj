@@ -56,12 +56,22 @@
                  (peer-connection/initial-state 8)
                  (peer/->Bitfield (byte-array [(unchecked-byte 0xA0)])))]
       (is (= 2 (peer-state/peer-piece-count state)))))
+  (testing "Interested/NotInterested flip the peer's interest flag"
+    (let [state (peer-connection/initial-state 4)
+          interested (peer-connection/on-message state (peer/->Interested))]
+      (is (true? (:peer-interested interested)))
+      (is (false? (:peer-interested
+                   (peer-connection/on-message interested (peer/->NotInterested)))))))
   (testing "data-plane messages leave posture untouched"
     (let [state (peer-connection/on-message
                  (peer-connection/initial-state 4) (peer/->Unchoke))]
       (is (= state (peer-connection/on-message state (peer/->KeepAlive))))
       (is (= state (peer-connection/on-message
-                    state (peer/->Request 0 0 16384)))))))
+                    state (peer/->Request 0 0 16384))))
+      (is (= state (peer-connection/on-message
+                    state (peer/->Piece 0 0 (byte-array [1 2 3])))))
+      (is (= state (peer-connection/on-message
+                    state (peer/->Cancel 0 0 16384)))))))
 
 (deftest request-gate-test
   (testing "a fresh connection may not request; an unchoked one may"
@@ -69,7 +79,12 @@
       (is (false? (peer-connection/can-request? fresh)))
       (is (true? (-> fresh
                      (peer-connection/on-message (peer/->Unchoke))
-                     (peer-connection/can-request?)))))))
+                     (peer-connection/can-request?))))))
+  (testing "an unchoked but uninterested connection still may not request"
+    (let [state (-> (peer-connection/initial-state 4)
+                    (peer-connection/on-message (peer/->Unchoke))
+                    (peer-state/set-am-interested false))]
+      (is (false? (peer-connection/can-request? state))))))
 
 (deftest connect-test
   (testing "matching handshake connects: ready posture, Interested sent"
@@ -94,13 +109,31 @@
                                                           :peer-id (test-peer-id)}}})
           result (peer-connection/connect net (test-info-hash) (test-peer-id)
                                           "127.0.0.1:6881" 4)]
-      (is (= :info-hash-mismatch (:error result)))))
+      (is (= :info-hash-mismatch (:error result)))
+      (let [closed (mock-net/closed-peers net)]
+        (is (= 1 (count closed)) "the refused peer was closed, not leaked")
+        (is (= "127.0.0.1:6881" (:address (first closed)))))))
   (testing "a failed handshake read surfaces the port error"
     (let [net (mock-net/create {:handshake-response {:error :timeout
                                                      :message "Handshake read timed out"}})
           result (peer-connection/connect net (test-info-hash) (test-peer-id)
                                           "127.0.0.1:6881" 4)]
-      (is (= :timeout (:error result)))))
+      (is (= :timeout (:error result)))
+      (let [closed (mock-net/closed-peers net)]
+        (is (= 1 (count closed)) "the failed peer was closed, not leaked")
+        (is (= "127.0.0.1:6881" (:address (first closed)))))))
+  (testing "a throwing send closes the peer and returns data, never throws"
+    (let [info-hash (test-info-hash)
+          net (mock-net/create {:handshake-response {:ok {:info-hash info-hash
+                                                          :peer-id (test-peer-id)}}
+                                :on-send (fn [_peer _message] (throw (ex-info "send boom" {})))})
+          result (peer-connection/connect net info-hash (test-peer-id)
+                                          "127.0.0.1:6881" 4)]
+      (is (= :handshake-failed (:error result)))
+      (is (= "send boom" (:message result)))
+      (let [closed (mock-net/closed-peers net)]
+        (is (= 1 (count closed)))
+        (is (= "127.0.0.1:6881" (:address (first closed)))))))
   (testing "a refused dial surfaces the port error before any handshake"
     (let [net (mock-net/create {:connect-response {:error :connect-failed
                                                    :message "connection refused"}})
@@ -142,16 +175,18 @@
       (is (= :not-requestable (:error result)))))
   (testing "an unchoked connection yields per-block request bytes"
     (let [ready (peer-connection/on-message
-                 (peer-connection/initial-state 4) (peer/->Unchoke))
-          blocks [{:piece-index 0 :offset 0 :length 16384}
-                  {:piece-index 0 :offset 16384 :length 16384}]
-          result (peer-connection/block-requests ready blocks)]
-      (is (= 2 (count (:ok result))))
-      (let [first-message (:ok (peer/parse-message (first (:ok result))))]
-        (is (instance? dev.cljtoc.protocol.peer.Request first-message))
-        (is (= 0 (:piece-index first-message)))
-        (is (= 0 (:begin first-message)))
-        (is (= 16384 (:length first-message))))))
+                 (peer-connection/initial-state 4) (peer/->Unchoke))]
+      (is (= {:ok []} (peer-connection/block-requests ready []))
+          "no blocks is a vacuous success, not an error")
+      (let [blocks [{:piece-index 0 :offset 0 :length 16384}
+                    {:piece-index 0 :offset 16384 :length 16384}]
+            result (peer-connection/block-requests ready blocks)]
+        (is (= 2 (count (:ok result))))
+        (let [first-message (:ok (peer/parse-message (first (:ok result))))]
+          (is (instance? dev.cljtoc.protocol.peer.Request first-message))
+          (is (= 0 (:piece-index first-message)))
+          (is (= 0 (:begin first-message)))
+          (is (= 16384 (:length first-message)))))))
   (testing "one poisoned block fails the whole request, nothing after it builds"
     (doseq [poisoned [[{:piece-index 0 :offset 0 :length 16384}
                        {:piece-index -1 :offset 0 :length 16384}
