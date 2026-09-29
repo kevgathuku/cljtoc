@@ -118,17 +118,17 @@
       (is (nil? (peer-connection/close net peer-data)))
       (is (contains? (mock-net/closed-peers net) peer-data)))))
 
-(deftest request-test
+(deftest block-requests-test
   (testing "a choked connection refuses block traffic"
-    (let [result (peer-connection/request (peer-connection/initial-state 4)
-                                          [{:piece-index 0 :offset 0 :length 16384}])]
+    (let [result (peer-connection/block-requests (peer-connection/initial-state 4)
+                                                 [{:piece-index 0 :offset 0 :length 16384}])]
       (is (= :not-requestable (:error result)))))
   (testing "an unchoked connection yields per-block request bytes"
     (let [ready (peer-connection/on-message
                  (peer-connection/initial-state 4) (peer/->Unchoke))
           blocks [{:piece-index 0 :offset 0 :length 16384}
                   {:piece-index 0 :offset 16384 :length 16384}]
-          result (peer-connection/request ready blocks)]
+          result (peer-connection/block-requests ready blocks)]
       (is (= 2 (count (:ok result))))
       (let [first-message (:ok (peer/parse-message (first (:ok result))))]
         (is (instance? dev.cljtoc.protocol.peer.Request first-message))
@@ -142,7 +142,7 @@
                       [{:piece-index 0 :offset 0 :length 20000}]]]
       (let [ready (peer-connection/on-message
                    (peer-connection/initial-state 4) (peer/->Unchoke))
-            result (peer-connection/request ready poisoned)]
+            result (peer-connection/block-requests ready poisoned)]
         (is (= :invalid-input (:error result))
             (str "poisoned blocks rejected: " (pr-str poisoned)))))))
 

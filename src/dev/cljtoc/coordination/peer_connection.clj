@@ -3,8 +3,8 @@
    posture, and block traffic behind a single seam.
 
    Parsing, posture transitions, and verification live inside; callers
-   see only connect, on-message, request (block-request bytes), and
-   close. The transport is an INetworkPort: the real socket port in
+   see only connect, on-message, block-requests, and close.
+   The transport is an INetworkPort: the real socket port in
    production, the in-memory mock in tests, so connections open with
    no network at all.
 
@@ -94,10 +94,26 @@
                 {:ok {:peer-data peer-data
                       :peer-state (initial-state total-pieces)}}))))))))
 
+;; connect/close ride the INetworkPort seam, so stest/check cannot
+;; conjure their port argument (same exclusion the fdef gate records
+;; for every effect-port fn); example tests through MockNetworkPort
+;; pin them instead.
+(s/fdef connect
+  :args (s/cat :network-port any?
+               :info-hash bytes?
+               :our-peer-id bytes?
+               :address string?
+               :total-pieces pos-int?)
+  :ret map?)
+
 (defn close
   "Release a connected peer through the port. Returns nil."
   [network-port peer-data]
   (network/close-peer network-port peer-data))
+
+(s/fdef close
+  :args (s/cat :network-port any? :peer-data map?)
+  :ret nil?)
 
 (defn can-request?
   "True when the connection may carry block traffic: the peer has
@@ -112,7 +128,7 @@
           (boolean (and (not (-> % :args :connection-state :peer-choking))
                         (-> % :args :connection-state :am-interested)))))
 
-(defn request
+(defn block-requests
   "Block-request bytes for a piece's blocks over this connection.
    Pure: gates on posture, then builds one Request message per block.
    blocks are {:piece-index _ :offset _ :length _} maps as produced by
@@ -133,3 +149,11 @@
                     {:ok (conj (:ok acc) (:ok built))}))))
             {:ok []}
             blocks)))
+
+;; block-requests takes a PeerState (BitSet inside: un-generatable,
+;; recorded at the generative pin in peer-connection-test), so
+;; stest/check cannot run this fdef; the mutation tests pin it instead.
+(s/fdef block-requests
+  :args (s/cat :connection-state :dev.cljtoc.protocol.peer-state/peer-state
+               :blocks (s/coll-of map?))
+  :ret map?)

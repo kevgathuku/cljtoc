@@ -3,8 +3,7 @@
   (:require [clojure.test :refer :all]
             [clojure.core.async :as async]
             [dev.cljtoc.coordination.peer-worker :as peer-worker]
-            [dev.cljtoc.test-doubles.network :as mock-net]
-            [dev.cljtoc.test-utils :as test-utils]))
+            [dev.cljtoc.test-doubles.network :as mock-net]))
 
 (defn- take-timeout
   [ch timeout-ms]
@@ -21,19 +20,6 @@
   []
   (byte-array (repeat 20 (byte 2))))
 
-(deftest verify-handshake-test
-  (testing "matching info-hash returns {:ok peer-handshake}"
-    (let [info-hash (test-info-hash)
-          peer-hs {:info-hash info-hash :peer-id (test-peer-id)}]
-      (is (= {:ok peer-hs}
-             (peer-worker/verify-handshake info-hash peer-hs)))))
-  (testing "mismatched info-hash returns {:error :info-hash-mismatch}"
-    (let [result (peer-worker/verify-handshake
-                  (test-info-hash)
-                  {:info-hash (byte-array (repeat 20 (byte 9)))
-                   :peer-id (test-peer-id)})]
-      (is (= :info-hash-mismatch (:error result))))))
-
 (deftest worker-logs-through-adapter-config-test
   (testing "run-peer logs its start through the port's :log-fn"
     (let [logged (atom [])
@@ -48,13 +34,8 @@
         (is (= 1 (count @logged)))
         (is (re-find #"127.0.0.1:6881" (first @logged)))))))
 
-(deftest fdef-specs-hold-generatively-test
-  (testing "verify-handshake fdef holds over generated inputs"
-    (let [failures (test-utils/check-fdefs
-                    '[dev.cljtoc.coordination.peer-worker/verify-handshake]
-                    50)]
-      (is (empty? failures)
-          (str "fdef check failures: " (pr-str failures))))))
+;; verify-handshake moved to the peer-connection seam (issue #64); its
+;; generative pin lives in peer-connection-test now.
 
 (deftest worker-survives-throwing-port-test
   (testing "a port that throws mid-connect still emits :peer-disconnected and exits"

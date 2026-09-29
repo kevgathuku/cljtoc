@@ -7,25 +7,8 @@
 
    Uses async/thread for blocking socket reads."
   (:require [clojure.core.async :as async]
-            [clojure.spec.alpha :as s]
             [dev.cljtoc.coordination.peer-connection :as peer-connection]
             [dev.cljtoc.ports.network :as net]))
-
-(s/def ::info-hash bytes?)
-(s/def ::peer-handshake (s/keys :req-un [::info-hash]))
-
-(defn verify-handshake
-  "Pure handshake verification: check the peer's handshake info-hash
-   matches ours.
-   Returns {:ok peer-handshake} or {:error :info-hash-mismatch}.
-   Forwarded to the peer-connection seam (issue #64), which owns
-   verification; kept here so existing callers keep working."
-  [info-hash peer-handshake]
-  (peer-connection/verify-handshake info-hash peer-handshake))
-
-(s/fdef verify-handshake
-  :args (s/cat :info-hash ::info-hash :peer-handshake ::peer-handshake)
-  :ret map?)
 
 (defn run-peer
   "Connect to peer, perform handshake, then enter read loop.
