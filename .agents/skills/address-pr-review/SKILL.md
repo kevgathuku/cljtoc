@@ -24,7 +24,7 @@ For every finding, open the cited file:line and reproduce the claim. Trace surro
 One finding, one vertical slice: red test first, minimal green, then the next finding. Cover each fix in both directions: the red test proving the finding plus at least one test per failure envelope the touched code documents. Full suite (`lein test`) and lint (`clj-kondo --lint src test`, touched files clean) before moving on. Before committing, run `cljfmt fix` on the changed files and re-verify with `cljfmt check`. Two cautions earned the hard way:
 
 - Hang-shaped bugs (deadlocks, blocked channels): run the red test under `timeout`, or the loop never returns.
-- Delimiter repair tools can vandalize the file (closing the wrong scope while "balancing"). If the compiler disagrees with a repair, revert the file, re-apply the edit cleanly, and trust the compiler.
+- Unbalanced delimiters go to `clj-paren-repair` first, before any hand fix (AGENTS.md Clojure Parenthesis Repair). Delimiter repair tools can still vandalize the file (closing the wrong scope while "balancing"). If the compiler disagrees with a repair, revert the file, re-apply the edit cleanly, and trust the compiler.
 
 ## 4. Reply to each thread
 

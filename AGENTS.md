@@ -101,7 +101,7 @@ The port changes on every restart — always use the announced or discovered por
 
 When delimiters go unbalanced, in order:
 
-1. First try `clj-paren-repair <files>` (also runs cljfmt).
+1. Run `clj-paren-repair <files>` before anything else — before counting parens by eye, before hand-editing delimiters, before reverting (it also runs cljfmt).
 2. If the compiler still disagrees, the repair likely closed the wrong scope (symptom: `recur` tail-position errors far from the real gap) — revert the file (`git checkout -- <file>`) and re-apply the edits one at a time.
 3. After each edit, run a paren-depth scan and `clj-kondo --lint <file>`: kondo pinpoints the exact unclosed opener (`Found an opening ( with no matching )`). Counting closers by eye is unreliable — one extra `)` early silently shifts every scope below it.
 4. The compiler is the final arbiter: full `lein test` green means the structure is right.
