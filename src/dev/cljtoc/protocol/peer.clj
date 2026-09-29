@@ -459,7 +459,7 @@
                 _ (System/arraycopy b offset message-bytes 0 full-message-len)
                 parse-result (parse-message message-bytes)]
             (if (:ok parse-result)
-              (recur (+ offset full-message-len) (conj messages (:ok parse-result)))
+              (recur (long (+ offset full-message-len)) (conj messages (:ok parse-result)))
               parse-result)) ;; Propagate error
           {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))})) ;; Incomplete message
       {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))}))) ;; No full message or too short for length prefix

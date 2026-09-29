@@ -377,7 +377,7 @@
                       (persistent! acc)
                       (let [{file-path :path file-length :length} (first remaining)]
                         (recur (rest remaining)
-                               (+ file-start file-length)
+                               (long (+ file-start file-length))
                                (if (pos? file-length)
                                  (conj! acc {:path file-path
                                              :length file-length

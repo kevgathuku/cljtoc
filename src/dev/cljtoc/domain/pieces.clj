@@ -428,7 +428,7 @@
                            (if (>= offset piece-length)
                              (persistent! acc)
                              (let [blk-len (min block-size (- piece-length offset))]
-                               (recur (+ offset blk-len)
+                               (recur (long (+ offset blk-len))
                                       (conj! acc (->Block piece-index offset blk-len))))))]
         {:ok blocks}))))
 

@@ -142,7 +142,7 @@
             (if (map? result)
               result
               (let [[val next-pos] result]
-                (recur next-pos (conj! items val))))))))))
+                (recur (long next-pos) (conj! items val))))))))))
 
 (defn- decode-dict [^bytes bs ^long pos]
   (let [len (alength bs)
@@ -165,7 +165,7 @@
                     (if (map? val-result)
                       val-result
                       (let [[val val-next] val-result]
-                        (recur val-next (conj! entries [key-str val]))))))))))))))
+                        (recur (long val-next) (conj! entries [key-str val]))))))))))))))
 
 (defn- decode-value [^bytes bs ^long pos]
   (let [len (alength bs)]
@@ -365,7 +365,7 @@
                       (if (map? val-result)
                         val-result
                         (let [[_ val-end] val-result]
-                          (recur val-end))))))))))))))
+                          (recur (long val-end)))))))))))))))
 
 (s/fdef find-dict-value-span
   :args (s/cat :bs bytes? :key-str string?)
