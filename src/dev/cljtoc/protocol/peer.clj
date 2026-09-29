@@ -684,26 +684,9 @@
           build-result)) ;; Propagate error
       {:ok (apply concat-bytes acc-bytes)})))
 
-;; ============================================================================
-;; Spec Generators for Testing
-;; ============================================================================
-;; gen-byte-array lives in dev.cljtoc.utils now (single-sourced shared
-;; helper); only the protocol's own sized specs stay here.
-
-(s/def ::gen-byte-array-20
-  (utils/gen-byte-array 20))
-
-(s/def ::gen-byte-array-8
-  (utils/gen-byte-array 8))
-
-;; Utility function to check if a byte array equals a sequence
-(defn bytes-eq?
-  "Compare byte array to a sequence of bytes."
-  [^bytes b seq-bytes]
-  (and (= (count b) (count seq-bytes))
-       (every? true? (map = b seq-bytes))))
-
-;; ============================================================================
+;; NOTE: byte-array generation lives in dev.cljtoc.utils
+;; (utils/gen-byte-array for direct draws, with-gen on ::byte-array-20
+;; for spec-integrated ones).
 ;; Function Specs
 ;; ============================================================================
 
