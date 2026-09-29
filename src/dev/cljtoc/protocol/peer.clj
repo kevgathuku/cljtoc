@@ -56,8 +56,7 @@
 
 ;; Sized byte arrays and wire integers live in dev.cljtoc.utils now —
 ;; the byte utilities carry their contracts with them. The composites
-;; below compose on utils' specs (::uint32/::uint16 stay: zero
-;; references repo-wide, left for a dedicated dead-spec pass).
+;; below compose on utils' specs.
 
 ;; Protocol string spec
 (s/def ::protocol-string

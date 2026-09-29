@@ -45,9 +45,6 @@
   (s/with-gen (s/and bytes? #(= 20 (count %)))
     #(gen-byte-array 20)))
 
-(s/def ::byte-array-68
-  (s/and bytes? #(= 68 (count %))))
-
 (s/def ::int32
   (s/int-in -2147483648 2147483648))
 
