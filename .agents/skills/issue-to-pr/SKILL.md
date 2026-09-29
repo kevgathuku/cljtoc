@@ -65,6 +65,7 @@ Stage only intended files, commit with a message describing what changed and why
 - Title naming the change.
 - `Closes #<number>.` as the first body line.
 - Validation / Changes / Verification sections: what was confirmed, what changed, and the test counts.
+- Write the commit message, title, and body in the repo Writing voice and tone (`AGENTS.md`): second person, active voice, sentence-case title, descriptive link text.
 
 Return the PR URL.
 

@@ -28,7 +28,7 @@ One finding, one vertical slice: red test first, minimal green, then the next fi
 
 ## 4. Reply to each thread
 
-POST one reply per thread (`in_reply_to` comment id): confirmed → what changed, the covering test, the commit SHA; false positive → the proof, evidence only; partial → what was accepted and what was declined, with why.
+POST one reply per thread (`in_reply_to` comment id): confirmed → what changed, the covering test, the commit SHA; false positive → the proof, evidence only; partial → what was accepted and what was declined, with why. Write each reply in the repo Writing voice and tone (`AGENTS.md`): second person, active voice, conversational and respectful.
 
 ## 5. Push
 

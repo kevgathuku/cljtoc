@@ -36,6 +36,18 @@ Prefer human-readable names everywhere. Avoid single-letter variables;
 use full words that say what the value is (`address-str` not `s`,
 `host` / `port-str` not `h` / `p`, `colon-index` not `i`).
 
+## Writing voice and tone
+
+Follow the Google developer documentation style guide (https://developers.google.com/style) for all human-readable writing: specs, ADRs, CONTEXT.md, READMEs, code comments and docstrings, commit messages, and PR comments.
+
+- Write to the reader in second person with active voice and a clear actor: you run, you configure, the peer sends.
+- Keep a conversational, friendly, respectful tone without slang, jargon, or culturally specific references; write for a global audience.
+- Put conditions before instructions: if X holds, do Y.
+- Use sentence case for titles and headings; numbered lists for sequences and bulleted lists for unordered sets, with parallel structure.
+- Format code spans in backticks and write descriptive link text; spell out each acronym on first use.
+- Write inclusively with gender-neutral, accessible language; add alt text for images in docs and READMEs.
+- Commit messages carry the voice subset only: imperative second-person subject (`Add X`), concise body explaining why.
+
 ## Project Overview
 
 A BitTorrent client in Clojure implementing crash-only design with OTP-style supervision, pure domain logic, and explicit effect boundaries. Uses core.async for concurrency.
