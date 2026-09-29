@@ -166,7 +166,29 @@
           peer-id (make-random-bytes 21)
           result (peer/build-handshake info-hash peer-id)]
       (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-input (:error result)))))
+
+  (testing "Invalid reserved length returns error"
+    (let [result (peer/build-handshake (make-random-bytes 20)
+                                       (make-random-bytes 20)
+                                       (make-random-bytes 7))]
+      (is (some? (:error result)) "Should have error key")
       (is (= :invalid-input (:error result))))))
+
+(deftest validate-handshake-fields-test
+  (testing "Wrong protocol string returns :invalid-input without throwing"
+    (let [result (peer/validate-handshake-fields "Wrong protocol"
+                                                 (byte-array 8)
+                                                 (byte-array 20)
+                                                 (byte-array 20))]
+      (is (= :invalid-input (:error result)))))
+  (testing "Valid fields return the handshake record"
+    (let [result (peer/validate-handshake-fields "BitTorrent protocol"
+                                                 (byte-array 8)
+                                                 (byte-array 20)
+                                                 (byte-array 20))]
+      (is (some? (:ok result)))
+      (is (= "BitTorrent protocol" (:protocol (:ok result)))))))
 
 ;; ============================================================================
 ;; Peer Message Parsing Tests
@@ -324,6 +346,14 @@
       (is (instance? dev.cljtoc.protocol.peer.Choke (first (:ok result))))
       (is (= (count incomplete-msg-bytes) (count (:remaining result)))))))
 
+(deftest parse-messages-error-test
+  (testing "An invalid message mid-stream fails the batch, not a partial ok"
+    (let [good-message (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 0)]))
+          bad-message (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 99)]))
+          result (peer/parse-messages (utils/concat-bytes good-message bad-message))]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :unknown-message-type (:error result))))))
+
 (deftest parse-messages-only-incomplete-test
   (testing "`parse-messages` returns only remaining bytes if first message is incomplete"
     (let [incomplete-msg-bytes (utils/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
@@ -447,6 +477,21 @@
             (str "Should return error for " n " bytes"))
         (is (= :incomplete-message (:error result))
             (str "Error should be :incomplete-message for " n " bytes"))))))
+
+(deftest build-message-unknown-type-test
+  (testing "Unknown record type returns :unknown-message-type error"
+    (let [result (peer/build-message {:type :bogus})]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :unknown-message-type (:error result)))))
+  (testing "nil message returns :unknown-message-type, never throws"
+    (let [result (peer/build-message nil)]
+      (is (= :unknown-message-type (:error result))))))
+
+(deftest build-messages-error-test
+  (testing "An unbuildable record fails the whole batch"
+    (let [result (peer/build-messages [(peer/->Choke) {:type :bogus} (peer/->Unchoke)])]
+      (is (some? (:error result)) "Should return error key")
+      (is (= :unknown-message-type (:error result))))))
 
 ;; ============================================================================
 ;; Invariant Property Tests (T090)
