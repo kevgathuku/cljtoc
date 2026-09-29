@@ -280,6 +280,27 @@
       (is (some? (:error result)) "Should return error key")
       (is (= :incomplete-message (:error result))))))
 
+(deftest parse-message-malformed-payload-test
+  (testing "Zero-length message types reject nonzero payloads with :invalid-message"
+    (doseq [[id type-name] [[0 "Choke"] [1 "Unchoke"] [2 "Interested"] [3 "NotInterested"]]]
+      (let [message-bytes (utils/concat-bytes (utils/int32-to-bytes 2) ; id + 1 payload byte
+                                              (byte-array [(unchecked-byte id) 0x00]))
+            result (peer/parse-message message-bytes)]
+        (is (some? (:error result)) (str type-name " should return error key"))
+        (is (= :invalid-message (:error result)) (str type-name " should be :invalid-message")))))
+  (testing "Fixed-size messages reject short payloads with :incomplete-message"
+    (doseq [{:keys [id payload-len type-name]} [{:id 4 :payload-len 2 :type-name "Have"}
+                                                {:id 5 :payload-len 0 :type-name "Bitfield"}
+                                                {:id 6 :payload-len 4 :type-name "Request"}
+                                                {:id 7 :payload-len 4 :type-name "Piece"}
+                                                {:id 8 :payload-len 4 :type-name "Cancel"}]]
+      (let [message-bytes (utils/concat-bytes (utils/int32-to-bytes (inc payload-len))
+                                              (byte-array (cons (unchecked-byte id)
+                                                                (repeat payload-len 0x00))))
+            result (peer/parse-message message-bytes)]
+        (is (some? (:error result)) (str type-name " should return error key"))
+        (is (= :incomplete-message (:error result)) (str type-name " should be :incomplete-message"))))))
+
 (deftest parse-messages-test
   (testing "`parse-messages` handles multiple complete messages"
     (let [msg1-bytes (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
