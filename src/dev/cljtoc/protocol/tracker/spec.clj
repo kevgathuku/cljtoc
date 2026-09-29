@@ -67,7 +67,9 @@
     (constantly gen-ipv4-address)))
 
 (s/def ::event
-  #{:started :completed :stopped nil})
+  ;; nil means none (BEP 15 event 0): a set would read as a predicate
+  ;; here, and a set containing nil never matches nil, so nilable it is.
+  (s/nilable #{:started :completed :stopped}))
 
 (s/def ::protocol
   #{:http :udp})

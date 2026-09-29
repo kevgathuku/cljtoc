@@ -21,7 +21,11 @@
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.test-doubles.network :as mock-network])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream
-            InputStream OutputStream]))
+            InputStream OutputStream]
+           [java.net DatagramPacket DatagramSocket InetAddress
+            SocketException SocketTimeoutException]
+           [java.nio ByteBuffer]
+           [java.util Arrays]))
 
 (def ^:private valid-handshake-bytes
   (:ok (peer/build-handshake (byte-array 20) (byte-array 20))))
@@ -455,3 +459,105 @@
         (is (= {:ok #{"127.0.0.1:6881"}}
                (network/announce-to-url
                 (network-impl/create) url (valid-announce-request))))))))
+
+(def ^:private udp-protocol-magic
+  "BEP 15 connect magic, spelled out here rather than read from the
+   builder: the double is an independent oracle, so a shared wrong
+   constant must not make both sides agree."
+  0x41727101980)
+
+(def ^:private udp-test-connection-id 123456789)
+
+(defn- answer-udp-double
+  "The double's whole protocol. A 16-byte connect (magic + action 0)
+   yields a 16-byte connect response stamping a fixed connection id; a
+   98-byte announce (action 1 + that connection id) yields interval plus
+   one compact peer. Both echo the request's transaction id, like a real
+   tracker. Anything else throws with the offending bytes described."
+  [^bytes data]
+  (let [in (ByteBuffer/wrap data)]
+    (cond
+      (= 16 (alength data))
+      (let [magic (.getLong in 0)
+            action (.getInt in 8)
+            txn-id (.getInt in 12)]
+        (when (or (not= udp-protocol-magic magic) (not= 0 action))
+          (throw (ex-info "double: not a BEP 15 connect"
+                          {:magic magic :action action})))
+        (let [out (ByteBuffer/allocate 16)]
+          (.putInt out 0)
+          (.putInt out txn-id)
+          (.putLong out udp-test-connection-id)
+          (.array out)))
+
+      (= 98 (alength data))
+      (let [conn-id (.getLong in 0)
+            action (.getInt in 8)
+            txn-id (.getInt in 12)]
+        (when (or (not= udp-test-connection-id conn-id) (not= 1 action))
+          (throw (ex-info "double: not a BEP 15 announce for this connection"
+                          {:connection-id conn-id :action action})))
+        (let [out (ByteBuffer/allocate 26)]
+          (.putInt out 1)
+          (.putInt out txn-id)
+          (.putInt out 1800)
+          (.putInt out 0)
+          (.putInt out 0)
+          (.put out (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)]))
+          (.array out)))
+
+      :else
+      (throw (ex-info "double: unexpected datagram length"
+                      {:length (alength data)})))))
+
+(defn- with-loopback-udp-tracker
+  "Run run-with-url against a loopback UDP tracker double (see answer-udp-double),
+   answering exactly the connect + announce datagrams at an ephemeral
+   port. Returns {:result (run-with-url's value) :responder-error (the double's
+   failure, if any)}. Generous timeouts bound both sides without making
+   the suite wait on them: the double answers in microseconds, so any
+   wait past them is scheduler stall, and a stuck exchange still fails
+   the assertion instead of hanging the suite."
+  [run-with-url]
+  (let [socket (doto (DatagramSocket. 0 (InetAddress/getByName "127.0.0.1"))
+                 (.setSoTimeout 30000))
+        errors (atom nil)
+        responder (future
+                    (try
+                      (dotimes [_ 2]
+                        (let [buf (byte-array 65536)
+                              pkt (DatagramPacket. buf (alength buf))]
+                          (.receive socket pkt)
+                          (let [data (Arrays/copyOf buf (.getLength pkt))
+                                from (.getSocketAddress pkt)
+                                reply (answer-udp-double data)]
+                            (.send socket (DatagramPacket. reply (alength reply) from)))))
+                      (catch SocketTimeoutException timeout
+                        (reset! errors timeout))
+                      (catch SocketException closed
+                        (reset! errors closed))
+                      (catch Exception protocol-error
+                        (reset! errors protocol-error))))]
+    (try
+      (let [result (run-with-url (str "udp://127.0.0.1:" (.getLocalPort socket) "/announce"))]
+        (deref responder 30000 ::stuck)
+        {:result result :responder-error @errors})
+      (finally
+        (future-cancel responder)
+        (.close socket)))))
+
+(deftest udp-loopback-announce-returns-double-peer-test
+  (testing "connect + announce through the real port code returns the double's peer"
+    (let [{:keys [result responder-error]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; Generous per-attempt timeout: the double
+                              ;; answers in microseconds, so this only
+                              ;; absorbs scheduler stalls, never slowness.
+                              (network-impl/create {:udp-timeout-ms 15000})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out)))]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
