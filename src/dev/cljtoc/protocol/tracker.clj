@@ -84,7 +84,8 @@
 (s/fdef url-encode-binary
   :args (s/cat :data bytes?)
   :ret string?
-  :fn #(let [input-len (alength (-> % :args :data))
+  :fn #(let [data-bytes ^bytes (:data (:args %))
+             input-len (alength data-bytes)
              output (-> % :ret)]
          ;; Output should never be longer than input * 3 (each byte -> %XX)
          (<= (count output) (* input-len 3))))
@@ -107,7 +108,7 @@
 (s/fdef validate-input
   :args (s/cat :spec-key any? :data any?)
   :ret  (s/nilable (s/keys :req-un [::spec/error ::spec/message]))
-  :fn   #(if (s/valid? (-> % :args :spec-key) (-> % :args :data))
+  :fn   #(if (s/valid? (-> % :args :spec-key) (:data (:args %)))
            (nil? (:ret %))
            (some? (:ret %))))
 
@@ -152,8 +153,9 @@
              :error ::spec/error-result)
   :fn (s/or
         ;; If successful, peer count should match input length / 6
-       :success #(let [input-len (alength (-> % :args :peers-bytes))
-                       peers (-> % :ret second :ok)]
+       :success #(let [peers-bytes ^bytes (:peers-bytes (:args %))
+                       input-len (alength peers-bytes)
+                       peers (:ok (second (:ret %)))]
                    (or (not= :success (first (:ret %)))
                        (= (count peers) (/ input-len 6))))
        :error #(= :error (first (:ret %)))))
@@ -195,8 +197,9 @@
              :error ::spec/error-result)
   :fn (s/or
         ;; If successful, peer count should match input length / 18
-       :success #(let [input-len (alength (-> % :args :peers-bytes))
-                       peers (-> % :ret second :ok)]
+       :success #(let [peers-bytes ^bytes (:peers-bytes (:args %))
+                       input-len (alength peers-bytes)
+                       peers (:ok (second (:ret %)))]
                    (or (not= :success (first (:ret %)))
                        (= (count peers) (/ input-len 18))))
        :error #(= :error (first (:ret %)))))
@@ -251,7 +254,7 @@
   :fn (s/or
         ;; If successful, peer list should match input list length
        :success #(let [input-count (count (-> % :args :peers-list))
-                       peers (-> % :ret second :ok)]
+                       peers (:ok (second (:ret %)))]
                    (or (not= :success (first (:ret %)))
                        (= (count peers) input-count)))
        :error #(= :error (first (:ret %)))))
@@ -335,7 +338,7 @@
              :error ::spec/error-result)
   :fn (s/or
         ;; If successful, result should be a valid tracker response
-       :success #(let [response (-> % :ret second :ok)]
+       :success #(let [response (:ok (second (:ret %)))]
                    (or (not= :success (first (:ret %)))
                        (and (contains? response :success)
                             (contains? response :protocol)
@@ -379,7 +382,7 @@
 
   Returns:
     {:ok url-string} or {:error ...}"
-  [tracker-url request]
+  [^String tracker-url request]
   ;; T050: Input validation
   (if-let [validation-error (validate-input ::spec/tracker-request request)]
     validation-error
@@ -431,8 +434,8 @@
              :error ::spec/error-result)
   :fn (s/or
         ;; If successful, URL should start with the tracker-url base
-       :success #(let [tracker-url (-> % :args :tracker-url)
-                       result-url (-> % :ret second :ok)]
+       :success #(let [tracker-url ^String (:tracker-url (:args %))
+                       result-url ^String (:ok (second (:ret %)))]
                    (or (not= :success (first (:ret %)))
                        (.startsWith result-url tracker-url)))
         ;; If error, return value should match error pattern
@@ -670,7 +673,8 @@
   :ret (s/or :success (s/keys :req-un [::spec/ok])
              :error ::spec/error-result)
   :fn (s/or
-       :success #(= 16 (alength ^bytes (-> % :ret second :ok)))
+       :success #(= 16 (let [resp-bytes ^bytes (:ok (second (:ret %)))]
+                         (alength resp-bytes)))
        :error   #(= :error (first (:ret %)))))
 
 (defn build-udp-announce-request
@@ -722,7 +726,8 @@
   :ret (s/or :success (s/keys :req-un [::spec/ok])
              :error ::spec/error-result)
   :fn (s/or
-       :success #(= 98 (alength ^bytes (-> % :ret second :ok)))
+       :success #(= 98 (let [resp-bytes ^bytes (:ok (second (:ret %)))]
+                         (alength resp-bytes)))
        :error   #(= :error (first (:ret %)))))
 
 (defn build-udp-scrape-request
@@ -756,10 +761,11 @@
   :ret (s/or :success (s/keys :req-un [::spec/ok])
              :error ::spec/error-result)
   :fn (s/or
-       :success #(let [req (-> % :args :request)
-                       n   (count (:info-hashes req))]
+       :success #(let [req (:request (:args %))
+                       n   (count (:info-hashes req))
+                       resp-bytes ^bytes (:ok (second (:ret %)))]
                    (= (+ 16 (* 20 n))
-                      (alength ^bytes (-> % :ret second :ok))))
+                      (alength resp-bytes)))
        :error   #(= :error (first (:ret %)))))
 
 ;; ---------------------------------------------------------------------------

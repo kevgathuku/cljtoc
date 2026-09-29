@@ -53,8 +53,8 @@
 (s/fdef compute-info-hash
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
-  :fn #(or (and (bytes? (-> % :ret :ok))
-                (= 20 (alength ^bytes (-> % :ret :ok))))
+  :fn #(or (and (bytes? (:ok (:ret %)))
+                (= 20 (let [digested ^bytes (:ok (:ret %))] (alength digested))))
            (keyword? (-> % :ret :error))))
 
 ;; ---------------------------------------------------------------------------

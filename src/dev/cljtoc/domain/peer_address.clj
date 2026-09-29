@@ -5,6 +5,10 @@
    instead of re-splitting strings at every call site."
   (:require [clojure.string :as str]))
 
+;; Peer addresses parse from strings here; fail the compile on reflective
+;; calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (def default-port 6881)
 
 (defn- parse-port-num
@@ -51,7 +55,7 @@
    Accepts \"host:port\", bare \"host\" (default port 6881),
    \"[v6-host]:port\", and bare IPv6 (default port).
    Returns {:error ...} instead of throwing on bad input."
-  [address-str]
+  [^String address-str]
   (if (or (nil? address-str) (str/blank? address-str))
     {:error :invalid-address :message (str "blank peer address: " (pr-str address-str))}
     (if (str/starts-with? address-str "[")

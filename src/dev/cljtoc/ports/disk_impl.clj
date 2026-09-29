@@ -22,7 +22,7 @@
    separator is appended only when missing: a canonical dir that is itself the
    filesystem root already ends in one, and doubling it yields \"//\", which
    no canonical child can start with — every write refused as :unsafe-path."
-  [canonical-dir]
+  [^String canonical-dir]
   (if (.endsWith canonical-dir File/separator)
     canonical-dir
     (str canonical-dir File/separator)))
@@ -56,7 +56,7 @@
 
 (defn- contained?
   "True when out-file resolves inside the canonical output dir."
-  [canonical-dir out-file]
+  [^String canonical-dir ^File out-file]
   (.startsWith (.getCanonicalPath out-file) (containment-prefix canonical-dir)))
 
 (defn- resolve-contained
@@ -67,7 +67,7 @@
    have created that directory out there. Returns {:ok File} or
    {:error :unsafe-path ...}."
   [output-dir file-path]
-  (let [out-file (apply io/file output-dir file-path)
+  (let [^File out-file (apply io/file output-dir file-path)
         canonical-dir (.getCanonicalPath (io/file output-dir))
         escape (fn [] {:error :unsafe-path
                        :message (str "Output path escapes " output-dir ": " (pr-str file-path))})]
@@ -92,8 +92,8 @@
   (try
     (when (.exists ^File out-file)
       (let [path (.toPath ^File out-file)
-            key (-> (Files/readAttributes path BasicFileAttributes
-                                          (into-array LinkOption []))
+            key (-> (Files/readAttributes ^java.nio.file.Path path ^Class BasicFileAttributes
+                                          ^"[Ljava.nio.file.LinkOption;" (into-array LinkOption []))
                     (.fileKey))]
         (when (some? key)
           [(.name (Files/getFileStore path)) key])))
@@ -305,7 +305,7 @@
     ;; keeps each path's spans in span order.
     (let [spans-by-path (group-by :path spans)]
       (doseq [declared-path touched]
-        (let [out-file (get-in live [declared-path :file])]
+        (let [^File out-file (get-in live [declared-path :file])]
           (with-open [raf (RandomAccessFile. out-file "rw")]
             (.setLength raf (get sizes declared-path))
             (doseq [{file-offset :file-offset
@@ -430,7 +430,7 @@
       layout-result
       (try
         (doseq [[declared-path file-spans] touched]
-          (let [out-file (get (:ok layout-result) declared-path)]
+          (let [^File out-file (get (:ok layout-result) declared-path)]
             (with-open [raf (RandomAccessFile. out-file "rw")]
               (.setLength raf (get sizes declared-path))
               (doseq [{file-offset :file-offset
@@ -456,7 +456,7 @@
       layout-result
       (try
         (doseq [[declared-path declared-length] sizes]
-          (with-open [raf (RandomAccessFile. (get (:ok layout-result) declared-path) "rw")]
+          (with-open [raf (RandomAccessFile. ^File (get (:ok layout-result) declared-path) "rw")]
             (.setLength raf declared-length)))
         {:ok :initialized}
         (catch Exception error
@@ -486,7 +486,7 @@
       (if (:error file-result)
         file-result
         (try
-          (let [piece-file (:ok file-result)]
+          (let [^File piece-file (:ok file-result)]
             (if (.exists piece-file)
               {:ok (Files/readAllBytes (.toPath piece-file))}
               {:ok nil}))
@@ -498,7 +498,7 @@
       (if (:error file-result)
         file-result
         (try
-          (let [piece-file (:ok file-result)
+          (let [^File piece-file (:ok file-result)
                 parent (.getParentFile piece-file)]
             (when-not (.exists parent)
               (.mkdirs parent))
@@ -626,8 +626,8 @@
   (save-state [_ download]
     (try
       (let [state-file (io/file state-dir (str (:id download) ".edn"))]
-        (when-not (.exists state-dir)
-          (.mkdirs state-dir))
+        (when-not (.exists ^File state-dir)
+          (.mkdirs ^File state-dir))
         (spit state-file (pr-str (disk/encode-state download)))
         {:ok :saved})
       (catch Exception e

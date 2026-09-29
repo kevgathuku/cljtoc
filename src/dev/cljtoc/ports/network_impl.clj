@@ -17,7 +17,7 @@
 ;; compile on reflective calls so boxing never hides in the hot path.
 (set! *warn-on-reflection* true)
 
-(def ^:private random (SecureRandom.))
+(def ^:private ^java.security.SecureRandom random (SecureRandom.))
 
 (def ^:private default-timeouts
   "Historical socket timeout literals, now overridable via create opts:
@@ -104,9 +104,9 @@
   [network tracker-url request]
   (try
     (let [uri (URI. tracker-url)
-          host (.getHost uri)
+          ^String host (.getHost uri)
           port (let [p (.getPort uri)] (if (= p -1) 6969 p))
-          addr (InetSocketAddress. host port)
+          addr (InetSocketAddress. host (int port))
           timeout (timeout-ms network :udp-timeout-ms)
           socket (doto (DatagramSocket.) (.setSoTimeout timeout))
           txn-id (.nextInt (java.util.Random.))]
@@ -194,7 +194,7 @@
           (let [{:keys [host port]} (:ok parsed)
                 _ (log! network (str "[connect-peer] host=" host " port=" port))
                 socket (doto (Socket.)
-                         (.connect (InetSocketAddress. host port)
+                         (.connect (InetSocketAddress. ^String host (int port))
                                    (timeout-ms network :connect-timeout-ms))
                          (.setSoTimeout (timeout-ms network :socket-timeout-ms)))
                 peer-data {:id address
@@ -211,8 +211,8 @@
     "Send a peer wire message to the connected peer.
      Returns {:ok :sent} or {:error reason :message msg}."
     (try
-      (let [out (:out peer)]
-        (.write out message)
+      (let [^java.io.OutputStream out (:out peer)]
+        (.write out ^bytes message)
         (.flush out)
         {:ok :sent})
       (catch Exception e
@@ -253,7 +253,7 @@
   (close-peer [network peer]
     "Close the connection to a peer gracefully."
     (try
-      (when-let [socket (:socket peer)]
+      (when-let [^java.net.Socket socket (:socket peer)]
         (.close socket))
       (swap! (:peer-connections network) dissoc (:id peer))
       nil

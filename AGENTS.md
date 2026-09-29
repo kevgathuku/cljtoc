@@ -112,6 +112,27 @@ Examples:
 
 The tool automatically formats files with cljfmt when it processes them.
 
+## Structural edits (rewrite-clj)
+
+For multi-file structural campaigns (renames across the port seams, hint
+insertion at scale, codemods), reach for rewrite-clj (a `:dev`-profile dep,
+never production code) instead of text replacement: locating by s-expression
+survives indentation drift that defeats exact-match edits, and zipper
+printing stays balanced by construction. Single sites stay on the edit tool
+with small anchors plus `cljfmt fix`. Two gotchas earned the hard way:
+
+- A `^Type` hint on a `->`/`->>` chain evaporates during macroexpansion —
+  an interop call over the chain reflects even when hinted. Restructure to
+  nested keyword calls (`(:b (:a %))`), which carry hints fine. Never hint
+  a `defrecord`/`deftype` protocol-method param: the impl signature must
+  match the protocol, so the compiler rejects it (`Can't find matching
+  method ... leave off hints`); hint the call-site locals instead.
+- `scripts/threading_lint.clj` encodes the first lesson as a runnable
+  check (`lein run -m clojure.main scripts/threading_lint.clj`): it fails
+  on any `->`/`->>` inside `#()` feeding interop (`-dotted`, `alength`,
+  `new`, `Class/static`), with a self-test proving the query fires. Run
+  it after structural edits touching fdef `:fn` bodies or inline checks.
+
 ## Architecture
 
 Four-layer architecture with strict dependency rules (lower layers cannot depend on higher):

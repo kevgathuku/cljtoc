@@ -7,6 +7,10 @@
             [clojure.string :as str]
             [dev.cljtoc.ports.disk :as disk]))
 
+;; File mtimes drive the most-recent scan here; fail the compile on
+;; reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (def default-state-dir "./torrent-state")
 
 ;; Encoding and ID scheme live in dev.cljtoc.ports.disk (the single
@@ -26,7 +30,7 @@
   ([disk-port state-dir]
    (let [dir (io/file state-dir)]
      (when (.exists dir)
-       (let [files (sort-by #(.lastModified %) > (.listFiles dir))]
+       (let [files (sort-by #(.lastModified ^java.io.File %) > (.listFiles dir))]
          (when (seq files)
            (:ok (disk/load-state disk-port (state-id (first files))))))))))
 

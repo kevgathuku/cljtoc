@@ -302,12 +302,12 @@
 
 (s/fdef sha1-hash
   :args (s/cat :bs bytes?)
-  :ret  (s/and bytes? #(= 20 (alength %))))
+  :ret  (s/and bytes? #(= 20 (let [digested ^bytes %] (alength digested)))))
 
 (s/fdef bytes->hex-string
   :args (s/cat :bs bytes?)
   :ret  string?
-  :fn   #(= (* 2 (alength (-> % :args :bs))) (count (:ret %))))
+  :fn   #(= (* 2 (let [raw ^bytes (:bs (:args %))] (alength raw))) (count (:ret %))))
 
 (s/fdef decode-bencode
   :args (s/cat :bs bytes?)
