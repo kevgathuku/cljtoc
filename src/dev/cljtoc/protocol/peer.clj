@@ -54,37 +54,10 @@
 ;; Byte array specs
 (s/def ::bytes bytes?)
 
-(s/def ::byte-array-4
-  (s/and bytes? #(= 4 (count %))))
-
-(s/def ::byte-array-8
-  (s/and bytes? #(= 8 (count %))))
-
-(s/def ::byte-array-2
-  (s/and bytes? #(= 2 (count %))))
-
-;; Generation fixed centrally: with-gen changes generation only, never
-;; conformance, so every consumer drawing this spec gets feasible
-;; 20-byte arrays instead of a starved such-that filter.
-(s/def ::byte-array-20
-  (s/with-gen (s/and bytes? #(= 20 (count %)))
-    #(utils/gen-byte-array 20)))
-
-(s/def ::byte-array-68
-  (s/and bytes? #(= 68 (count %))))
-
-;; Integer specs with ranges
-(s/def ::uint32
-  (s/int-in 0 4294967296))
-
-(s/def ::uint16
-  (s/int-in 0 65536))
-
-(s/def ::int32
-  (s/int-in -2147483648 2147483648))
-
-(s/def ::int16
-  (s/int-in -32768 32768))
+;; Sized byte arrays and wire integers live in dev.cljtoc.utils now —
+;; the byte utilities carry their contracts with them. The composites
+;; below compose on utils' specs (::uint32/::uint16 stay: zero
+;; references repo-wide, left for a dedicated dead-spec pass).
 
 ;; Protocol string spec
 (s/def ::protocol-string
@@ -92,9 +65,9 @@
 
 ;; PeerHandshake specs
 (s/def ::protocol ::protocol-string)
-(s/def ::reserved ::byte-array-8)
-(s/def ::info-hash ::byte-array-20)
-(s/def ::peer-id ::byte-array-20)
+(s/def ::reserved ::utils/byte-array-8)
+(s/def ::info-hash ::utils/byte-array-20)
+(s/def ::peer-id ::utils/byte-array-20)
 
 (s/def ::peer-handshake
   (s/keys :req-un [::protocol ::reserved ::info-hash ::peer-id]))
@@ -112,103 +85,9 @@
 ;; parse-messages returns {:ok [messages] :remaining bytes}
 (s/def ::remaining bytes?)
 
-;; ============================================================================
-;; Byte Utilities
-;; ============================================================================
+;; NOTE: byte utilities (bytes-to-int32, int32-to-bytes, bytes-to-int16,
+;; int16-to-bytes, concat-bytes) live in dev.cljtoc.utils now.
 
-(defn bytes-to-int32
-  "Convert 4 bytes (big-endian) to signed 32-bit integer.
-   
-   Args:
-     bytes - byte array of exactly 4 bytes
-     offset - starting position (default 0)
-   
-   Returns:
-     32-bit signed integer"
-  ([^bytes b]
-   (bytes-to-int32 b 0))
-  ([^bytes b offset]
-   {:pre [(>= (count b) (+ offset 4))]}
-   (let [unsigned (bit-or (bit-shift-left (bit-and (aget b offset) 0xFF) 24)
-                          (bit-shift-left (bit-and (aget b (+ offset 1)) 0xFF) 16)
-                          (bit-shift-left (bit-and (aget b (+ offset 2)) 0xFF) 8)
-                          (bit-and (aget b (+ offset 3)) 0xFF))]
-     ;; Convert unsigned to signed using bit-shift-left/right trick
-     (bit-shift-right (bit-shift-left unsigned 32) 32))))
-
-(defn int32-to-bytes
-  "Convert signed 32-bit integer to 4 bytes (big-endian).
-   
-   Args:
-     value - 32-bit signed integer
-   
-   Returns:
-     Byte array of exactly 4 bytes"
-  [value]
-  {:pre [(s/valid? ::int32 value)]}
-  (let [b (byte-array 4)]
-    (aset b 0 (unchecked-byte (bit-and (bit-shift-right value 24) 0xFF)))
-    (aset b 1 (unchecked-byte (bit-and (bit-shift-right value 16) 0xFF)))
-    (aset b 2 (unchecked-byte (bit-and (bit-shift-right value 8) 0xFF)))
-    (aset b 3 (unchecked-byte (bit-and value 0xFF)))
-    b))
-
-(defn bytes-to-int16
-  "Convert 2 bytes (big-endian) to signed 16-bit integer.
-   
-   Args:
-     bytes - byte array of at least 2 bytes
-     offset - starting position (default 0)
-   
-   Returns:
-     16-bit signed integer"
-  ([^bytes b]
-   (bytes-to-int16 b 0))
-  ([^bytes b offset]
-   {:pre [(>= (count b) (+ offset 2))]}
-   (let [unsigned (bit-or (bit-shift-left (bit-and (aget b offset) 0xFF) 8)
-                          (bit-and (aget b (+ offset 1)) 0xFF))]
-     ;; Convert unsigned to signed
-     (if (>= unsigned 32768)
-       (- unsigned 65536)
-       unsigned))))
-
-(defn int16-to-bytes
-  "Convert signed 16-bit integer to 2 bytes (big-endian).
-   
-   Args:
-     value - 16-bit signed integer
-   
-   Returns:
-     Byte array of exactly 2 bytes"
-  [value]
-  {:pre [(s/valid? ::int16 value)]}
-  (let [b (byte-array 2)]
-    (aset b 0 (unchecked-byte (bit-and (bit-shift-right value 8) 0xFF)))
-    (aset b 1 (unchecked-byte (bit-and value 0xFF)))
-    b))
-
-(defn concat-bytes
-  "Concatenate multiple byte arrays into one.
-   
-   Args:
-     & byte-arrays - variable number of byte arrays
-   
-   Returns:
-     Single byte array containing all input bytes in order"
-  [& byte-arrays]
-  (let [total-len (reduce + (map count byte-arrays))
-        result (byte-array total-len)]
-    (loop [offset 0
-           arrays byte-arrays]
-      (when (seq arrays)
-        (let [arr (first arrays)
-              len (count arr)]
-          (System/arraycopy arr 0 result offset len)
-          (recur (+ offset len) (rest arrays)))))
-    result))
-
-;; ============================================================================
 ;; PeerHandshake Record
 ;; ============================================================================
 
@@ -339,7 +218,7 @@
       :message (format "reserved must be 8 bytes, got %d" (count reserved))}
 
      :else
-     {:ok (concat-bytes
+     {:ok (utils/concat-bytes
            (byte-array [(byte 0x13)])  ; pstrlen = 19
            protocol-string-bytes       ; pstr = "BitTorrent protocol"
            reserved                    ; 8 reserved bytes
@@ -427,7 +306,7 @@
 
 (defn- parse-have [^bytes b]
   (if (= 4 (count b))
-    (let [piece-index (bytes-to-int32 b)]
+    (let [piece-index (utils/bytes-to-int32 b)]
       {:ok (->Have piece-index)})
     {:error :incomplete-message :message "Have message must have 4-byte payload"}))
 
@@ -438,9 +317,9 @@
 
 (defn- parse-request [^bytes b]
   (if (= 12 (count b))
-    (let [piece-index (bytes-to-int32 b 0)
-          begin (bytes-to-int32 b 4)
-          length (bytes-to-int32 b 8)]
+    (let [piece-index (utils/bytes-to-int32 b 0)
+          begin (utils/bytes-to-int32 b 4)
+          length (utils/bytes-to-int32 b 8)]
       (if (<= length max-block-size)
         {:ok (->Request piece-index begin length)}
         {:error :invalid-input :message (format "Request length exceeds max block size (%d > %d)" length max-block-size)}))
@@ -448,8 +327,8 @@
 
 (defn- parse-piece [^bytes b]
   (if (>= (count b) 8)
-    (let [piece-index (bytes-to-int32 b 0)
-          begin (bytes-to-int32 b 4)
+    (let [piece-index (utils/bytes-to-int32 b 0)
+          begin (utils/bytes-to-int32 b 4)
           data-len (- (count b) 8)
           data (byte-array data-len)]
       (System/arraycopy b 8 data 0 data-len)
@@ -460,9 +339,9 @@
 
 (defn- parse-cancel [^bytes b]
   (if (= 12 (count b))
-    (let [piece-index (bytes-to-int32 b 0)
-          begin (bytes-to-int32 b 4)
-          length (bytes-to-int32 b 8)]
+    (let [piece-index (utils/bytes-to-int32 b 0)
+          begin (utils/bytes-to-int32 b 4)
+          length (utils/bytes-to-int32 b 8)]
       (if (<= length max-block-size)
         {:ok (->Cancel piece-index begin length)}
         {:error :invalid-input :message (format "Cancel length exceeds max block size (%d > %d)" length max-block-size)}))
@@ -494,7 +373,7 @@
   [^bytes b]
   (if (< (count b) 4)
     {:error :incomplete-message :message "Message too short for length prefix"}
-    (let [message-length (bytes-to-int32 b 0)]
+    (let [message-length (utils/bytes-to-int32 b 0)]
       (cond
         (= 0 message-length)
         (parse-keep-alive (byte-array 0))
@@ -523,7 +402,7 @@
   (loop [offset 0
          messages []]
     (if (>= (- (count b) offset) 4) ;; At least 4 bytes for length prefix
-      (let [message-length (bytes-to-int32 b offset)
+      (let [message-length (utils/bytes-to-int32 b offset)
             full-message-len (+ 4 message-length)]
         (if (<= full-message-len (- (count b) offset))
           (let [message-bytes (byte-array full-message-len)
@@ -569,7 +448,7 @@
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Have [msg]
   (if (s/valid? ::piece-index (:piece-index msg))
-    {:ok (int32-to-bytes (:piece-index msg))}
+    {:ok (utils/int32-to-bytes (:piece-index msg))}
     {:error :invalid-input :message (format "Invalid piece index for Have message: %s" (:piece-index msg))}))
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Bitfield [msg]
@@ -589,9 +468,9 @@
       (> length max-block-size)
       {:error :invalid-input :message (format "Request length exceeds max block size (%d > %d)" length max-block-size)}
       :else
-      {:ok (concat-bytes (int32-to-bytes piece-index)
-                         (int32-to-bytes begin)
-                         (int32-to-bytes length))})))
+      {:ok (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                               (utils/int32-to-bytes begin)
+                               (utils/int32-to-bytes length))})))
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Piece [msg]
   (let [{:keys [piece-index begin data]} msg]
@@ -605,9 +484,9 @@
       (> (count data) max-block-size)
       {:error :invalid-input :message (format "Piece data length exceeds max block size (%d > %d)" (count data) max-block-size)}
       :else
-      {:ok (concat-bytes (int32-to-bytes piece-index)
-                         (int32-to-bytes begin)
-                         data)})))
+      {:ok (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                               (utils/int32-to-bytes begin)
+                               data)})))
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Cancel [msg]
   (let [{:keys [piece-index begin length]} msg]
@@ -621,9 +500,9 @@
       (> length max-block-size)
       {:error :invalid-input :message (format "Cancel length exceeds max block size (%d > %d)" length max-block-size)}
       :else
-      {:ok (concat-bytes (int32-to-bytes piece-index)
-                         (int32-to-bytes begin)
-                         (int32-to-bytes length))})))
+      {:ok (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                               (utils/int32-to-bytes begin)
+                               (utils/int32-to-bytes length))})))
 
 (defmethod build-message-payload :default [msg]
   {:error :unknown-message-type :message (str "Unknown message type for building: " (type msg))})
@@ -654,11 +533,11 @@
                          Cancel 8
                          nil)]
         (if (= -1 message-id)
-          {:ok (int32-to-bytes 0)}
+          {:ok (utils/int32-to-bytes 0)}
           (if (nil? message-id)
             {:error :unknown-message-type :message (str "Cannot build unknown message type: " (type message-record))}
-            {:ok (concat-bytes
-                  (int32-to-bytes (+ 1 (count payload)))
+            {:ok (utils/concat-bytes
+                  (utils/int32-to-bytes (+ 1 (count payload)))
                   (byte-array [(unchecked-byte message-id)])
                   payload)})))
       payload-result)
@@ -682,39 +561,13 @@
         (if (:ok build-result)
           (recur (next remaining-messages) (conj acc-bytes (:ok build-result)))
           build-result)) ;; Propagate error
-      {:ok (apply concat-bytes acc-bytes)})))
+      {:ok (apply utils/concat-bytes acc-bytes)})))
 
 ;; NOTE: byte-array generation lives in dev.cljtoc.utils
 ;; (utils/gen-byte-array for direct draws, with-gen on ::byte-array-20
 ;; for spec-integrated ones).
 ;; Function Specs
 ;; ============================================================================
-
-;; --- Byte utilities ---
-
-(s/fdef bytes-to-int32
-  :args (s/cat :b bytes? :offset (s/? nat-int?))
-  :ret  ::int32)
-
-(s/fdef int32-to-bytes
-  :args (s/cat :value ::int32)
-  :ret  ::byte-array-4
-  :fn   #(= (:value (:args %)) (bytes-to-int32 (:ret %))))
-
-(s/fdef bytes-to-int16
-  :args (s/cat :b bytes? :offset (s/? nat-int?))
-  :ret  ::int16)
-
-(s/fdef int16-to-bytes
-  :args (s/cat :value ::int16)
-  :ret  ::byte-array-2
-  :fn   #(= (:value (:args %)) (bytes-to-int16 (:ret %))))
-
-(s/fdef concat-bytes
-  :args (s/cat :byte-arrays (s/* bytes?))
-  :ret  bytes?
-  :fn   #(= (count (:ret %))
-            (reduce + 0 (map count (-> % :args :byte-arrays)))))
 
 ;; --- Handshake ---
 

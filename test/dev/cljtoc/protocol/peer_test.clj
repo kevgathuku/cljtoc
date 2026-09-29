@@ -9,16 +9,13 @@
             [clojure.test.check.generators :as tc-gen]
             [clojure.test.check.properties :as prop]
             [clojure.test.check.clojure-test :refer [defspec]]
-            [dev.cljtoc.protocol.peer :as peer]))
+            [dev.cljtoc.protocol.peer :as peer]
+            [dev.cljtoc.test-utils :as test-utils]
+            [dev.cljtoc.utils :as utils]))
 
 ;; ============================================================================
 ;; Test Helpers
 ;; ============================================================================
-
-(defn make-bytes
-  "Create a byte array from a sequence of byte values."
-  [& vals]
-  (byte-array (map unchecked-byte vals)))
 
 (defn bytes-equal?
   "Compare two byte arrays for equality."
@@ -32,80 +29,6 @@
   (byte-array (repeatedly len #(unchecked-byte (- (rand-int 256) 128)))))
 
 ;; ============================================================================
-;; Byte Utility Tests
-;; ============================================================================
-
-(deftest int32-roundtrip-test
-  (testing "int32-to-bytes and bytes-to-int32 are inverse operations"
-    (let [test-values [0 1 -1 127 -128 255 256
-                       2147483647 -2147483648
-                       0x12345678 0x7FFFFFFF]]
-      (doseq [val test-values]
-        (let [encoded (peer/int32-to-bytes val)
-              decoded (peer/bytes-to-int32 encoded)]
-          (is (= val decoded)
-              (format "Round-trip failed for %d" val))
-          (is (= 4 (count encoded))
-              (format "Encoded %d should be 4 bytes" val)))))))
-
-(deftest int32-bigendian-test
-  (testing "int32 encoding is big-endian"
-    (let [encoded (peer/int32-to-bytes 0x12345678)]
-      (is (= 0x12 (bit-and (aget encoded 0) 0xFF)))
-      (is (= 0x34 (bit-and (aget encoded 1) 0xFF)))
-      (is (= 0x56 (bit-and (aget encoded 2) 0xFF)))
-      (is (= 0x78 (bit-and (aget encoded 3) 0xFF))))))
-
-(deftest int16-roundtrip-test
-  (testing "int16-to-bytes and bytes-to-int16 are inverse operations"
-    (let [test-values [0 1 127 -128
-                       32767 -32768 1000 -1000]]
-      (doseq [val test-values]
-        (let [encoded (peer/int16-to-bytes val)
-              decoded (peer/bytes-to-int16 encoded)]
-          (is (= val decoded)
-              (format "Round-trip failed for %d" val))
-          (is (= 2 (count encoded))
-              (format "Encoded %d should be 2 bytes" val)))))))
-
-(deftest bytes-to-int32-offset-test
-  (testing "bytes-to-int32 respects offset parameter"
-    (let [data (make-bytes 0x00 0x00 0x12 0x34 0x56 0x78)]
-      (is (= 0x1234 (peer/bytes-to-int16 data 2)))
-      (is (= 0x12345678 (peer/bytes-to-int32 data 2))))))
-
-(deftest concat-bytes-test
-  (testing "concat-bytes combines byte arrays"
-    (let [a (make-bytes 0x01 0x02)
-          b (make-bytes 0x03 0x04)
-          c (make-bytes 0x05)
-          result (peer/concat-bytes a b c)]
-      (is (= 5 (count result)))
-      (is (= 0x01 (bit-and (aget result 0) 0xFF)))
-      (is (= 0x02 (bit-and (aget result 1) 0xFF)))
-      (is (= 0x03 (bit-and (aget result 2) 0xFF)))
-      (is (= 0x04 (bit-and (aget result 3) 0xFF)))
-      (is (= 0x05 (bit-and (aget result 4) 0xFF))))))
-
-;; ============================================================================
-;; Generative Tests for Byte Utilities
-;; ============================================================================
-
-(defspec int32-roundtrip-generative 100
-  (prop/for-all [val (tc-gen/choose -2147483648 2147483647)]
-                (let [encoded (peer/int32-to-bytes val)
-                      decoded (peer/bytes-to-int32 encoded)]
-                  (and (= val decoded)
-                       (= 4 (count encoded))))))
-
-(defspec int16-roundtrip-generative 100
-  (prop/for-all [val (tc-gen/choose -32768 32767)]
-                (let [encoded (peer/int16-to-bytes val)
-                      decoded (peer/bytes-to-int16 encoded)]
-                  (and (= val decoded)
-                       (= 2 (count encoded))))))
-
-;; ============================================================================
 ;; PeerHandshake Record Tests
 ;; ============================================================================
 
@@ -113,7 +36,7 @@
   (testing "Can create PeerHandshake record"
     (let [info-hash (make-random-bytes 20)
           peer-id (make-random-bytes 20)
-          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          reserved (test-utils/make-bytes 0 0 0 0 0 0 0 0)
           handshake (peer/->peer-handshake info-hash peer-id reserved)]
       (is (some? (:ok handshake)) "Should return ok key")
       (let [hs (:ok handshake)]
@@ -163,7 +86,7 @@
   (testing "Valid 68-byte handshake parses correctly"
     (let [info-hash (make-random-bytes 20)
           peer-id (make-random-bytes 20)
-          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          reserved (test-utils/make-bytes 0 0 0 0 0 0 0 0)
           built (peer/build-handshake info-hash peer-id reserved)
           handshake-bytes (:ok built)
           parsed (peer/parse-handshake handshake-bytes)]
@@ -186,7 +109,7 @@
   (testing "Wrong protocol string returns error"
     (let [info-hash (make-random-bytes 20)
           peer-id (make-random-bytes 20)
-          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          reserved (test-utils/make-bytes 0 0 0 0 0 0 0 0)
           ;; Build valid handshake then corrupt protocol
           built (peer/build-handshake info-hash peer-id reserved)
           handshake-bytes (:ok built)
@@ -199,7 +122,7 @@
   (testing "Non-zero reserved bytes are preserved"
     (let [info-hash (make-random-bytes 20)
           peer-id (make-random-bytes 20)
-          reserved (make-bytes 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x01)
+          reserved (test-utils/make-bytes 0x00 0x00 0x00 0x00 0x00 0x00 0x00 0x01)
           built (peer/build-handshake info-hash peer-id reserved)
           handshake-bytes (:ok built)
           parsed (peer/parse-handshake handshake-bytes)]
@@ -222,7 +145,7 @@
   (testing "Handshake has correct byte layout"
     (let [info-hash (make-random-bytes 20)
           peer-id (make-random-bytes 20)
-          reserved (make-bytes 0 0 0 0 0 0 0 0)
+          reserved (test-utils/make-bytes 0 0 0 0 0 0 0 0)
           result (peer/build-handshake info-hash peer-id reserved)
           bytes (:ok result)]
       ;; Byte 0: pstrlen = 19
@@ -257,7 +180,7 @@
 
 (deftest parse-keep-alive-test
   (testing "Keep-alive message parses correctly"
-    (let [message-bytes (peer/int32-to-bytes 0)  ; Length = 0
+    (let [message-bytes (utils/int32-to-bytes 0)  ; Length = 0
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.KeepAlive (:ok result))))))
@@ -268,7 +191,7 @@
                                 [1 dev.cljtoc.protocol.peer.Unchoke]
                                 [2 dev.cljtoc.protocol.peer.Interested]
                                 [3 dev.cljtoc.protocol.peer.NotInterested]]]
-      (let [message-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte id)]))
+      (let [message-bytes (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte id)]))
             result (peer/parse-message message-bytes)]
         (is (some? (:ok result)) (str "Should parse " expected-type " successfully"))
         (is (instance? expected-type (:ok result)))))))
@@ -276,9 +199,9 @@
 (deftest parse-have-message-test
   (testing "Have message parses with correct piece index"
     (let [piece-index 123
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes 5)
-                                           (byte-array [(unchecked-byte 4)])
-                                           (peer/int32-to-bytes piece-index))
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes 5)
+                                            (byte-array [(unchecked-byte 4)])
+                                            (utils/int32-to-bytes piece-index))
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Have (:ok result)))
@@ -286,10 +209,10 @@
 
 (deftest parse-bitfield-message-test
   (testing "Bitfield message parses with accessible bytes"
-    (let [bitfield-payload (make-bytes 0xFF 0x00 0x80)  ; Example bitfield
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count bitfield-payload)))
-                                           (byte-array [(unchecked-byte 5)])
-                                           bitfield-payload)
+    (let [bitfield-payload (test-utils/make-bytes 0xFF 0x00 0x80)  ; Example bitfield
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count bitfield-payload)))
+                                            (byte-array [(unchecked-byte 5)])
+                                            bitfield-payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Bitfield (:ok result)))
@@ -300,12 +223,12 @@
     (let [piece-index 10
           begin 16384
           length 16384
-          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
-                                     (peer/int32-to-bytes begin)
-                                     (peer/int32-to-bytes length))
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
-                                           (byte-array [(unchecked-byte 6)])
-                                           payload)
+          payload (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                                      (utils/int32-to-bytes begin)
+                                      (utils/int32-to-bytes length))
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count payload)))
+                                            (byte-array [(unchecked-byte 6)])
+                                            payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Request (:ok result)))
@@ -318,12 +241,12 @@
     (let [piece-index 10
           begin 16384
           data (make-random-bytes 1024)
-          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
-                                     (peer/int32-to-bytes begin)
-                                     data)
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
-                                           (byte-array [(unchecked-byte 7)])
-                                           payload)
+          payload (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                                      (utils/int32-to-bytes begin)
+                                      data)
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count payload)))
+                                            (byte-array [(unchecked-byte 7)])
+                                            payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Piece (:ok result)))
@@ -336,12 +259,12 @@
     (let [piece-index 10
           begin 16384
           length 16384
-          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
-                                     (peer/int32-to-bytes begin)
-                                     (peer/int32-to-bytes length))
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
-                                           (byte-array [(unchecked-byte 8)])
-                                           payload)
+          payload (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                                      (utils/int32-to-bytes begin)
+                                      (utils/int32-to-bytes length))
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count payload)))
+                                            (byte-array [(unchecked-byte 8)])
+                                            payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Cancel (:ok result)))
@@ -351,23 +274,23 @@
 
 (deftest parse-unknown-message-id-test
   (testing "Unknown message id returns :unknown-message-type error"
-    (let [message-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 99)])) ; ID 99
+    (let [message-bytes (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 99)])) ; ID 99
           result (peer/parse-message message-bytes)]
       (is (some? (:error result)) "Should return error key")
       (is (= :unknown-message-type (:error result))))))
 
 (deftest parse-incomplete-message-test
   (testing "Incomplete message (declared length > available) returns :incomplete-message error"
-    (let [message-bytes (peer/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
+    (let [message-bytes (utils/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
           result (peer/parse-message message-bytes)]
       (is (some? (:error result)) "Should return error key")
       (is (= :incomplete-message (:error result))))))
 
 (deftest parse-messages-test
   (testing "`parse-messages` handles multiple complete messages"
-    (let [msg1-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
-          msg2-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 1)])) ; Unchoke
-          buffer (peer/concat-bytes msg1-bytes msg2-bytes)
+    (let [msg1-bytes (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
+          msg2-bytes (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 1)])) ; Unchoke
+          buffer (utils/concat-bytes msg1-bytes msg2-bytes)
           result (peer/parse-messages buffer)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (= 2 (count (:ok result))))
@@ -377,9 +300,9 @@
 
 (deftest parse-messages-with-incomplete-tail-test
   (testing "`parse-messages` returns remaining bytes for incomplete final message"
-    (let [msg1-bytes (peer/concat-bytes (peer/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
-          incomplete-msg-bytes (peer/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
-          buffer (peer/concat-bytes msg1-bytes incomplete-msg-bytes)
+    (let [msg1-bytes (utils/concat-bytes (utils/int32-to-bytes 1) (byte-array [(unchecked-byte 0)])) ; Choke
+          incomplete-msg-bytes (utils/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
+          buffer (utils/concat-bytes msg1-bytes incomplete-msg-bytes)
           result (peer/parse-messages buffer)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (= 1 (count (:ok result))))
@@ -388,7 +311,7 @@
 
 (deftest parse-messages-only-incomplete-test
   (testing "`parse-messages` returns only remaining bytes if first message is incomplete"
-    (let [incomplete-msg-bytes (peer/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
+    (let [incomplete-msg-bytes (utils/int32-to-bytes 100) ; Declares length 100, but only 4 bytes given
           result (peer/parse-messages incomplete-msg-bytes)]
       (is (some? (:ok result)) "Should return ok key even if no messages parsed")
       (is (zero? (count (:ok result))))
@@ -399,12 +322,12 @@
     (let [piece-index 10
           begin 0
           length (+ peer/max-block-size 1) ; > 16384
-          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
-                                     (peer/int32-to-bytes begin)
-                                     (peer/int32-to-bytes length))
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
-                                           (byte-array [(unchecked-byte 6)])
-                                           payload)
+          payload (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                                      (utils/int32-to-bytes begin)
+                                      (utils/int32-to-bytes length))
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count payload)))
+                                            (byte-array [(unchecked-byte 6)])
+                                            payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:error result)) "Should return error key")
       (is (= :invalid-input (:error result))))))
@@ -414,12 +337,12 @@
     (let [piece-index 10
           begin 0
           data (make-random-bytes (+ peer/max-block-size 1)) ; > 16384
-          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
-                                     (peer/int32-to-bytes begin)
-                                     data)
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
-                                           (byte-array [(unchecked-byte 7)])
-                                           payload)
+          payload (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                                      (utils/int32-to-bytes begin)
+                                      data)
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count payload)))
+                                            (byte-array [(unchecked-byte 7)])
+                                            payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:error result)) "Should return error key")
       (is (= :invalid-input (:error result))))))
@@ -488,11 +411,11 @@
     (let [piece-index 5
           begin 0
           ;; Payload: 4-byte index + 4-byte begin, 0-byte data
-          payload (peer/concat-bytes (peer/int32-to-bytes piece-index)
-                                     (peer/int32-to-bytes begin))
-          message-bytes (peer/concat-bytes (peer/int32-to-bytes (+ 1 (count payload)))
-                                           (byte-array [(unchecked-byte 7)])
-                                           payload)
+          payload (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                                      (utils/int32-to-bytes begin))
+          message-bytes (utils/concat-bytes (utils/int32-to-bytes (+ 1 (count payload)))
+                                            (byte-array [(unchecked-byte 7)])
+                                            payload)
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Piece (:ok result)))
