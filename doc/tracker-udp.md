@@ -1,4 +1,4 @@
-# UDP Tracker Protocol Contract
+# UDP tracker protocol contract
 
 **Feature**: 003-tracker-protocol
 **Date**: 2026-02-15
@@ -373,7 +373,7 @@ Parse a UDP tracker scrape response message.
 
 ---
 
-## Helper Functions
+## Helper functions
 
 ### unsigned-short
 
@@ -429,12 +429,12 @@ Generate a random 32-bit transaction ID.
 
 ---
 
-## Protocol Compliance
+## Protocol compliance
 
 This contract implements:
 - **BEP 15**: UDP Tracker Protocol for BitTorrent
 
-## Message Action Codes
+## Message action codes
 
 | Action | Code | Description |
 |--------|------|-------------|
@@ -443,7 +443,7 @@ This contract implements:
 | Scrape | 2 | Query statistics for torrents |
 | Error | 3 | Error response from tracker |
 
-## Event Codes
+## Event codes
 
 | Event | Code | Description |
 |-------|------|-------------|
@@ -452,7 +452,7 @@ This contract implements:
 | Started | 2 | Download started |
 | Stopped | 3 | Download stopped |
 
-## Behavior Guarantees
+## Behavior guarantees
 
 1. **Purity**: All parsing and building functions are pure
 2. **Error Handling**: All functions return result maps
@@ -460,7 +460,7 @@ This contract implements:
 4. **Validation**: All message fields are validated; invalid inputs return errors
 5. **Immutability**: All data structures are immutable Clojure maps
 
-## Connection Lifecycle
+## Connection lifecycle
 
 ```
 1. build-udp-connect-request() → send via network port
@@ -471,7 +471,7 @@ This contract implements:
 6. If connection-id expires, return to step 1
 ```
 
-## Testing Requirements
+## Testing requirements
 
 - Unit tests for all public functions
 - Property-based tests for round-trip encoding (build message → parse response)

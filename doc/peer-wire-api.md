@@ -1,4 +1,4 @@
-# Peer Wire Protocol — API Reference
+# Peer wire protocol API reference
 
 **Namespace**: `dev.cljtoc.protocol.peer` (parsing & building)
 **Namespace**: `dev.cljtoc.protocol.peer-state` (state machine)
@@ -201,7 +201,7 @@ For use when sending messages (updating our own side of state):
 
 ---
 
-## Error Handling
+## Error handling
 
 All parsing/building functions return structured error maps — no exceptions for protocol failures:
 
@@ -215,7 +215,7 @@ All parsing/building functions return structured error maps — no exceptions fo
 
 ---
 
-## Key Constraints
+## Key constraints
 
 - Handshake is always exactly **68 bytes**
 - Block length in Request/Cancel/Piece is capped at **16,384 bytes** (16 KiB)

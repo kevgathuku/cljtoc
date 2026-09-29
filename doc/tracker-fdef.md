@@ -1,4 +1,4 @@
-# Function Specs (fdef) Usage Guide
+# Function spec (fdef) usage guide
 
 ## Overview
 
@@ -14,7 +14,7 @@ All public tracker protocol functions now have `clojure.spec.alpha/fdef` specifi
 3. **Generative testing**: Automatically test functions with random valid inputs
 4. **Better errors**: Clear, specific error messages when validation fails
 
-## Instrumented Functions
+## Instrumented functions
 
 All public functions in `dev.cljtoc.protocol.tracker` namespace:
 
@@ -25,7 +25,7 @@ All public functions in `dev.cljtoc.protocol.tracker` namespace:
 - `parse-http-tracker-response` - Parse bencode HTTP tracker response
 - `build-http-announce-url` - Build HTTP tracker announce request URL
 
-## Example: Required Arguments with Invariants
+## Example: required arguments with invariants
 
 ### build-http-announce-url
 
@@ -50,7 +50,7 @@ All public functions in `dev.cljtoc.protocol.tracker` namespace:
 
 **Invariant**: If successful, returned URL must start with the provided tracker-url base.
 
-## Using Runtime Validation
+## Using runtime validation
 
 Enable instrumentation in REPL or tests:
 
@@ -76,7 +76,7 @@ Enable instrumentation in REPL or tests:
 ;; {:port 6881} - failed: (contains? % :left)
 ```
 
-## Generative Testing
+## Generative testing
 
 Use fdefs for property-based testing:
 
@@ -107,7 +107,7 @@ This test:
 3. Validates return value matches `:ret` spec
 4. Verifies invariants in `:fn` spec hold
 
-## Spec Definitions
+## Spec definitions
 
 ### Request Spec (::tracker-request)
 
@@ -149,7 +149,7 @@ Error results:
 ::tracker-id  ; string?
 ```
 
-## Invariants Examples
+## Invariants examples
 
 ### url-encode-binary
 
@@ -184,7 +184,7 @@ Error results:
       :error #(= :error (first (:ret %))))
 ```
 
-## Best Practices
+## Best practices
 
 1. **Development**: Enable instrumentation during development
    ```clojure
@@ -208,7 +208,7 @@ Error results:
    ;; Shows exactly which keys are missing or invalid
    ```
 
-## Performance Considerations
+## Performance considerations
 
 - **Instrumentation overhead**: Adds ~10-30% overhead per function call
 - **Generative testing**: Slower than example-based tests (generates random data)
@@ -217,7 +217,7 @@ Error results:
   - Use generative tests in CI (run fewer iterations if needed)
   - Disable instrumentation in production builds
 
-## Further Reading
+## Further reading
 
 - [Clojure Spec Guide](https://clojure.org/guides/spec)
 - [spec.test Documentation](https://clojure.github.io/spec.alpha/clojure.spec.test.alpha-api.html)

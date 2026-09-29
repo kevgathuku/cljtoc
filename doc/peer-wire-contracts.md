@@ -1,4 +1,4 @@
-# API Contracts: Peer Wire Protocol
+# Peer wire protocol API contracts
 
 **Feature**: 004-peer-wire-protocol  
 **Date**: 2026-02-17  
@@ -293,7 +293,7 @@ Use `build-message` with any record constructor to encode a message:
 
 ---
 
-## Error Response Contract
+## Error response contract
 
 All error responses follow this format:
 
@@ -315,7 +315,7 @@ All error responses follow this format:
 
 ---
 
-## Invariants Summary
+## Invariants summary
 
 1. **Handshake Size**: All handshakes are exactly 68 bytes
 2. **Message Round-trip**: `(build → parse)` returns equivalent record for valid inputs
@@ -326,7 +326,7 @@ All error responses follow this format:
 
 ---
 
-## Usage Example
+## Usage example
 
 ```clojure
 (ns my-app.peer

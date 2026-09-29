@@ -1,4 +1,4 @@
-# HTTP Tracker Protocol Contract
+# HTTP tracker protocol contract
 
 **Feature**: 003-tracker-protocol
 **Date**: 2026-02-15
@@ -280,7 +280,7 @@ Parse dictionary-format peer list (legacy format).
 
 ---
 
-## Helper Functions
+## Helper functions
 
 ### url-encode-binary
 
@@ -317,13 +317,13 @@ URL-encode binary data per RFC 3986.
 
 ---
 
-## Protocol Compliance
+## Protocol compliance
 
 This contract implements:
 - **BEP 3**: The BitTorrent Protocol Specification (HTTP tracker protocol)
 - **RFC 3986**: Uniform Resource Identifier (URI) - percent-encoding
 
-## Behavior Guarantees
+## Behavior guarantees
 
 1. **Purity**: All functions are pure (deterministic, no side effects)
 2. **Error Handling**: All functions return result maps (no exceptions for expected failures)
@@ -331,7 +331,7 @@ This contract implements:
 4. **Validation**: All inputs are validated; invalid inputs return error results
 5. **Immutability**: All data structures are immutable Clojure maps
 
-## Testing Requirements
+## Testing requirements
 
 - Unit tests for all public functions
 - Property-based tests for round-trip encoding (build URL → parse response)

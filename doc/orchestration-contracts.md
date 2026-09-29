@@ -1,6 +1,6 @@
-# API Contracts: Download Orchestration
+# Download orchestration API contracts
 
-## Public Download Management API
+## Public download management API
 
 ### start-download
 
@@ -80,7 +80,7 @@ Stops a download and cleans up resources.
 
 ---
 
-## Internal Coordination API
+## Internal coordination API
 
 ### handle-piece-data
 
@@ -128,7 +128,7 @@ Called with peer list from tracker.
 
 ---
 
-## Port Interfaces
+## Port interfaces
 
 ### DownloadManager
 
@@ -153,7 +153,7 @@ Called with peer list from tracker.
 
 ---
 
-## Error Responses
+## Error responses
 
 All functions return consistent error format:
 
@@ -178,7 +178,7 @@ Common errors:
 
 ---
 
-## Usage Example
+## Usage example
 
 ```clojure
 (require '[dev.cljtoc.orchestration.download :as download])

@@ -1,4 +1,4 @@
-# API Contracts: Bencode Parser
+# Bencode parser API contracts
 
 **Namespace**: `cljtoc.domain.bencode`
 
@@ -6,7 +6,7 @@ All functions are pure - they take data as input and return data as output, with
 
 ---
 
-## Bencode Decoder
+## Bencode decoder
 
 ### `decode-bencode`
 
@@ -52,7 +52,7 @@ error-map: {:error keyword, :message string, :position int}
 
 ---
 
-## Bencode Encoder
+## Bencode encoder
 
 ### `encode-bencode`
 
@@ -96,7 +96,7 @@ Returns: byte-array - Bencoded representation
 
 ---
 
-## Bencode Utilities
+## Bencode utilities
 
 ### `bencode-type`
 
@@ -142,7 +142,7 @@ Returns: true if (decode (encode value)) == value
 
 ---
 
-## Torrent Parser
+## Torrent parser
 
 ### `parse-torrent`
 
@@ -218,7 +218,7 @@ Returns: Raw bytes of the info dictionary (still bencoded)
 
 ---
 
-## Validation Functions
+## Validation functions
 
 ### `validate-torrent`
 
@@ -252,7 +252,7 @@ error-vec: Vector of validation error maps
 
 ---
 
-## Hash Utilities
+## Hash utilities
 
 ### `sha1-hash`
 
@@ -277,7 +277,7 @@ Returns: byte-array - 20-byte SHA-1 hash
 
 ---
 
-## Error Codes
+## Error codes
 
 All errors are returned as data (no exceptions thrown for parse failures).
 
@@ -293,7 +293,7 @@ All errors are returned as data (no exceptions thrown for parse failures).
 
 ---
 
-## Type Specifications (for spec.alpha or malli)
+## Type specifications (for spec.alpha or malli)
 
 ```clojure
 ;; Bencode value types

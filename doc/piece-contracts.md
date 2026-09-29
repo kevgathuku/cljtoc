@@ -1,4 +1,4 @@
-# API Contracts: Piece Management
+# Piece management API contracts
 
 **Feature**: 005-piece-management
 **Date**: 2026-02-21
@@ -255,7 +255,7 @@ All functions are pure and operate on in-memory data — no network, disk, or ti
 
 ---
 
-## Invariants Summary
+## Invariants summary
 
 1. **PieceState partition**: `needed ∪ in-flight ∪ verified = {0..total-pieces-1}` and the three sets are pairwise disjoint at all times
 2. **Transition purity**: `mark-in-flight`, `mark-verified`, and `requeue-piece` never mutate their input state
@@ -265,7 +265,7 @@ All functions are pure and operate on in-memory data — no network, disk, or ti
 
 ---
 
-## Usage Example
+## Usage example
 
 ```clojure
 (ns my-app.downloader

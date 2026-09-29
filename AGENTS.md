@@ -38,7 +38,7 @@ use full words that say what the value is (`address-str` not `s`,
 
 ## Writing voice and tone
 
-Follow the Google developer documentation style guide (https://developers.google.com/style) for all human-readable writing: specs, ADRs, CONTEXT.md, READMEs, code comments and docstrings, commit messages, and PR comments.
+Follow the Google developer documentation style guide (https://developers.google.com/style) for all human-readable writing: feature docs, ADRs, CONTEXT.md, READMEs, code comments and docstrings, commit messages, and PR comments.
 
 - Write to the reader in second person with active voice and a clear actor: you run, you configure, the peer sends.
 - Keep a conversational, friendly, respectful tone without slang, jargon, or culturally specific references; write for a global audience.
@@ -151,16 +151,16 @@ See `.specify/memory/constitution.md` for authoritative rules. Key points:
 4. **No Hidden State**: No global atoms/vars for app state; all state explicitly passed
 5. **I/O-Free Testing**: 90%+ coverage without actual I/O; inject test doubles
 
-## Sub-Feature Structure
+## Feature docs
 
-Implementation is split into independently deliverable features in `specs/`:
-- `002-bencode-parser` - Foundation: .torrent file parsing
-- `003-tracker-protocol` - Peer discovery
-- `004-peer-wire-protocol` - BitTorrent peer messages
-- `005-piece-management` - Pure domain logic for pieces
-- `006-download-orchestration` - End-to-end download coordination
+Each feature has a dedicated page under `doc/` (overview plus contract pages):
+- Bencode parsing - `doc/bencode-parser.md` (+ `doc/bencode-contracts.md`)
+- Peer discovery - `doc/tracker-protocol.md` (+ `doc/tracker-http.md`, `doc/tracker-udp.md`, `doc/tracker-fdef.md`)
+- BitTorrent peer messages - `doc/peer-wire-protocol.md` (+ `doc/peer-wire-api.md`, `doc/peer-wire-contracts.md`)
+- Pure domain logic for pieces - `doc/piece-management.md` (+ `doc/piece-contracts.md`)
+- End-to-end download coordination - `doc/download-orchestration.md` (+ `doc/orchestration-contracts.md`)
 
-Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/`
+`doc/architecture.md` maps the layers, principles, and roadmap. When you change behavior, update the matching feature doc in the same branch.
 
 ## Project Conventions
 
