@@ -27,6 +27,10 @@
             [dev.cljtoc.coordination.peer-worker :as peer-worker])
   (:import [java.security SecureRandom]))
 
+;; Byte arrays flow through every piece write here; fail the compile on
+;; reflective calls so boxing never hides in the hot path.
+(set! *warn-on-reflection* true)
+
 (defrecord Download
            [id
             torrent
@@ -769,6 +773,18 @@
     (disk/write-prepared-piece disk-port prepared output-dir piece-index bytes)
     (disk/write-output-piece disk-port layout output-dir piece-index bytes)))
 
+(defn- complete-prepared-identities?
+  "True when prepared covers every declared path with a filesystem identity
+   seen at prepare time: the fast path then compares identities, not bare
+   canonical paths. False for a refused prepare (nil) or any entry whose
+   target did not exist yet, selecting the full per-piece writer instead."
+  [prepared sizes]
+  (and (some? prepared)
+       (map? (:resolved prepared))
+       (= (set (keys (:resolved prepared))) (set (keys sizes)))
+       (every? (fn [[_ entry]] (some? (:identity entry)))
+               (:resolved prepared))))
+
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
    over the network port, verified pieces go to the piece cache and the
@@ -1025,14 +1041,20 @@
    carries the in-progress :download, so a write that fails after earlier
    pieces were requeued does not discard that progress: the failed record
    keeps it instead of re-claiming the holey pieces as verified."
-  ;; The 3-arity prepares once for the whole loop and falls back per piece
-  ;; when preparation itself is refused: the full path still alias-checks
-  ;; every piece, so a refused prepare costs speed, never safety.
   ([download disk-port output-layout]
-   (materialize-verified-pieces
-    download disk-port output-layout
-    (:ok (disk/prepare-output-layout
-          disk-port output-layout (:output-dir download)))))
+   ;; Prepare once for the whole loop, and fall back per piece when the
+   ;; preparation cannot vouch for every file: a refused prepare yields nil
+   ;; via (:ok ...), and an entry for a target absent at prepare time carries
+   ;; a nil identity that stable-touch? compares on the canonical path alone;
+   ;; a post-prepare hardlink defeats that check while the untouched snapshot
+   ;; stays unscanned. Nil prepared selects the full per-piece writer in
+   ;; write-output, which alias-checks the whole layout, so the fallback
+   ;; costs speed, never safety.
+   (let [prepared (:ok (disk/prepare-output-layout
+                        disk-port output-layout (:output-dir download)))]
+     (materialize-verified-pieces download disk-port output-layout
+                                  (when (complete-prepared-identities? prepared (:sizes output-layout))
+                                    prepared))))
   ([download disk-port output-layout prepared]
    (loop [download download
           remaining (sort (:verified (:piece-state download)))]

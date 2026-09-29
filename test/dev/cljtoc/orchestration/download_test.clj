@@ -1815,6 +1815,18 @@
       (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0))))
       (is (= [0] (mock-disk/get-prepared-writes disk))))))
 
+(deftest materialize-falls-back-when-prepared-identities-are-missing-test
+  (testing "a prepare that saw absent files yields nil identities, so the
+            3-arity loops with nil prepared: bytes still land, but never
+            through the fast path — a nil frozen identity compares on
+            canonical path alone, which a post-prepare hardlink defeats"
+    (let [{:keys [download layout disk piece-0]} (materialize-fixture)
+          result (#'download/materialize-verified-pieces download disk layout)]
+      (is (not (:error result)))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0))))
+      (is (empty? (mock-disk/get-prepared-writes disk))
+          "no fast-path write: the mock prepare reports nil identities"))))
+
 (defn- carried-fixture
   "A 1-piece download with its only piece verified but nothing in the
     cache, plus that torrent's compiled layout. Returns {:download :layout}."
