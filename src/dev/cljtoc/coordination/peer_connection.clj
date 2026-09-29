@@ -92,7 +92,7 @@
               (let [interested-bytes (:ok (peer/build-message (peer/->Interested)))]
                 (network/send-message network-port peer-data interested-bytes)
                 {:ok {:peer-data peer-data
-                       :peer-state (initial-state total-pieces)}}))))))))
+                      :peer-state (initial-state total-pieces)}}))))))))
 
 (defn close
   "Release a connected peer through the port. Returns nil."
@@ -111,3 +111,25 @@
   :fn #(= (:ret %)
           (boolean (and (not (-> % :args :connection-state :peer-choking))
                         (-> % :args :connection-state :am-interested)))))
+
+(defn request
+  "Block-request bytes for a piece's blocks over this connection.
+   Pure: gates on posture, then builds one Request message per block.
+   blocks are {:piece-index _ :offset _ :length _} maps as produced by
+   pieces/piece-blocks. Returns {:ok [bytes]} or
+   {:error :not-requestable} when the peer still chokes us."
+  [connection-state blocks]
+  (if-not (can-request? connection-state)
+    {:error :not-requestable :message "Peer is choking or uninterested"}
+    (reduce (fn [acc block]
+              (if (:error acc)
+                acc
+                (let [built (peer/build-message
+                             (peer/->Request (:piece-index block)
+                                             (:offset block)
+                                             (:length block)))]
+                  (if (:error built)
+                    built
+                    {:ok (conj (:ok acc) (:ok built))}))))
+            {:ok []}
+            blocks)))
