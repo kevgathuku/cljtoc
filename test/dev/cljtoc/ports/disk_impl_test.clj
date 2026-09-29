@@ -849,6 +849,25 @@
                                      (java.nio.file.Files/readAllBytes
                                       (.toPath (io/file output-dir "t" "a")))))))))
 
+(deftest write-prepared-piece-leaves-zero-length-files-alone-test
+  (testing "a prepared write touches only spanned files, keeping declared empties"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-empty-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4}
+                        {:path ["empty"] :length 0}
+                        {:path ["b"] :length 4}]}
+          layout (compile-layout info)
+          empty-file (io/file output-dir "t" "empty")]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))]
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 1 (byte-array [4 5 6 7]))))
+        (is (.exists empty-file))
+        (is (zero? (.length empty-file)))))))
+
 (deftest write-prepared-piece-refuses-unknown-piece-test
   (testing "a piece index beyond the layout is refused, nothing written"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))

@@ -114,6 +114,10 @@ Disk effect abstraction.
   (write-piece [this info-hash piece-index bytes] "Write verified piece to the piece cache")
   (write-output-piece [this layout output-dir piece-index bytes]
     "Write one verified piece into the torrent file layout under output-dir")
+  (prepare-output-layout [this layout output-dir]
+    "Resolve the whole declared layout once; returns {:ok prepared}")
+  (write-prepared-piece [this prepared output-dir piece-index bytes]
+    "Write one verified piece through the prepared layout")
   (initialize-output-layout [this layout output-dir]
     "Create every declared output path at its declared length, including zero-length files")
   (ensure-directory [this path] "Create directory if missing")
@@ -134,7 +138,24 @@ and sizes, every searched file declared at an equal length, the total
 equal to the declared sizes, starts chaining contiguously from zero):
 initialization enforces the full invariants once, while piece writes
 check the O(1) shape gate plus touched-path membership per piece, so the
-hot path stays flat in file count.
+hot path stays flat in file count. Filesystem resolution follows the same
+once-per-download shape: `run-download` calls `prepare-output-layout`
+once after init created every declared file, freezing the alias-free
+layout (canonical target and filesystem identity per declared path) into
+an explicit prepared value threaded through the coordinator env like the
+compiled layout — no hidden port state. Each piece write then goes
+through `write-prepared-piece`, which re-resolves only the touched files
+(containment, current canonical target and identity: O(touched) syscalls)
+and checks them against the snapshot (stability plus a touched-among-
+touched collision check, both pure); the untouched snapshot is not
+re-scanned, since stability plus prepare-time distinctness makes that
+comparison dead. A run without a prepared value (or a refused prepare)
+falls back to `write-output-piece`, which still resolves the whole layout
+per piece. The TOCTOU analysis lives in `write-prepared!`'s docstring
+(`src/dev/cljtoc/ports/disk_impl.clj`): a touched file redirected after
+prepare is refused before any byte lands; an untouched path newly aliased
+onto a touched target is refused when the untouched path itself is
+written.
 
 #### Result semantics
 
@@ -147,7 +168,8 @@ coordination layer's decision above this seam.
 |----------|--------------|
 | `{:ok metadata}` | `read-torrent-file` |
 | `{:ok bytes}` or `{:ok nil}` | `read-piece` (nil when not cached) |
-| `{:ok :written}` | `write-piece`, `write-output-piece` |
+| `{:ok :written}` | `write-piece`, `write-output-piece`, `write-prepared-piece` |
+| `{:ok prepared}` | `prepare-output-layout` |
 | `{:ok :initialized}` | `initialize-output-layout` |
 | `{:ok :created}` | `ensure-directory` |
 | `{:ok :saved}` | `save-state` |
