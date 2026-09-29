@@ -192,6 +192,7 @@ Each feature has a dedicated page under `doc/` (overview plus contract pages):
 - Prefer transducers over chained lazy seqs in domain hot paths (selection counts, block decomposition), and measure before claiming speed
 - Never use `with-redefs` in tests; drive seams through injected port doubles instead
 - Write `testing` context strings as behavior claims and use `are` for envelope tables
+- Log user-visible behavior changes in CHANGELOG.md under `[Unreleased]` (Keep a Changelog `Added`/`Fixed`); internal refactors and docs-only `[skip ci]` commits are exempt
 
 ## Common Errors to Avoid
 
@@ -212,6 +213,7 @@ All PRs must verify:
 5. New code has corresponding tests; domain tests are pure
 6. New public fns carry co-located fdefs; pure, total ones are pinned by `stest/check` (effect-port fns excluded with the reason recorded at the test site)
 7. Changed files are `cljfmt`-clean (`cljfmt fix` before committing, `cljfmt check` after)
+8. Behavior changes under `src/` add a CHANGELOG.md entry under `[Unreleased]`; internal refactors and docs-only `[skip ci]` commits are exempt
 
 ## Memory
 

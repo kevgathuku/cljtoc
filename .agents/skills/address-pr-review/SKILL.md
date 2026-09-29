@@ -32,7 +32,7 @@ POST one reply per thread (`in_reply_to` comment id): confirmed → what changed
 
 ## 5. Push
 
-Push the branch (the PR updates itself), the push itself usually triggers a fresh review.
+Push the branch (the PR updates itself), the push itself usually triggers a fresh review. If any fix in this round alters user-visible behavior, add a CHANGELOG.md entry under `[Unreleased]` before pushing.
 
 ## 6. File the findings
 
