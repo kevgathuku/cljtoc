@@ -81,6 +81,19 @@
 (s/def ::ok-result
   (s/keys :req-un [::ok]))
 
+;; Shared fdef shapes — the handshake input tuple, the raw-bytes input,
+;; and the ok/error envelope recur across the fdefs below; named once.
+;; Args stay loose (plain bytes?): the parsers and builders are total
+;; over invalid inputs and report them as error envelopes.
+(s/def ::handshake-args
+  (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?)))
+
+(s/def ::bytes-arg
+  (s/cat :b bytes?))
+
+(s/def ::envelope
+  (s/or :ok ::ok-result :error ::error-result))
+
 ;; parse-messages returns {:ok [messages] :remaining bytes}
 (s/def ::remaining bytes?)
 
@@ -151,8 +164,8 @@
     peer-id)))
 
 (s/fdef ->peer-handshake
-  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :args ::handshake-args
+  :ret  ::envelope
   :fn   (s/or
          :ok    #(= protocol-string (-> % :ret second :ok :protocol))
          :error #(= :error (-> % :ret first))))
@@ -195,8 +208,8 @@
              :peer-id peer-id})})))
 
 (s/fdef parse-handshake
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :args ::bytes-arg
+  :ret  ::envelope
   :fn   (s/or
          :ok    #(= protocol-string (-> % :ret second :ok :protocol))
          :error #(= :error (-> % :ret first))))
@@ -241,8 +254,8 @@
            peer-id)})))               ; 20-byte peer id
 
 (s/fdef build-handshake
-  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :args ::handshake-args
+  :ret  ::envelope
   :fn   (s/or
          :ok    #(= 68 (count (-> % :ret second :ok)))
          :error #(= :error (-> % :ret first))))
@@ -412,8 +425,8 @@
           (parse-message-payload (bit-and message-id 0xFF) payload-bytes))))))
 
 (s/fdef parse-message
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok ::ok-result :error ::error-result))
+  :args ::bytes-arg
+  :ret  ::envelope)
 
 (defn parse-messages
   "Parse multiple BitTorrent peer wire messages from a byte buffer.
@@ -441,7 +454,7 @@
       {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))}))) ;; No full message or too short for length prefix
 
 (s/fdef parse-messages
-  :args (s/cat :b bytes?)
+  :args ::bytes-arg
   :ret  (s/or :ok    (s/keys :req-un [::ok ::remaining])
               :error (s/keys :req-un [::error ::message]))
   :fn   (s/or
@@ -579,7 +592,7 @@
 
 (s/fdef build-message
   :args (s/cat :msg any?)
-  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :ret  ::envelope
   :fn   (s/or
          ;; A keep-alive is exactly 4 bytes; all others are >= 5 bytes.
          :ok    #(>= (count (-> % :ret second :ok)) 4)
@@ -607,7 +620,7 @@
 
 (s/fdef build-messages
   :args (s/cat :message-records (s/coll-of any?))
-  :ret  (s/or :ok ::ok-result :error ::error-result)
+  :ret  ::envelope
   :fn   (s/or
          :ok    #(bytes? (-> % :ret second :ok))
          :error #(= :error (-> % :ret first))))
