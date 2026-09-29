@@ -193,7 +193,7 @@ All PRs must verify:
 
 ## Memory
 
-After implementing an issue and opening its PR, file the key decision addressed in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
+After implementing an issue and opening its PR, file two records in the palace (wing `torrent_client_clj`): the key decision (room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written; and one drawer per new learning (room `lessons`): every discovery from the implementation a future session would otherwise re-derive the hard way — platform facts, diagnostic methods that worked, gotchas actually hit. Rule of thumb: if the session paid for it in debugging time, file it; if it merely confirms existing docs, skip it. Verify both landed via `mempalace_search` before moving on.
 
 After addressing PR review findings, file a **per-thread outcome record** in the same room: PR number, one line per thread with its verdict (confirmed / false positive / partially true) and either the fixing commit or the proof that refuted it, plus any deviation from the review as written. A thread left unfixed must be recorded as such, pointing at the issue that now carries it — a consolidated record, not one drawer per round, so the whole review history sits in one place.
 

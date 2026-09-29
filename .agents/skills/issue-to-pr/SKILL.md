@@ -67,6 +67,10 @@ Stage only intended files, commit with a message describing what changed and why
 
 Return the PR URL.
 
-## 10. File the decision
+## 10. File the decision and the learnings
 
-Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
+Two records, not one — the decision alone strands the discoveries that produced it (on #40 the hang diagnosis and predicate facts sat embedded in the decision drawer until asked for):
+
+- Decision (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
+- Learnings (same wing, room `lessons`, one drawer per lesson): every new discovery from this implementation that a future session would otherwise re-derive the hard way — platform facts (generator magnitudes, predicate ranges), diagnostic methods that worked (per-sym REPL timing for a hung pin), gotchas actually hit (stale-session false reds, out-of-domain probes that instrument rejects). Rule of thumb: if the session paid for it in debugging time, file it; if it merely confirms existing docs, skip it.
+- Verify both landed: `mempalace_search` the issue entity and confirm the new drawers rank first.

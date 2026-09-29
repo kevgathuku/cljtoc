@@ -1,10 +1,13 @@
 (ns dev.cljtoc.domain.pieces-test
   (:require [clojure.test :refer [deftest is testing]]
+            [clojure.set :as set]
+            [clojure.spec.alpha :as s]
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
             [dev.cljtoc.domain.bencode :as bencode]
-            [dev.cljtoc.domain.pieces :as pieces]))
+            [dev.cljtoc.domain.pieces :as pieces]
+            [dev.cljtoc.test-utils :as test-utils]))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: US1 — Track Piece Download Status
@@ -430,6 +433,25 @@
       (is (= 0 (:offset (first ok))))
       (is (= 1 (:length (first ok)))))))
 
+(deftest piece-length-huge-index-test
+  (testing "a Long/MAX index intersects nowhere and reports zero (total over nat-int)"
+    (let [huge Long/MAX_VALUE]
+      (is (= 0 (pieces/piece-length huge 16384 1000)))
+      (is (= 1000 (pieces/piece-length 0 huge 1000)))
+      (is (= 16384 (pieces/piece-length 0 16384 huge)))
+      (is (= :invalid-input (:error (pieces/piece-blocks huge 16384 1000)))))))
+
+(deftest piece-blocks-double-precision-test
+  (testing "the final piece past 2^53 is accepted (double math rounded its count down)"
+    ;; total-length 2^53+1 at 2 bytes/piece is 4503599627370497 pieces;
+    ;; (double total-length) loses the +1 and the old ceiling rejected
+    ;; the true last index.
+    (let [total-length 9007199254740993
+          {:keys [ok error]} (pieces/piece-blocks 4503599627370496 2 total-length)]
+      (is (nil? error))
+      (is (= 1 (count ok)))
+      (is (= 1 (:length (first ok)))))))
+
 (deftest requeue-verified-test
   (testing "a verified piece whose cache bytes are gone returns to needed"
     (let [state (:ok (pieces/mark-in-flight (pieces/initial-piece-state 5) 2))
@@ -441,3 +463,106 @@
         (is (contains? (:needed state3) 2))
         (is (= 0 (pieces/verified-count state3)))
         (is (= 5 (pieces/needed-count state3)))))))
+
+;; ---------------------------------------------------------------------------
+;; GROUP 7: ::piece-state shape (issue #40)
+;;
+;; ::piece-state must admit exactly the states the domain can produce:
+;; needed / in-flight / verified are disjoint and their union is
+;; range(total-pieces). Anything else is unreachable, and the default
+;; s/keys generator builds such shapes (e.g. two verified pieces for a
+;; one-piece torrent), which no transition :fn can survive.
+;; ---------------------------------------------------------------------------
+
+(deftest piece-state-spec-rejects-unreachable-shapes-test
+  (testing "over-full verified set (issue #40 repro) is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 1 :needed #{} :in-flight #{} :verified #{0 1}}))))
+  (testing "out-of-range indices are invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 2 :needed #{0 1 5} :in-flight #{} :verified #{}}))))
+  (testing "overlapping sets are invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 2 :needed #{0} :in-flight #{0} :verified #{1}}))))
+  (testing "a short partition (missing index) is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 2 :needed #{0} :in-flight #{} :verified #{}}))))
+  (testing "a non-positive total is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 0 :needed #{} :in-flight #{} :verified #{}}))))
+  (testing "non-set buckets are invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 2 :needed [0 1] :in-flight #{} :verified #{}}))))
+  (testing "a missing bucket is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                       {:total-pieces 1 :needed #{0} :in-flight #{}}))))
+  (testing "a non-map is invalid"
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state nil)))
+    (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state []))))
+  (testing "a huge total with empty sets rejects without building the range"
+    (is (false? (s/valid? :dev.cljtoc.domain.pieces/piece-state
+                          {:total-pieces 1000000000000 :needed #{} :in-flight #{} :verified #{}}))))
+  (testing "fail-closed branches direct (s/keys rejects these first, so the\n   predicate's own guards are reachable only by direct call)"
+    (let [valid? @#'pieces/valid-partition?]
+      (is (true? (valid? {:total-pieces 2 :needed #{0} :in-flight #{1} :verified #{}})))
+      (is (false? (valid? nil)))
+      (is (false? (valid? [])))
+      (is (false? (valid? {:total-pieces 0 :needed #{} :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces "2" :needed #{0 1} :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces 2 :needed [0 1] :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0 1} :in-flight #{} :verified [0]})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0} :in-flight #{0} :verified #{1}})))
+      (is (false? (valid? {:total-pieces 3 :needed #{0 2} :in-flight #{1} :verified #{0}})))
+      (is (false? (valid? {:total-pieces 3 :needed #{2} :in-flight #{0 1} :verified #{1}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0 1 5} :in-flight #{} :verified #{}})))
+      (is (false? (valid? {:total-pieces 2 :needed #{0 "x"} :in-flight #{} :verified #{}})))))
+  (testing "every reachable shape stays valid"
+    (let [state0 (pieces/initial-piece-state 3)
+          state1 (:ok (pieces/mark-in-flight state0 1))
+          state2 (:ok (pieces/mark-verified state1 1))
+          state3 (:ok (pieces/requeue-verified state2 1))]
+      (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state0))
+      (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state1))
+      (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state2))
+      (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state3)))))
+
+;; fdef specs hold generatively (stest/check), mirroring
+;; torrent_test.clj / download_test.clj. assemble-piece is excluded on
+;; principle, not by accident: it throws on malformed blocks instead of
+;; returning an error envelope (issue #41), so it is partial over its
+;; declared (s/coll-of map?) args and no generator can make it
+;; check-grade until that issue lands.
+;; ---------------------------------------------------------------------------
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "every check-grade pieces fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.domain.pieces/initial-piece-state
+                      dev.cljtoc.domain.pieces/needed-count
+                      dev.cljtoc.domain.pieces/in-flight-count
+                      dev.cljtoc.domain.pieces/verified-count
+                      dev.cljtoc.domain.pieces/complete?
+                      dev.cljtoc.domain.pieces/mark-in-flight
+                      dev.cljtoc.domain.pieces/mark-verified
+                      dev.cljtoc.domain.pieces/requeue-piece
+                      dev.cljtoc.domain.pieces/requeue-verified
+                      dev.cljtoc.domain.pieces/select-piece
+                      dev.cljtoc.domain.pieces/piece-length
+                      dev.cljtoc.domain.pieces/piece-blocks
+                      dev.cljtoc.domain.pieces/verify-piece
+                      dev.cljtoc.domain.pieces/endgame?
+                      dev.cljtoc.domain.pieces/select-pieces-endgame]
+                    50)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
+
+(defspec piece-state-generator-yields-partitions 100
+  (prop/for-all
+   [state (s/gen :dev.cljtoc.domain.pieces/piece-state)]
+   (let [{:keys [total-pieces needed in-flight verified]} state]
+     (and (= (set (range total-pieces))
+             (set/union needed in-flight verified))
+          (empty? (set/intersection needed in-flight))
+          (empty? (set/intersection needed verified))
+          (empty? (set/intersection in-flight verified))))))

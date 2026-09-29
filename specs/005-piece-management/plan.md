@@ -44,7 +44,7 @@ Implement pure domain functions for BitTorrent piece management: immutable piece
 
 | Principle | Status | Evidence |
 |-----------|--------|----------|
-| **I. Pure Domain Layer** | ✅ PASS | `pieces.clj` uses only `[clojure.spec.alpha]` and `[dev.cljtoc.domain.bencode]` — both domain-safe. No I/O imports. |
+| **I. Pure Domain Layer** | ✅ PASS | `pieces.clj` uses only `[clojure.spec.alpha]`, `[clojure.test.check.generators]` (pure data generation, no I/O) and `[dev.cljtoc.domain.bencode]` — all domain-safe. No I/O imports. |
 | **II. Explicit Effect Boundaries** | ✅ PASS | SHA-1 is computed via `bencode/sha1-hash` (pure JVM computation, not I/O). Coordination layer owns bitfield-to-set conversion. |
 | **III. Crash-Only Supervision** | ⚪ N/A | Still N/A at Domain Layer. |
 | **IV. No Hidden State** | ✅ PASS | `PieceState` record uses persistent sets. All transitions via `assoc`/`conj`/`disj`. No mutation. |

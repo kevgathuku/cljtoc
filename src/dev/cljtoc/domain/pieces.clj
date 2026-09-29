@@ -34,6 +34,7 @@
     ;; => {:ok 7}  or  {:error :hash-mismatch ...}"
   (:require [clojure.set :as set]
             [clojure.spec.alpha :as s]
+            [clojure.test.check.generators :as gen]
             [dev.cljtoc.domain.bencode :as bencode]))
 
 ;; ============================================================================
@@ -60,11 +61,71 @@
   16384)
 
 ;; ============================================================================
+;; Piece-state shape — partition invariant + index bounds (issue #40)
+;; ============================================================================
+
+(defn- valid-partition?
+  "Returns true when needed / in-flight / verified partition
+  range(total-pieces): pairwise disjoint, jointly total-pieces large,
+  and every member a nat-int below total-pieces. Disjointness plus an
+  exact count pins the union to the range without building it, so even
+  a huge total with empty sets rejects in constant time. Total over
+  maps; anything else answers false instead of throwing."
+  [state]
+  (and (map? state)
+       (let [{:keys [total-pieces needed in-flight verified]} state]
+         (and (pos-int? total-pieces)
+              (set? needed)
+              (set? in-flight)
+              (set? verified)
+              (empty? (set/intersection needed in-flight))
+              (empty? (set/intersection needed verified))
+              (empty? (set/intersection in-flight verified))
+              (= total-pieces (+ (count needed) (count in-flight) (count verified)))
+              (every? (fn [member] (and (nat-int? member) (< member total-pieces)))
+                      (concat needed in-flight verified))))))
+
+(def ^:private gen-piece-state
+  "Generates reachable PieceState records: a total in [1, 12] plus a
+  random needed / in-flight / verified partition of its range, so every
+  generated state is one the transitions could actually produce."
+  (gen/bind (gen/choose 1 12)
+            (fn [total-pieces]
+              (gen/fmap (fn [buckets]
+                          (let [assigned (map vector (range total-pieces) buckets)
+                                in-bucket (fn [bucket]
+                                            (set (map first (filter #(= bucket (second %)) assigned))))]
+                            (->PieceState total-pieces
+                                          (in-bucket 0)
+                                          (in-bucket 1)
+                                          (in-bucket 2))))
+                        (gen/vector (gen/choose 0 2) total-pieces)))))
+
+;; ============================================================================
 ;; Specs — primitive types
 ;; ============================================================================
 
 (s/def ::piece-index nat-int?)
-(s/def ::total-pieces pos-int?)
+;; Bounded generation only: spec's default pos-int? gen emits magnitudes
+;; up to ~1e18 (measured), and initial-piece-state materializes
+;; (range total-pieces), so an unbounded draw never terminates. Sized
+;; generation keeps realistic scales — single-piece through
+;; multi-thousand-piece torrents — with a hard cap for termination.
+;; Conformance stays pos-int?: instrument/valid? reject nothing they
+;; accepted before.
+(s/def ::total-pieces
+  (s/with-gen pos-int?
+    (constantly (gen/sized
+                 (fn [size] (gen/choose 1 (min 4096 (max 32 (inc size)))))))))
+;; Bounded generation only: piece-blocks materializes one Block record per
+;; 16 KiB of the piece, so an unbounded byte size draws planet-sized
+;; vectors that never terminate (same feasibility class as ::total-pieces).
+;; The 1 MiB cap matches the file's own block-coverage properties.
+;; Conformance stays pos-int?.
+(s/def ::byte-size
+  (s/with-gen pos-int?
+    (constantly (gen/sized
+                 (fn [size] (gen/choose 1 (min 1048576 (max 16384 (inc size)))))))))
 (s/def ::piece-index-set (s/coll-of nat-int? :kind set?))
 ;; ::length validates the :length field on Block records (1 to 16384 bytes)
 (s/def ::length (s/int-in 1 (inc block-size)))
@@ -78,7 +139,10 @@
 (s/def ::verified ::piece-index-set)
 
 (s/def ::piece-state
-  (s/keys :req-un [::total-pieces ::needed ::in-flight ::verified]))
+  (s/with-gen
+    (s/and (s/keys :req-un [::total-pieces ::needed ::in-flight ::verified])
+           valid-partition?)
+    (constantly gen-piece-state)))
 
 (s/def ::offset nat-int?)
 
@@ -311,16 +375,19 @@
 
   Total over nat-int inputs: an out-of-range index intersects the torrent
   nowhere and reports zero rather than going negative. Refusing such
-  indices stays with callers that own a range (piece-blocks)."
+  indices stays with callers that own a range (piece-blocks). The span
+  derivation runs promotion-safe (bigint start), so a boundary index
+  like Long/MAX — which intersects nowhere — reports zero instead of
+  throwing on the long cast; the clamped result always fits a long."
   [piece-index standard-piece-length total-length]
-  (max 0 (- (min (* (long (inc piece-index)) standard-piece-length)
-                 total-length)
-            (* piece-index standard-piece-length))))
+  (let [start (* (bigint piece-index) standard-piece-length)
+        end (min (+ start standard-piece-length) total-length)]
+    (long (max 0 (- end start)))))
 
 (s/fdef piece-length
   :args (s/cat :piece-index           ::piece-index
-               :standard-piece-length pos-int?
-               :total-length          pos-int?)
+               :standard-piece-length ::byte-size
+               :total-length          ::byte-size)
   :ret nat-int?
   :fn #(<= (:ret %) (-> % :args :standard-piece-length)))
 
@@ -341,7 +408,11 @@
   Returns {:ok [Block]} or {:error :invalid-input :message string} if
   piece-index is out of range (>= total piece count)."
   [piece-index standard-piece-length total-length]
-  (let [total-pieces (long (Math/ceil (/ (double total-length) standard-piece-length)))]
+  ;; Exact integer ceiling: double division loses precision past 2^53 and
+  ;; rejects the true final piece. The bigint sum cannot overflow (the
+  ;; quotient never exceeds total-length, so the closing long is exact).
+  (let [total-pieces (long (quot (+ (bigint total-length) standard-piece-length -1)
+                                 standard-piece-length))]
     (if (>= piece-index total-pieces)
       (piece-error :invalid-input
                    (str "Piece index " piece-index
@@ -358,16 +429,16 @@
 
 (s/fdef piece-blocks
   :args (s/cat :piece-index           ::piece-index
-               :standard-piece-length pos-int?
-               :total-length          pos-int?)
+               :standard-piece-length ::byte-size
+               :total-length          ::byte-size)
   :ret  map?
   :fn   #(or (keyword? (-> % :ret :error))
              (let [blocks (-> % :ret :ok)
                    pi     (-> % :args :piece-index)
                    spl    (-> % :args :standard-piece-length)
                    tl     (-> % :args :total-length)
-                   expected-len (- (min (* (long (inc pi)) spl) tl)
-                                   (* pi spl))]
+                   expected-len (long (max 0 (- (min (+ (* (bigint pi) spl) spl) tl)
+                                                (* (bigint pi) spl))))]
                (and (seq blocks)
                     (every? (fn [b] (<= (:length b) 16384)) blocks)
                     (= expected-len (reduce + (map :length blocks)))))))
