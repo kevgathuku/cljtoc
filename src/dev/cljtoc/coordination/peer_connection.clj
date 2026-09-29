@@ -12,6 +12,7 @@
    and delegates each lifecycle step here. Nothing in this namespace
    touches core.async."
   (:require [clojure.spec.alpha :as s]
+            [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
@@ -174,7 +175,9 @@
 ;; block-requests takes a PeerState (BitSet inside: un-generatable,
 ;; recorded at the generative pin in peer-connection-test), so
 ;; stest/check cannot run this fdef; the mutation tests pin it instead.
+;; blocks are pieces/Block shapes (the ::block spec's only other home
+;; is its own record in domain.pieces — referenced, not moved).
 (s/fdef block-requests
   :args (s/cat :connection-state :dev.cljtoc.protocol.peer-state/peer-state
-               :blocks (s/coll-of map?))
+               :blocks (s/coll-of ::pieces/block))
   :ret map?)
