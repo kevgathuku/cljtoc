@@ -17,12 +17,6 @@
 ;; Test Helpers
 ;; ============================================================================
 
-(defn bytes-equal?
-  "Compare two byte arrays for equality."
-  [^bytes a ^bytes b]
-  (and (= (count a) (count b))
-       (every? true? (map = (seq a) (seq b)))))
-
 (defn make-random-bytes
   "Create a byte array of given length with random values."
   [len]
@@ -41,9 +35,9 @@
       (is (some? (:ok handshake)) "Should return ok key")
       (let [hs (:ok handshake)]
         (is (= "BitTorrent protocol" (:protocol hs)))
-        (is (bytes-equal? reserved (:reserved hs)))
-        (is (bytes-equal? info-hash (:info-hash hs)))
-        (is (bytes-equal? peer-id (:peer-id hs)))))))
+        (is (utils/bytes-equal? reserved (:reserved hs)))
+        (is (utils/bytes-equal? info-hash (:info-hash hs)))
+        (is (utils/bytes-equal? peer-id (:peer-id hs)))))))
 
 (deftest peer-handshake-default-reserved-test
   (testing "PeerHandshake uses default reserved bytes"
@@ -93,9 +87,9 @@
       (is (some? (:ok parsed)) "Should parse successfully")
       (let [hs (:ok parsed)]
         (is (= "BitTorrent protocol" (:protocol hs)))
-        (is (bytes-equal? info-hash (:info-hash hs)))
-        (is (bytes-equal? peer-id (:peer-id hs)))
-        (is (bytes-equal? reserved (:reserved hs)))))))
+        (is (utils/bytes-equal? info-hash (:info-hash hs)))
+        (is (utils/bytes-equal? peer-id (:peer-id hs)))
+        (is (utils/bytes-equal? reserved (:reserved hs)))))))
 
 (deftest parse-handshake-incomplete-test
   (testing "Incomplete handshake returns error"
@@ -127,7 +121,7 @@
           handshake-bytes (:ok built)
           parsed (peer/parse-handshake handshake-bytes)]
       (is (some? (:ok parsed)))
-      (is (bytes-equal? reserved (:reserved (:ok parsed)))))))
+      (is (utils/bytes-equal? reserved (:reserved (:ok parsed)))))))
 
 ;; ============================================================================
 ;; Handshake Building Tests
@@ -155,9 +149,9 @@
       ;; Bytes 20-27: reserved
       (is (= 0 (bit-and (aget bytes 20) 0xFF)))
       ;; Bytes 28-47: info-hash
-      (is (bytes-equal? info-hash (byte-array (take 20 (drop 28 bytes)))))
+      (is (utils/bytes-equal? info-hash (byte-array (take 20 (drop 28 bytes)))))
       ;; Bytes 48-67: peer-id
-      (is (bytes-equal? peer-id (byte-array (take 20 (drop 48 bytes))))))))
+      (is (utils/bytes-equal? peer-id (byte-array (take 20 (drop 48 bytes))))))))
 
 (deftest build-handshake-validation-test
   (testing "Invalid info-hash length returns error"
@@ -216,7 +210,7 @@
           result (peer/parse-message message-bytes)]
       (is (some? (:ok result)) "Should parse successfully")
       (is (instance? dev.cljtoc.protocol.peer.Bitfield (:ok result)))
-      (is (bytes-equal? bitfield-payload (:bytes (:ok result)))))))
+      (is (utils/bytes-equal? bitfield-payload (:bytes (:ok result)))))))
 
 (deftest parse-request-message-test
   (testing "Request message parses with all three fields"
@@ -252,7 +246,7 @@
       (is (instance? dev.cljtoc.protocol.peer.Piece (:ok result)))
       (is (= piece-index (:piece-index (:ok result))))
       (is (= begin (:begin (:ok result))))
-      (is (bytes-equal? data (:data (:ok result)))))))
+      (is (utils/bytes-equal? data (:data (:ok result)))))))
 
 (deftest parse-cancel-message-test
   (testing "Cancel message parses with all three fields"
@@ -362,9 +356,9 @@
                       handshake-bytes (:ok built)
                       parsed (peer/parse-handshake handshake-bytes)]
                   (and (some? (:ok parsed))
-                       (bytes-equal? info-bytes (:info-hash (:ok parsed)))
-                       (bytes-equal? peer-bytes (:peer-id (:ok parsed)))
-                       (bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
+                       (utils/bytes-equal? info-bytes (:info-hash (:ok parsed)))
+                       (utils/bytes-equal? peer-bytes (:peer-id (:ok parsed)))
+                       (utils/bytes-equal? reserved-bytes (:reserved (:ok parsed)))))))
 
 (defspec peer-message-parsing-generative 100
   (prop/for-all [msg-type (tc-gen/elements [:choke :unchoke :interested :not-interested :have :bitfield :request :piece :cancel])
