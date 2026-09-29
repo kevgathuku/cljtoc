@@ -14,6 +14,7 @@
             piece-cache
             output-pieces
             output-layouts
+            prepared-writes
             layouts-initialized
             state-files
             directories-created]
@@ -139,6 +140,7 @@
             (do
               (swap! output-layouts conj layout)
               (swap! output-pieces assoc piece-index bytes)
+              (swap! prepared-writes conj piece-index)
               {:ok :written}))))
       (catch Exception error
         {:error :write-error :message (.getMessage error)})))
@@ -181,6 +183,7 @@
                    (atom {})
                    (atom [])
                    (atom [])
+                   (atom [])
                    (atom {})
                    (atom #{}))))
 
@@ -211,6 +214,16 @@
 
 (defn get-output-layouts [mock-disk]
   @(:output-layouts mock-disk))
+
+(defn get-prepared-writes
+  "Piece indexes written through write-prepared-piece: empty when every
+   write took the full-path fallback."
+  [mock-disk]
+  @(:prepared-writes mock-disk))
+
+(s/fdef get-prepared-writes
+  :args (s/cat :mock-disk any?)
+  :ret vector?)
 
 (s/fdef get-output-layouts
   :args (s/cat :mock-disk any?)

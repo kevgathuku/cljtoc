@@ -757,6 +757,18 @@
               :message (str "Failed to write piece " piece-idx ": " message)
               :failed-piece piece-idx}}]))
 
+(defn- write-output
+  "Write one verified piece into the output layout: the prepared fast path
+   (O(touched) re-validation against the run's prepared layout) when the run
+   prepared one, the full per-piece fallback otherwise. Callers thread the
+   prepared value explicitly like the compiled layout; nil means the run
+   never prepared (or preparation failed) and every write pays the full
+   resolution. Returns the port's {:ok ...} / {:error ...} envelope."
+  [disk-port layout prepared output-dir piece-index bytes]
+  (if (some? prepared)
+    (disk/write-prepared-piece disk-port prepared output-dir piece-index bytes)
+    (disk/write-output-piece disk-port layout output-dir piece-index bytes)))
+
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
    over the network port, verified pieces go to the piece cache and the
@@ -775,7 +787,7 @@
          [effect & rest-effects] effects]
     (if (nil? effect)
       [state :ok]
-      (let [{:keys [ports conn-stats output-layout]} env
+      (let [{:keys [ports conn-stats output-layout prepared-layout]} env
             {:keys [network-port disk-port time-port]} ports]
         (cond
           (:send effect)
@@ -806,9 +818,10 @@
             (if (:error result)
               ;; Bytes never landed in the cache: unwind and fail.
               (fail-verified-write state effects piece-idx (:message result) network-port)
-              (let [output-result (disk/write-output-piece
+              (let [output-result (write-output
                                    disk-port
                                    output-layout
+                                   prepared-layout
                                    (:output-dir download)
                                    piece-idx data)]
                 (if (:error output-result)
@@ -884,6 +897,9 @@
    env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
           :output-layout (:ok (torrent/compile-output-layout info)) — the compiled
                          layout value (not the result envelope), derived once per download
+          :prepared-layout (:ok (disk/prepare-output-layout ...)) — the prepared
+                         layout value, resolved once per download; nil takes the
+                         full per-piece fallback
           :ports {:network-port ... :disk-port ... :time-port ...}
           :conn-stats (atom {:connected n :failed n})
           :total-attempted n}"
@@ -1009,48 +1025,57 @@
    carries the in-progress :download, so a write that fails after earlier
    pieces were requeued does not discard that progress: the failed record
    keeps it instead of re-claiming the holey pieces as verified."
-  [download disk-port output-layout]
-  (loop [download download
-         remaining (sort (:verified (:piece-state download)))]
-    (if (empty? remaining)
-      {:ok download}
-      (let [piece-index (first remaining)
-            rest-pieces (rest remaining)
-            cached (disk/read-piece disk-port (get-in download [:torrent :info-hash]) piece-index)]
-        (cond
-          (:error cached)
-          (assoc cached :download download)
+  ;; The 3-arity prepares once for the whole loop and falls back per piece
+  ;; when preparation itself is refused: the full path still alias-checks
+  ;; every piece, so a refused prepare costs speed, never safety.
+  ([download disk-port output-layout]
+   (materialize-verified-pieces
+    download disk-port output-layout
+    (:ok (disk/prepare-output-layout
+          disk-port output-layout (:output-dir download)))))
+  ([download disk-port output-layout prepared]
+   (loop [download download
+          remaining (sort (:verified (:piece-state download)))]
+     (if (empty? remaining)
+       {:ok download}
+       (let [piece-index (first remaining)
+             rest-pieces (rest remaining)
+             cached (disk/read-piece disk-port (get-in download [:torrent :info-hash]) piece-index)]
+         (cond
+           (:error cached)
+           (assoc cached :download download)
 
           ;; Bytes the cache can no longer vouch for go back to the swarm:
           ;; missing bytes, or bytes failing their torrent hash (the real
           ;; port returns whatever the cache file holds, so a truncated
           ;; file would otherwise land in the output while the piece stays
           ;; verified). Without hashes there is nothing to check against.
-          (let [cached-bytes (:ok cached)
-                expected (nth (get-in download [:torrent :info :pieces])
-                              piece-index nil)]
-            (or (nil? cached-bytes)
-                (and (some? expected)
-                     (not (:ok (pieces/verify-piece
-                                piece-index cached-bytes expected))))))
-          (let [requeued (pieces/requeue-verified (:piece-state download)
-                                                  piece-index)]
-            (if (:ok requeued)
-              (recur (assoc download :piece-state (:ok requeued)) rest-pieces)
+           (let [cached-bytes (:ok cached)
+                 expected (nth (get-in download [:torrent :info :pieces])
+                               piece-index nil)]
+             (or (nil? cached-bytes)
+                 (and (some? expected)
+                      (not (:ok (pieces/verify-piece
+                                 piece-index cached-bytes expected))))))
+           (let [requeued (pieces/requeue-verified (:piece-state download)
+                                                   piece-index)]
+             (if (:ok requeued)
+               (recur (assoc download :piece-state (:ok requeued)) rest-pieces)
               ;; The index came out of the verified set this loop is walking,
               ;; so the transition cannot legitimately fail. Surface it
               ;; anyway: assoc'ing a nil piece state would strand the record.
-              (assoc requeued :download download)))
+               (assoc requeued :download download)))
 
-          :else
-          (let [written (disk/write-output-piece disk-port
-                                                 output-layout
-                                                 (:output-dir download)
-                                                 piece-index
-                                                 (:ok cached))]
-            (if (:error written)
-              (assoc written :download download)
-              (recur download rest-pieces))))))))
+           :else
+           (let [written (write-output disk-port
+                                       output-layout
+                                       prepared
+                                       (:output-dir download)
+                                       piece-index
+                                       (:ok cached))]
+             (if (:error written)
+               (assoc written :download download)
+               (recur download rest-pieces)))))))))
 
 (defn run-download
   "Run the download to completion. Blocking call.
@@ -1088,6 +1113,17 @@
                           disk-port
                           layout
                           (:output-dir download))
+             ;; The one full filesystem resolution this run performs: after
+             ;; init created every declared file, freeze the alias-free
+             ;; layout so every later piece write re-validates only the
+             ;; files it touches. A refused prepare fails the download
+             ;; before any peer is dialed, like a refused init.
+             prepare-result (when-not (:error init-result)
+                              (disk/prepare-output-layout
+                               disk-port
+                               layout
+                               (:output-dir download)))
+             prepared (:ok prepare-result)
              ;; Materialize before asking whether the download is complete: a
              ;; resumed record's verified bytes are in the piece cache, and
              ;; initialize-output-layout only created the files at their
@@ -1100,13 +1136,17 @@
                             (:error init-result)
                             init-result
 
+                            (:error prepare-result)
+                            (assoc prepare-result :download download)
+
                             use-carried?
                             {:ok download}
 
                             :else
                             (materialize-verified-pieces download
                                                          disk-port
-                                                         layout))
+                                                         layout
+                                                         prepared))
             ;; Read only where materialization succeeded; the two failure
             ;; branches below still report on the original record.
              revived (:ok materialized)
@@ -1123,6 +1163,11 @@
            (fail-disk download
                       "Failed to initialize output layout"
                       (:message init-result))
+
+           (:error prepare-result)
+           (fail-disk download
+                      "Failed to prepare output layout"
+                      (:message prepare-result))
 
            (:error materialized)
            (fail-disk (:download materialized)
@@ -1176,6 +1221,7 @@
                                             :total-length total-length
                                             :total-pieces total-pieces}
                               :output-layout layout
+                              :prepared-layout prepared
                               :ports {:network-port network-port
                                       :disk-port disk-port
                                       :time-port time-port}
