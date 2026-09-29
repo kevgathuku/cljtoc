@@ -108,6 +108,16 @@
       (is (= :disconnected
              (:error (network/receive-message net (peer-in (byte-array 2)))))))))
 
+(deftest a-hostile-length-prefix-is-an-envelope-not-a-throw-test
+  (testing "a negative declared length yields :receive-failed: the framing
+            allocation throws where every byte was delivered, so only the
+            port's catch stands between the call and a stack trace"
+    (let [result (network/receive-message
+                  (network-impl/create)
+                  ;; 0xFFFFFFFF big-endian: bytes-to-int32 reads -1.
+                  (peer-in (byte-array [-1 -1 -1 -1])))]
+      (is (= :receive-failed (:error result)) (pr-str result)))))
+
 (deftest a-valid-handshake-comes-back-parsed-test
   (testing "the port's success return is what this exercises. 68 zero bytes
             parse to :unsupported-protocol, and an envelope check would have

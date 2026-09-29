@@ -65,3 +65,8 @@
    mutation-based specs break one field at a time."
   [piece-length file-lengths]
   (:ok (torrent/compile-output-layout (layout-test-info piece-length file-lengths))))
+
+(defn make-bytes
+  "Create a byte array from a sequence of byte values."
+  [& vals]
+  (byte-array (map unchecked-byte vals)))

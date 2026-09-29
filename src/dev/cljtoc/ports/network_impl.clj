@@ -6,7 +6,8 @@
             [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
-            [dev.cljtoc.protocol.tracker :as tracker])
+            [dev.cljtoc.protocol.tracker :as tracker]
+            [dev.cljtoc.utils :as utils])
   (:import [java.net DatagramPacket DatagramSocket InetSocketAddress Socket
             HttpURLConnection URI URL]
            [java.io ByteArrayOutputStream InputStream]
@@ -220,11 +221,11 @@
     (try
       (let [in (:in peer)
             len-bytes (read-fully in 4)
-            msg-len (peer/bytes-to-int32 len-bytes)]
+            msg-len (utils/bytes-to-int32 len-bytes)]
         (if (zero? msg-len)
           {:ok (peer/->KeepAlive)}
           (let [payload (read-fully in msg-len)
-                full-msg (peer/concat-bytes len-bytes payload)]
+                full-msg (utils/concat-bytes len-bytes payload)]
             (peer/parse-message full-msg))))
       (catch java.io.EOFException _
         {:error :disconnected :message "Peer disconnected"})

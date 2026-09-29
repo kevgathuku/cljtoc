@@ -43,8 +43,8 @@
      (build-message (->Request 0 0 99999))
      ;; => {:error :invalid-input :message \"Request length exceeds max block size (99999 > 16384)\"}"
   (:require [clojure.spec.alpha :as s]
-            [clojure.spec.gen.alpha :as gen]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [dev.cljtoc.utils :as utils])
   (:import [java.util BitSet]))
 
 ;; ============================================================================
@@ -54,30 +54,9 @@
 ;; Byte array specs
 (s/def ::bytes bytes?)
 
-(s/def ::byte-array-4
-  (s/and bytes? #(= 4 (count %))))
-
-(s/def ::byte-array-8
-  (s/and bytes? #(= 8 (count %))))
-
-(s/def ::byte-array-20
-  (s/and bytes? #(= 20 (count %))))
-
-(s/def ::byte-array-68
-  (s/and bytes? #(= 68 (count %))))
-
-;; Integer specs with ranges
-(s/def ::uint32
-  (s/int-in 0 4294967296))
-
-(s/def ::uint16
-  (s/int-in 0 65536))
-
-(s/def ::int32
-  (s/int-in -2147483648 2147483648))
-
-(s/def ::int16
-  (s/int-in -32768 32768))
+;; Sized byte arrays and wire integers live in dev.cljtoc.utils now —
+;; the byte utilities carry their contracts with them. The composites
+;; below compose on utils' specs.
 
 ;; Protocol string spec
 (s/def ::protocol-string
@@ -85,9 +64,9 @@
 
 ;; PeerHandshake specs
 (s/def ::protocol ::protocol-string)
-(s/def ::reserved ::byte-array-8)
-(s/def ::info-hash ::byte-array-20)
-(s/def ::peer-id ::byte-array-20)
+(s/def ::reserved ::utils/byte-array-8)
+(s/def ::info-hash ::utils/byte-array-20)
+(s/def ::peer-id ::utils/byte-array-20)
 
 (s/def ::peer-handshake
   (s/keys :req-un [::protocol ::reserved ::info-hash ::peer-id]))
@@ -99,109 +78,35 @@
 (s/def ::error-result
   (s/keys :req-un [::error ::message]))
 
+;; Generic success value: :ok payloads are heterogeneous by design
+;; (byte arrays from builders, records from parsers), so any? — same
+;; precedent as protocol.tracker.spec/::ok. any? changes no conformance
+;; (everything accepted before stays accepted) but gives s/gen a
+;; registered spec to draw from.
+(s/def ::ok any?)
+
 (s/def ::ok-result
   (s/keys :req-un [::ok]))
+
+;; Shared fdef shapes — the handshake input tuple, the raw-bytes input,
+;; and the ok/error envelope recur across the fdefs below; named once.
+;; Args stay loose (plain bytes?): the parsers and builders are total
+;; over invalid inputs and report them as error envelopes.
+(s/def ::handshake-args
+  (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?)))
+
+(s/def ::bytes-arg
+  (s/cat :b bytes?))
+
+(s/def ::envelope
+  (s/or :ok ::ok-result :error ::error-result))
 
 ;; parse-messages returns {:ok [messages] :remaining bytes}
 (s/def ::remaining bytes?)
 
-;; ============================================================================
-;; Byte Utilities
-;; ============================================================================
+;; NOTE: byte utilities (bytes-to-int32, int32-to-bytes, bytes-to-int16,
+;; int16-to-bytes, concat-bytes) live in dev.cljtoc.utils now.
 
-(defn bytes-to-int32
-  "Convert 4 bytes (big-endian) to signed 32-bit integer.
-   
-   Args:
-     bytes - byte array of exactly 4 bytes
-     offset - starting position (default 0)
-   
-   Returns:
-     32-bit signed integer"
-  ([^bytes b]
-   (bytes-to-int32 b 0))
-  ([^bytes b offset]
-   {:pre [(>= (count b) (+ offset 4))]}
-   (let [unsigned (bit-or (bit-shift-left (bit-and (aget b offset) 0xFF) 24)
-                          (bit-shift-left (bit-and (aget b (+ offset 1)) 0xFF) 16)
-                          (bit-shift-left (bit-and (aget b (+ offset 2)) 0xFF) 8)
-                          (bit-and (aget b (+ offset 3)) 0xFF))]
-     ;; Convert unsigned to signed using bit-shift-left/right trick
-     (bit-shift-right (bit-shift-left unsigned 32) 32))))
-
-(defn int32-to-bytes
-  "Convert signed 32-bit integer to 4 bytes (big-endian).
-   
-   Args:
-     value - 32-bit signed integer
-   
-   Returns:
-     Byte array of exactly 4 bytes"
-  [value]
-  {:pre [(s/valid? ::int32 value)]}
-  (let [b (byte-array 4)]
-    (aset b 0 (unchecked-byte (bit-and (bit-shift-right value 24) 0xFF)))
-    (aset b 1 (unchecked-byte (bit-and (bit-shift-right value 16) 0xFF)))
-    (aset b 2 (unchecked-byte (bit-and (bit-shift-right value 8) 0xFF)))
-    (aset b 3 (unchecked-byte (bit-and value 0xFF)))
-    b))
-
-(defn bytes-to-int16
-  "Convert 2 bytes (big-endian) to signed 16-bit integer.
-   
-   Args:
-     bytes - byte array of at least 2 bytes
-     offset - starting position (default 0)
-   
-   Returns:
-     16-bit signed integer"
-  ([^bytes b]
-   (bytes-to-int16 b 0))
-  ([^bytes b offset]
-   {:pre [(>= (count b) (+ offset 2))]}
-   (let [unsigned (bit-or (bit-shift-left (bit-and (aget b offset) 0xFF) 8)
-                          (bit-and (aget b (+ offset 1)) 0xFF))]
-     ;; Convert unsigned to signed
-     (if (>= unsigned 32768)
-       (- unsigned 65536)
-       unsigned))))
-
-(defn int16-to-bytes
-  "Convert signed 16-bit integer to 2 bytes (big-endian).
-   
-   Args:
-     value - 16-bit signed integer
-   
-   Returns:
-     Byte array of exactly 2 bytes"
-  [value]
-  {:pre [(s/valid? ::int16 value)]}
-  (let [b (byte-array 2)]
-    (aset b 0 (unchecked-byte (bit-and (bit-shift-right value 8) 0xFF)))
-    (aset b 1 (unchecked-byte (bit-and value 0xFF)))
-    b))
-
-(defn concat-bytes
-  "Concatenate multiple byte arrays into one.
-   
-   Args:
-     & byte-arrays - variable number of byte arrays
-   
-   Returns:
-     Single byte array containing all input bytes in order"
-  [& byte-arrays]
-  (let [total-len (reduce + (map count byte-arrays))
-        result (byte-array total-len)]
-    (loop [offset 0
-           arrays byte-arrays]
-      (when (seq arrays)
-        (let [arr (first arrays)
-              len (count arr)]
-          (System/arraycopy arr 0 result offset len)
-          (recur (+ offset len) (rest arrays)))))
-    result))
-
-;; ============================================================================
 ;; PeerHandshake Record
 ;; ============================================================================
 
@@ -212,6 +117,14 @@
 ;;   :info-hash - byte[20], SHA-1 hash of torrent info
 ;;   :peer-id - byte[20], unique peer identifier
 (defrecord PeerHandshake [protocol reserved info-hash peer-id])
+
+;; Handshake constants, defined before first use (the ->peer-handshake
+;; fdef quotes protocol-string in its :fn invariant).
+(def ^:const handshake-length 68)
+(def ^:const protocol-string "BitTorrent protocol")
+(def protocol-string-bytes
+  "Byte array of protocol string (computed at runtime)"
+  (.getBytes ^String protocol-string "US-ASCII"))
 
 (defn validate-handshake-fields
   "Validate handshake fields using clojure.spec.
@@ -257,15 +170,16 @@
     info-hash
     peer-id)))
 
+(s/fdef ->peer-handshake
+  :args ::handshake-args
+  :ret  ::envelope
+  :fn   (s/or
+         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
+         :error #(= :error (-> % :ret first))))
+
 ;; ============================================================================
 ;; Handshake Parsing
 ;; ============================================================================
-
-(def ^:const handshake-length 68)
-(def ^:const protocol-string "BitTorrent protocol")
-(def protocol-string-bytes
-  "Byte array of protocol string (computed at runtime)"
-  (.getBytes ^String protocol-string "US-ASCII"))
 
 (defn parse-handshake
   "Parse a 68-byte BitTorrent handshake.
@@ -300,6 +214,13 @@
              :info-hash info-hash
              :peer-id peer-id})})))
 
+(s/fdef parse-handshake
+  :args ::bytes-arg
+  :ret  ::envelope
+  :fn   (s/or
+         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
+         :error #(= :error (-> % :ret first))))
+
 ;; ============================================================================
 ;; Handshake Building
 ;; ============================================================================
@@ -332,12 +253,19 @@
       :message (format "reserved must be 8 bytes, got %d" (count reserved))}
 
      :else
-     {:ok (concat-bytes
+     {:ok (utils/concat-bytes
            (byte-array [(byte 0x13)])  ; pstrlen = 19
            protocol-string-bytes       ; pstr = "BitTorrent protocol"
            reserved                    ; 8 reserved bytes
            info-hash                   ; 20-byte info hash
            peer-id)})))               ; 20-byte peer id
+
+(s/fdef build-handshake
+  :args ::handshake-args
+  :ret  ::envelope
+  :fn   (s/or
+         :ok    #(= 68 (count (-> % :ret second :ok)))
+         :error #(= :error (-> % :ret first))))
 
 ;; ============================================================================
 ;; Peer Message Records
@@ -357,6 +285,12 @@
 ;; ============================================================================
 ;; Peer Message Specs
 ;; ============================================================================
+
+;; Shared message fields
+(s/def ::piece-index nat-int?)
+(s/def ::begin nat-int?)
+(s/def ::length (s/int-in 0 16385)) ;; Max 16 KiB + 1 for upper bound
+(s/def ::data ::bytes)
 
 (s/def ::keep-alive (s/keys))
 (s/def ::choke (s/keys))
@@ -380,12 +314,6 @@
         :request ::request
         :piece ::piece
         :cancel ::cancel))
-
-;; Shared message fields
-(s/def ::piece-index nat-int?)
-(s/def ::begin nat-int?)
-(s/def ::length (s/int-in 0 16385)) ;; Max 16 KiB + 1 for upper bound
-(s/def ::data ::bytes)
 
 ;; ============================================================================
 ;; Peer Message Parsing
@@ -420,7 +348,7 @@
 
 (defn- parse-have [^bytes b]
   (if (= 4 (count b))
-    (let [piece-index (bytes-to-int32 b)]
+    (let [piece-index (utils/bytes-to-int32 b)]
       {:ok (->Have piece-index)})
     {:error :incomplete-message :message "Have message must have 4-byte payload"}))
 
@@ -431,9 +359,9 @@
 
 (defn- parse-request [^bytes b]
   (if (= 12 (count b))
-    (let [piece-index (bytes-to-int32 b 0)
-          begin (bytes-to-int32 b 4)
-          length (bytes-to-int32 b 8)]
+    (let [piece-index (utils/bytes-to-int32 b 0)
+          begin (utils/bytes-to-int32 b 4)
+          length (utils/bytes-to-int32 b 8)]
       (if (<= length max-block-size)
         {:ok (->Request piece-index begin length)}
         {:error :invalid-input :message (format "Request length exceeds max block size (%d > %d)" length max-block-size)}))
@@ -441,8 +369,8 @@
 
 (defn- parse-piece [^bytes b]
   (if (>= (count b) 8)
-    (let [piece-index (bytes-to-int32 b 0)
-          begin (bytes-to-int32 b 4)
+    (let [piece-index (utils/bytes-to-int32 b 0)
+          begin (utils/bytes-to-int32 b 4)
           data-len (- (count b) 8)
           data (byte-array data-len)]
       (System/arraycopy b 8 data 0 data-len)
@@ -453,9 +381,9 @@
 
 (defn- parse-cancel [^bytes b]
   (if (= 12 (count b))
-    (let [piece-index (bytes-to-int32 b 0)
-          begin (bytes-to-int32 b 4)
-          length (bytes-to-int32 b 8)]
+    (let [piece-index (utils/bytes-to-int32 b 0)
+          begin (utils/bytes-to-int32 b 4)
+          length (utils/bytes-to-int32 b 8)]
       (if (<= length max-block-size)
         {:ok (->Cancel piece-index begin length)}
         {:error :invalid-input :message (format "Cancel length exceeds max block size (%d > %d)" length max-block-size)}))
@@ -487,7 +415,7 @@
   [^bytes b]
   (if (< (count b) 4)
     {:error :incomplete-message :message "Message too short for length prefix"}
-    (let [message-length (bytes-to-int32 b 0)]
+    (let [message-length (utils/bytes-to-int32 b 0)]
       (cond
         (= 0 message-length)
         (parse-keep-alive (byte-array 0))
@@ -503,6 +431,10 @@
           (System/arraycopy b 5 payload-bytes 0 (- message-length 1))
           (parse-message-payload (bit-and message-id 0xFF) payload-bytes))))))
 
+(s/fdef parse-message
+  :args ::bytes-arg
+  :ret  ::envelope)
+
 (defn parse-messages
   "Parse multiple BitTorrent peer wire messages from a byte buffer.
    
@@ -516,7 +448,7 @@
   (loop [offset 0
          messages []]
     (if (>= (- (count b) offset) 4) ;; At least 4 bytes for length prefix
-      (let [message-length (bytes-to-int32 b offset)
+      (let [message-length (utils/bytes-to-int32 b offset)
             full-message-len (+ 4 message-length)]
         (if (<= full-message-len (- (count b) offset))
           (let [message-bytes (byte-array full-message-len)
@@ -527,6 +459,14 @@
               parse-result)) ;; Propagate error
           {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))})) ;; Incomplete message
       {:ok messages :remaining (byte-array (take-last (- (count b) offset) (vec b)))}))) ;; No full message or too short for length prefix
+
+(s/fdef parse-messages
+  :args ::bytes-arg
+  :ret  (s/or :ok    (s/keys :req-un [::ok ::remaining])
+              :error (s/keys :req-un [::error ::message]))
+  :fn   (s/or
+         :ok    #(bytes? (-> % :ret second :remaining))
+         :error #(= :error (-> % :ret first))))
 
 ;; ============================================================================
 ;; Peer Message Building
@@ -562,7 +502,7 @@
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Have [msg]
   (if (s/valid? ::piece-index (:piece-index msg))
-    {:ok (int32-to-bytes (:piece-index msg))}
+    {:ok (utils/int32-to-bytes (:piece-index msg))}
     {:error :invalid-input :message (format "Invalid piece index for Have message: %s" (:piece-index msg))}))
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Bitfield [msg]
@@ -582,9 +522,9 @@
       (> length max-block-size)
       {:error :invalid-input :message (format "Request length exceeds max block size (%d > %d)" length max-block-size)}
       :else
-      {:ok (concat-bytes (int32-to-bytes piece-index)
-                         (int32-to-bytes begin)
-                         (int32-to-bytes length))})))
+      {:ok (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                               (utils/int32-to-bytes begin)
+                               (utils/int32-to-bytes length))})))
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Piece [msg]
   (let [{:keys [piece-index begin data]} msg]
@@ -598,9 +538,9 @@
       (> (count data) max-block-size)
       {:error :invalid-input :message (format "Piece data length exceeds max block size (%d > %d)" (count data) max-block-size)}
       :else
-      {:ok (concat-bytes (int32-to-bytes piece-index)
-                         (int32-to-bytes begin)
-                         data)})))
+      {:ok (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                               (utils/int32-to-bytes begin)
+                               data)})))
 
 (defmethod build-message-payload dev.cljtoc.protocol.peer.Cancel [msg]
   (let [{:keys [piece-index begin length]} msg]
@@ -614,9 +554,9 @@
       (> length max-block-size)
       {:error :invalid-input :message (format "Cancel length exceeds max block size (%d > %d)" length max-block-size)}
       :else
-      {:ok (concat-bytes (int32-to-bytes piece-index)
-                         (int32-to-bytes begin)
-                         (int32-to-bytes length))})))
+      {:ok (utils/concat-bytes (utils/int32-to-bytes piece-index)
+                               (utils/int32-to-bytes begin)
+                               (utils/int32-to-bytes length))})))
 
 (defmethod build-message-payload :default [msg]
   {:error :unknown-message-type :message (str "Unknown message type for building: " (type msg))})
@@ -647,15 +587,23 @@
                          Cancel 8
                          nil)]
         (if (= -1 message-id)
-          {:ok (int32-to-bytes 0)}
+          {:ok (utils/int32-to-bytes 0)}
           (if (nil? message-id)
             {:error :unknown-message-type :message (str "Cannot build unknown message type: " (type message-record))}
-            {:ok (concat-bytes
-                  (int32-to-bytes (+ 1 (count payload)))
+            {:ok (utils/concat-bytes
+                  (utils/int32-to-bytes (+ 1 (count payload)))
                   (byte-array [(unchecked-byte message-id)])
                   payload)})))
       payload-result)
     {:error :unknown-message-type :message (str "No builder for message type: " (type message-record))}))
+
+(s/fdef build-message
+  :args (s/cat :msg any?)
+  :ret  ::envelope
+  :fn   (s/or
+         ;; A keep-alive is exactly 4 bytes; all others are >= 5 bytes.
+         :ok    #(>= (count (-> % :ret second :ok)) 4)
+         :error #(= :error (-> % :ret first))))
 
 (defn build-messages
   "Build a collection of PeerMessage records into a single concatenated byte array.
@@ -675,117 +623,15 @@
         (if (:ok build-result)
           (recur (next remaining-messages) (conj acc-bytes (:ok build-result)))
           build-result)) ;; Propagate error
-      {:ok (apply concat-bytes acc-bytes)})))
-
-;; ============================================================================
-;; Spec Generators for Testing
-;; ============================================================================
-
-(defn gen-byte-array
-  "Generate a generator for byte arrays of specific length."
-  [len]
-  (gen/fmap byte-array
-            (gen/vector (gen/choose -128 127) len)))
-
-(s/def ::gen-byte-array-20
-  (gen-byte-array 20))
-
-(s/def ::gen-byte-array-8
-  (gen-byte-array 8))
-
-;; Utility function to check if a byte array equals a sequence
-(defn bytes-eq?
-  "Compare byte array to a sequence of bytes."
-  [^bytes b seq-bytes]
-  (and (= (count b) (count seq-bytes))
-       (every? true? (map = b seq-bytes))))
-
-;; ============================================================================
-;; Function Specs
-;; ============================================================================
-
-;; --- Byte utilities ---
-
-(s/fdef bytes-to-int32
-  :args (s/cat :b bytes? :offset (s/? nat-int?))
-  :ret  ::int32)
-
-(s/fdef int32-to-bytes
-  :args (s/cat :value ::int32)
-  :ret  ::byte-array-4
-  :fn   #(= (:value (:args %)) (bytes-to-int32 (:ret %))))
-
-(s/fdef bytes-to-int16
-  :args (s/cat :b bytes? :offset (s/? nat-int?))
-  :ret  ::int16)
-
-(s/fdef int16-to-bytes
-  :args (s/cat :value ::int16)
-  :ret  (s/and bytes? #(= 2 (count %)))
-  :fn   #(= (:value (:args %)) (bytes-to-int16 (:ret %))))
-
-(s/fdef concat-bytes
-  :args (s/cat :byte-arrays (s/* bytes?))
-  :ret  bytes?
-  :fn   #(= (count (:ret %))
-            (reduce + 0 (map count (-> % :args :byte-arrays)))))
-
-;; --- Handshake ---
-
-(s/fdef ->peer-handshake
-  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
-  :fn   (s/or
-         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
-         :error #(= :error (-> % :ret first))))
-
-(s/fdef parse-handshake
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
-  :fn   (s/or
-         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
-         :error #(= :error (-> % :ret first))))
-
-(s/fdef build-handshake
-  :args (s/cat :info-hash bytes? :peer-id bytes? :reserved (s/? bytes?))
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
-  :fn   (s/or
-         :ok    #(= 68 (count (-> % :ret second :ok)))
-         :error #(= :error (-> % :ret first))))
-
-;; --- Message parsing ---
-
-(s/fdef parse-message
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message])))
-
-(s/fdef parse-messages
-  :args (s/cat :b bytes?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok ::remaining])
-              :error (s/keys :req-un [::error ::message]))
-  :fn   (s/or
-         :ok    #(bytes? (-> % :ret second :remaining))
-         :error #(= :error (-> % :ret first))))
-
-;; --- Message building ---
-
-(s/fdef build-message
-  :args (s/cat :msg any?)
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
-  :fn   (s/or
-         ;; A keep-alive is exactly 4 bytes; all others are >= 5 bytes.
-         :ok    #(>= (count (-> % :ret second :ok)) 4)
-         :error #(= :error (-> % :ret first))))
+      {:ok (apply utils/concat-bytes acc-bytes)})))
 
 (s/fdef build-messages
   :args (s/cat :message-records (s/coll-of any?))
-  :ret  (s/or :ok    (s/keys :req-un [::ok])
-              :error (s/keys :req-un [::error ::message]))
+  :ret  ::envelope
   :fn   (s/or
          :ok    #(bytes? (-> % :ret second :ok))
          :error #(= :error (-> % :ret first))))
+
+;; NOTE: byte-array generation lives in dev.cljtoc.utils
+;; (utils/gen-byte-array for direct draws, with-gen on ::byte-array-20
+;; for spec-integrated ones).

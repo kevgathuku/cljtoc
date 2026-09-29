@@ -122,10 +122,11 @@ torrent-client-clj/
 ├── src/dev/cljtoc/
 │   ├── core.clj                  # CLI entry point
 │   ├── cli/state.clj             # Persisted CLI download state
+│   ├── utils.clj                 # Shared byte helpers (no layer dependencies)
 │   ├── domain/                   # Pure torrent logic (bencode, torrent, pieces, peer-address)
 │   ├── protocol/                 # Pure parsing/encoding (tracker, peer, peer-state)
 │   ├── orchestration/            # Download lifecycle (download)
-│   ├── coordination/             # core.async flows (peer-worker)
+│   ├── coordination/             # core.async flows (peer-worker, peer-connection)
 │   ├── ports/                    # Effect protocols + real implementations (network, disk, time)
 │   └── test_doubles/             # In-memory ports for tests
 ├── test/dev/cljtoc/              # Mirrors src layout, plus integration/

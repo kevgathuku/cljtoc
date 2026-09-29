@@ -7,27 +7,8 @@
 
    Uses async/thread for blocking socket reads."
   (:require [clojure.core.async :as async]
-            [clojure.spec.alpha :as s]
-            [dev.cljtoc.ports.network :as net]
-            [dev.cljtoc.protocol.peer :as peer]
-            [dev.cljtoc.protocol.peer-state :as peer-state]))
-
-(s/def ::info-hash bytes?)
-(s/def ::peer-handshake (s/keys :req-un [::info-hash]))
-
-(defn verify-handshake
-  "Pure handshake verification: check the peer's handshake info-hash
-   matches ours.
-   Returns {:ok peer-handshake} or {:error :info-hash-mismatch}."
-  [info-hash peer-handshake]
-  (if (java.util.Arrays/equals ^bytes info-hash
-                               ^bytes (:info-hash peer-handshake))
-    {:ok peer-handshake}
-    {:error :info-hash-mismatch}))
-
-(s/fdef verify-handshake
-  :args (s/cat :info-hash ::info-hash :peer-handshake ::peer-handshake)
-  :ret map?)
+            [dev.cljtoc.coordination.peer-connection :as peer-connection]
+            [dev.cljtoc.ports.network :as net]))
 
 (defn run-peer
   "Connect to peer, perform handshake, then enter read loop.
@@ -46,66 +27,37 @@
   (net/log! network-port (str "[run-peer] Starting peer worker for address: " address))
   (async/thread
     (try
-      ;; 1. Connect
-      (let [connect-result (net/connect-peer network-port address)]
+      ;; Connect owns dial, handshake, verify, and Interested in one
+      ;; seam (peer-connection/connect); the worker only carries events.
+      (let [connect-result (peer-connection/connect
+                            network-port info-hash our-peer-id address total-pieces)]
         (if (:error connect-result)
           (async/>!! events-ch {:type :peer-disconnected
                                 :address address
                                 :reason (:message connect-result)})
-
-          (let [peer-data (:ok connect-result)]
+          (let [{:keys [peer-data peer-state]} (:ok connect-result)]
             (try
-              ;; 2. Send our handshake
-              (let [handshake-bytes (:ok (peer/build-handshake info-hash our-peer-id))]
-                (net/send-message network-port peer-data handshake-bytes)
-
-                ;; 3. Read peer handshake
-                (let [hs-result (net/receive-handshake network-port peer-data)]
-                  (if (:error hs-result)
+              ;; Notify coordinator of successful connection
+              (async/>!! events-ch {:type :peer-connected
+                                    :address address
+                                    :peer-data peer-data
+                                    :peer-state peer-state})
+              ;; Enter read loop
+              (loop []
+                (let [msg-result (net/receive-message network-port peer-data)]
+                  (if (or (nil? msg-result) (:error msg-result))
                     (do
-                      (net/close-peer network-port peer-data)
+                      (peer-connection/close network-port peer-data)
                       (async/>!! events-ch {:type :peer-disconnected
                                             :address address
-                                            :reason (:message hs-result)}))
-
-                    (let [peer-hs (:ok hs-result)]
-                      ;; 4. Verify info-hash matches
-                      (if (:error (verify-handshake info-hash peer-hs))
-                        (do
-                          (net/close-peer network-port peer-data)
-                          (async/>!! events-ch {:type :peer-disconnected
-                                                :address address
-                                                :reason "Info hash mismatch"}))
-
-                        (do
-                          ;; 5. Send Interested
-                          (let [interested-bytes (:ok (peer/build-message (peer/->Interested)))]
-                            (net/send-message network-port peer-data interested-bytes))
-
-                          ;; 6. Notify coordinator of successful connection
-                          (let [ps (-> (peer-state/initial-peer-state total-pieces)
-                                       (peer-state/set-am-interested true))]
-                            (async/>!! events-ch {:type :peer-connected
-                                                  :address address
-                                                  :peer-data peer-data
-                                                  :peer-state ps}))
-
-                          ;; 7. Enter read loop
-                          (loop []
-                            (let [msg-result (net/receive-message network-port peer-data)]
-                              (if (or (nil? msg-result) (:error msg-result))
-                                (do
-                                  (net/close-peer network-port peer-data)
-                                  (async/>!! events-ch {:type :peer-disconnected
-                                                        :address address
-                                                        :reason (or (:message msg-result) "connection closed")}))
-                                (do
-                                  (async/>!! events-ch {:type :peer-message
-                                                        :address address
-                                                        :message (:ok msg-result)})
-                                  (recur)))))))))))
+                                            :reason (or (:message msg-result) "connection closed")}))
+                    (do
+                      (async/>!! events-ch {:type :peer-message
+                                            :address address
+                                            :message (:ok msg-result)})
+                      (recur)))))
               (catch Exception e
-                (net/close-peer network-port peer-data)
+                (peer-connection/close network-port peer-data)
                 (async/>!! events-ch {:type :peer-disconnected
                                       :address address
                                       :reason (.getMessage e)}))))))
