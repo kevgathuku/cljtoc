@@ -44,6 +44,9 @@
                  :write-output-piece #(disk/write-output-piece % layout output-dir 0 piece-bytes)
                  :initialize-output-layout #(disk/initialize-output-layout % layout output-dir)
                  :prepare-output-layout #(disk/prepare-output-layout % layout output-dir)
+                 :write-prepared-piece #(let [prepared (:ok (disk/prepare-output-layout
+                                                             % layout output-dir))]
+                                          (disk/write-prepared-piece % prepared output-dir 0 piece-bytes))
                  :ensure-directory #(disk/ensure-directory % output-dir)
                  :save-state #(disk/save-state % {:id "contract"})
                  :load-state #(disk/load-state % "contract")
@@ -778,6 +781,72 @@
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
           output-dir (test-utils/temp-dir "output-prepare-invalid-")
           result (disk/prepare-output-layout port {:sizes {}} output-dir)]
+      (is (= :invalid-info (:error result)))
+      (is (not (.exists (io/file output-dir "t")))))))
+
+(deftest write-prepared-piece-writes-touched-files-test
+  (testing "init, prepare, then per-piece writes assemble the content"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-write-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))]
+        (is (disk/valid-prepared-layout? prepared))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
+        (is (= {:ok :written}
+               (disk/write-prepared-piece port prepared output-dir 1 (byte-array [4 5 6 7]))))
+        (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "a")))))
+        (is (java.util.Arrays/equals (byte-array [4 5 6 7])
+                                     (java.nio.file.Files/readAllBytes
+                                      (.toPath (io/file output-dir "t" "b")))))))))
+
+(deftest write-prepared-piece-refuses-redirected-touch-test
+  (testing "a touched file swapped after prepare is refused, nothing written"
+    ;; The TOCTOU the prepared value narrows: prepare froze a pointing at
+    ;; its own target; replacing a with a symlink to b afterwards must
+    ;; fail the write even though b itself is untouched by this piece.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-redirect-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)]
+      (is (= {:ok :initialized} (disk/initialize-output-layout port layout output-dir)))
+      (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
+            target-a (io/file output-dir "t" "a")
+            target-b (io/file output-dir "t" "b")]
+        (spit target-b "SENTINEL")
+        (.delete target-a)
+        (java.nio.file.Files/createSymbolicLink
+         (.toPath target-a)
+         (.toPath target-b)
+         (into-array java.nio.file.attribute.FileAttribute []))
+        (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                                (byte-array [0 1 2 3]))]
+          (is (= :unsafe-path (:error result)))
+          (is (= "SENTINEL" (slurp target-b))))))))
+
+(deftest write-prepared-piece-refuses-foreign-output-dir-test
+  (testing "a prepared value is bound to the dir it was resolved under"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-home-")
+          foreign-dir (test-utils/temp-dir "output-prepared-foreign-")
+          info {:name "t" :piece-length 4 :length 4}
+          layout (compile-layout info)
+          prepared (:ok (disk/prepare-output-layout port layout output-dir))
+          result (disk/write-prepared-piece port prepared foreign-dir 0 (byte-array [0 1 2 3]))]
+      (is (= :invalid-info (:error result)))
+      (is (not (.exists (io/file foreign-dir "t")))))))
+
+(deftest write-prepared-piece-refuses-invalid-prepared-test
+  (testing "a forged prepared value is refused before anything is written"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepared-forged-")
+          result (disk/write-prepared-piece port {:layout nil} output-dir 0 (byte-array [0 1 2 3]))]
       (is (= :invalid-info (:error result)))
       (is (not (.exists (io/file output-dir "t")))))))
 

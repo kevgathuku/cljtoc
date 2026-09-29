@@ -5,6 +5,7 @@
    the same seam DiskPortImpl persists through — so a resume-bytes
    regression fails here instead of only in production (issue #48)."
   (:require [clojure.test :refer [deftest is testing]]
+            [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.test-doubles.disk :as mock-disk]))
 
@@ -46,6 +47,38 @@
   (testing "loading an unknown id returns {:ok nil}, like the real port"
     (let [port (mock-disk/create)]
       (is (= {:ok nil} (disk/load-state port "nope"))))))
+
+(deftest mock-prepare-then-write-prepared-records-pieces-test
+  (testing "prepare returns a valid prepared value the fast write accepts"
+    (let [port (mock-disk/create {})
+          layout (:ok (torrent/compile-output-layout
+                       {:name "t" :piece-length 4
+                        :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}))
+          prepared (:ok (disk/prepare-output-layout port layout "/tmp/out"))]
+      (is (disk/valid-prepared-layout? prepared))
+      (is (= {:ok :written}
+             (disk/write-prepared-piece port prepared "/tmp/out" 0 (byte-array [0 1 2 3]))))
+      (is (= [layout] (mock-disk/get-output-layouts port)))
+      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
+                                   (mock-disk/get-output-piece port 0))))))
+
+(deftest mock-write-prepared-refuses-foreign-dir-test
+  (testing "a prepared value bound to another dir is refused"
+    (let [port (mock-disk/create {})
+          layout (:ok (torrent/compile-output-layout {:name "t" :piece-length 4 :length 4}))
+          prepared (:ok (disk/prepare-output-layout port layout "/tmp/out"))]
+      (is (= :invalid-info
+             (:error (disk/write-prepared-piece port prepared "/tmp/elsewhere" 0
+                                                (byte-array [0 1 2 3]))))))))
+
+(deftest mock-write-prepared-honors-error-config-test
+  (testing "the output error config fails the fast write like the full write"
+    (let [port (mock-disk/create {:output-write-error {:error :write-error :message "boom"}})
+          layout (:ok (torrent/compile-output-layout {:name "t" :piece-length 4 :length 4}))
+          prepared (:ok (disk/prepare-output-layout port layout "/tmp/out"))]
+      (is (= :write-error
+             (:error (disk/write-prepared-piece port prepared "/tmp/out" 0
+                                                (byte-array [0 1 2 3]))))))))
 
 (deftest mock-refused-save-stores-nothing-test
   (testing "a refused save stores nothing: the id still loads {:ok nil}

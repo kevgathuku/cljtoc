@@ -104,6 +104,45 @@
                                                       :identity nil}]))
                             (keys (:sizes layout)))}}))
 
+  (write-prepared-piece [_ prepared output-dir piece-index bytes]
+    ;; Mirrors DiskPortImpl's per-piece gates minus the filesystem: span
+    ;; derivation, both shape gates, the prepared-for-this-dir binding,
+    ;; then touched-path membership. The try/catch mirrors the real port
+    ;; too: a bad bytes argument (alength throws) comes back as
+    ;; {:error :write-error}, never an uncaught throw.
+    (try
+      (if-let [err (or (:output-write-error config) (:write-error config))]
+        err
+        (let [layout (:layout prepared)
+              spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))]
+          (if-let [err (cond
+                         (:error spans-result)
+                         {:error :invalid-info
+                          :message (str "Cannot map piece " piece-index ": "
+                                        (:message spans-result))}
+
+                         (not (disk/valid-output-layout? layout))
+                         disk/invalid-output-layout-error
+
+                         (not (disk/valid-prepared-layout? prepared))
+                         disk/invalid-prepared-layout-error
+
+                         (not= output-dir (:output-dir prepared))
+                         disk/invalid-prepared-layout-error
+
+                         (not (every? #(contains? (:sizes layout) (:path %))
+                                      (:ok spans-result)))
+                         disk/invalid-output-layout-error
+
+                         :else nil)]
+            err
+            (do
+              (swap! output-layouts conj layout)
+              (swap! output-pieces assoc piece-index bytes)
+              {:ok :written}))))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
+
   (ensure-directory [_ path]
     (swap! directories-created conj path)
     {:ok :created})

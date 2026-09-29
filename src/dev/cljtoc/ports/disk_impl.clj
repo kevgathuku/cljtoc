@@ -212,6 +212,102 @@
                             [declared-path (:file entry)])
                           entries))})))))
 
+(defn- revalidate-touched
+  "Re-resolve only the touched declared paths under output-dir: containment
+   plus the mkdirs probe per path (see resolve-contained), then the current
+   canonical target and filesystem identity. O(touched) syscalls — the whole
+   point of the prepared path. Returns {:ok {path {:file File :canonical str
+   :identity id-or-nil}}} or the first {:error ...}."
+  [output-dir touched-paths]
+  (loop [remaining touched-paths
+         current {}]
+    (if (empty? remaining)
+      {:ok current}
+      (let [declared-path (first remaining)
+            probed (resolve-contained output-dir declared-path)]
+        (if (:error probed)
+          probed
+          (let [out-file (:ok probed)]
+            (recur (rest remaining)
+                   (assoc current declared-path
+                          {:file out-file
+                           :canonical (.getCanonicalPath ^File out-file)
+                           :identity (file-identity out-file)}))))))))
+
+(defn- stable-touch?
+  "True when a touched path still names what prepare saw: same canonical
+   target, and the same file once both sides have an identity to compare. A
+   target that did not exist at prepare time (nil identity then) is accepted
+   on its canonical alone: prepare runs before init on the standalone path,
+   and the init-created file cannot alias anything prepare already cleared.
+   An unreadable-or-vanished target (nil now) likewise falls back to the
+   canonical check — file-identity fails open by design — and the write
+   itself recreates a merely deleted file, exactly as the full path would."
+  [frozen live]
+  (and (= (:canonical frozen) (:canonical live))
+       (or (nil? (:identity frozen))
+           (nil? (:identity live))
+           (= (:identity frozen) (:identity live)))))
+
+(defn- write-prepared!
+  "Blocking write of one piece through the prepared layout: re-validate the
+   touched paths against the frozen whole-layout snapshot, then open, size,
+   and write only the touched files. The re-validation catches a touched
+   file redirected since prepare (stability), a fresh alias among the
+   touched files, and a fresh alias between a touched file and a
+   prepare-time target — the last two by pure comparison against the
+   snapshot, with no per-untouched syscalls. Returns {:ok :written} or
+   {:error ...}."
+  [prepared output-dir spans bytes]
+  (let [sizes (:sizes (:layout prepared))
+        touched (distinct (map :path spans))
+        live-result (revalidate-touched output-dir touched)]
+    (if (:error live-result)
+      live-result
+      (let [live (:ok live-result)
+            frozen (:resolved prepared)
+            moved (first (filter (fn [declared-path]
+                                   (not (stable-touch?
+                                         (get frozen declared-path)
+                                         (get live declared-path))))
+                                 touched))]
+        (if moved
+          {:error :unsafe-path
+           :message (str "Output path " (pr-str moved)
+                         " changed on disk since layout preparation under " output-dir)}
+          (let [untouched (apply dissoc frozen touched)
+                live-canonicals (map :canonical (vals (select-keys live touched)))
+                frozen-canonicals (map :canonical (vals untouched))
+                canonicals (concat live-canonicals frozen-canonicals)]
+            (if (not= (count (set canonicals)) (count canonicals))
+              {:error :unsafe-path
+               :message (str "Output paths resolve to the same file on disk under "
+                             output-dir)}
+              (let [live-ids (keep :identity (vals (select-keys live touched)))
+                    frozen-ids (keep :identity (vals untouched))
+                    ids (concat live-ids frozen-ids)]
+                (if (not= (count (set ids)) (count ids))
+                  {:error :unsafe-path
+                   :message (str "Output paths refer to the same file on disk under "
+                                 output-dir)}
+                  (try
+                    (doseq [declared-path touched]
+                      (let [out-file (get-in live [declared-path :file])]
+                        (with-open [raf (RandomAccessFile. out-file "rw")]
+                          (.setLength raf (get sizes declared-path))
+                          (doseq [{file-offset :file-offset
+                                   data-offset :data-offset
+                                   span-length :length}
+                                  (filter #(= declared-path (:path %)) spans)]
+                            (let [slice (Arrays/copyOfRange
+                                         ^bytes bytes
+                                         (int data-offset)
+                                         (int (+ data-offset span-length)))]
+                              (.seek raf file-offset)
+                              (.write raf slice))))))
+                    {:ok :written}
+                    (catch Exception error
+                      {:error :write-error :message (.getMessage error)})))))))))))
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Every declared
    target is validated (symlink-contained, alias-free across the whole
@@ -331,6 +427,45 @@
                          sizes
                          (:ok spans-result)
                          bytes)))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
+
+  (write-prepared-piece [_ prepared output-dir piece-index bytes]
+    (try
+      (let [layout (:layout prepared)
+            spans-result (torrent/layout-spans layout piece-index (alength ^bytes bytes))
+            sizes (:sizes layout)
+            declined (declined-output-dir output-dir)]
+        ;; No sizes-error branch: a prepared layout carries the layout the
+        ;; spans were derived from, so spans-result is the only derivation
+        ;; that can fail — mirroring write-output-piece.
+        (cond
+          declined
+          declined
+
+          (:error spans-result)
+          {:error :invalid-info
+           :message (str "Cannot map piece " piece-index ": "
+                         (:message spans-result))}
+
+          (not (disk/valid-output-layout? layout))
+          disk/invalid-output-layout-error
+
+          (not (disk/valid-prepared-layout? prepared))
+          disk/invalid-prepared-layout-error
+
+          (not= (.getCanonicalPath (io/file output-dir))
+                (:output-dir prepared))
+          disk/invalid-prepared-layout-error
+
+          (not (every? #(contains? sizes (:path %)) (:ok spans-result)))
+          disk/invalid-output-layout-error
+
+          :else
+          (write-prepared! prepared
+                           output-dir
+                           (:ok spans-result)
+                           bytes)))
       (catch Exception error
         {:error :write-error :message (.getMessage error)})))
 

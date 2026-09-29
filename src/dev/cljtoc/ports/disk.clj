@@ -53,6 +53,16 @@
 
       Side effects: writes to filesystem")
 
+  (write-prepared-piece [this prepared output-dir piece-index bytes]
+    "Write one verified piece through an explicitly prepared layout
+     (prepare-output-layout), re-validating only the files the piece
+     overlaps: containment and alias checks over touched paths, pure
+     comparison against the prepared snapshot for the rest. Per-piece
+     filesystem cost is O(touched), not O(files); the full O(files)
+     resolution ran once at prepare time. Returns {:ok :written} or
+     {:error reason :message msg}.
+
+     Side effects: writes to filesystem")
   (initialize-output-layout [this layout output-dir]
     "Create every declared output path under output-dir at its declared
      length, including zero-length files. layout is the compiled output
