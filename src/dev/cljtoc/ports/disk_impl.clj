@@ -345,8 +345,13 @@
    the filesystem changes. Residual: the gate trusts parent-dir mtimes,
    so an alias planted inside the clock granularity — or by an actor able
    to rewrite a parent's mtime afterwards — defeats detection the way any
-   TOCTOU race defeats a check-then-act sequence. The threat model is
-   accidental or tool-driven mutation, not a mtime-spoofing local
+   TOCTOU race defeats a check-then-act sequence. Ancestor swaps belong
+   to the same class: only the files' direct parents are snapshotted, so
+   a grandparent symlink swap that redirects an untouched path onto a
+   touched target while reporting the frozen mtime (mimicked, or by the
+   same granularity) takes the fast path; the touched-side stability
+   check still refuses any touched path the swap moved. The threat model
+   is accidental or tool-driven mutation, not a mtime-spoofing local
    adversary (who can rewrite output files directly).
 
    Stability is checked touched-side against the frozen snapshot: a
