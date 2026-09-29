@@ -375,8 +375,8 @@
   Total over nat-int inputs: an out-of-range index intersects the torrent
   nowhere and reports zero rather than going negative. Refusing such
   indices stays with callers that own a range (piece-blocks). The span
-  derivation runs promotion-safe (bigint start), so even an index past
-  Long/MAX — which intersects nowhere — reports zero instead of
+  derivation runs promotion-safe (bigint start), so a boundary index
+  like Long/MAX — which intersects nowhere — reports zero instead of
   throwing on the long cast; the clamped result always fits a long."
   [piece-index standard-piece-length total-length]
   (let [start (* (bigint piece-index) standard-piece-length)

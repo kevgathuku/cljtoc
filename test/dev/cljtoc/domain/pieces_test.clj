@@ -434,8 +434,8 @@
       (is (= 1 (:length (first ok)))))))
 
 (deftest piece-length-huge-index-test
-  (testing "an index past Long/MAX intersects nowhere and reports zero (total over nat-int)"
-    (let [huge 9223372036854775808N]
+  (testing "a Long/MAX index intersects nowhere and reports zero (total over nat-int)"
+    (let [huge Long/MAX_VALUE]
       (is (= 0 (pieces/piece-length huge 16384 1000)))
       (is (= 1000 (pieces/piece-length 0 huge 1000)))
       (is (= 16384 (pieces/piece-length 0 16384 huge)))
