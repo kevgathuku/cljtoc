@@ -128,7 +128,8 @@ with small anchors plus `cljfmt fix`. Two gotchas earned the hard way:
   match the protocol, so the compiler rejects it (`Can't find matching
   method ... leave off hints`); hint the call-site locals instead.
 - `scripts/threading_lint.clj` encodes the first lesson as a runnable
-  check (`lein run -m clojure.main scripts/threading_lint.clj`): it fails
+  check (`lein run -m clojure.main scripts/threading_lint.clj`, or
+  `./scripts/threading_lint.clj` under babashka for instant startup): it fails
   on any `->`/`->>` inside `#()` feeding interop (`-dotted`, `alength`,
   `new`, `Class/static`), with a self-test proving the query fires. Run
   it after structural edits touching fdef `:fn` bodies or inline checks.

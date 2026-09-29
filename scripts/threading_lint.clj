@@ -1,3 +1,4 @@
+#!/usr/bin/env bb
 ;; Structural lint: no `->` / `->>` threading form inside a `#()` reader fn
 ;; may feed an interop call.
 ;;
