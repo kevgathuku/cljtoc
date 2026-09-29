@@ -107,6 +107,86 @@
     {:ok (io/file piece-cache-dir scope (str "piece-" piece-index ".dat"))}
     disk/invalid-info-hash-error))
 
+(defn- resolve-entries
+  "Containment-resolve every declared path under output-dir. Returns
+   {:ok {:canonical-dir dir :entries {path {:file File :canonical str
+   :identity id-or-nil}}}} or the first {:error ...}. Creates missing
+   parent directories as the containment probe requires (see
+   resolve-contained) but truncates and writes nothing."
+  [output-dir declared-paths]
+  (let [canonical-dir (.getCanonicalPath (io/file output-dir))
+        resolved (into {} (map (fn [declared-path]
+                                 [declared-path (resolve-contained output-dir declared-path)])
+                               declared-paths))
+        escaped (first (filter #(-> % val :error) resolved))]
+    (if escaped
+      (val escaped)
+      {:ok {:canonical-dir canonical-dir
+            :entries (into {}
+                           (map (fn [[declared-path envelope]]
+                                  (let [out-file (:ok envelope)]
+                                    [declared-path
+                                     {:file out-file
+                                      :canonical (.getCanonicalPath ^File out-file)
+                                      :identity (file-identity out-file)}]))
+                                resolved))}})))
+
+(defn- alias-error
+  "The shared whole-layout alias check: refuse when two declared paths
+   share one canonical target or one filesystem identity. Per-path
+   containment cannot see those aliases — an in-tree symlink or hard link
+   passes for both entries alone, after which their independent ranges
+   overwrite one target. Returns the {:error :unsafe-path ...} envelope,
+   or nil when the entries are alias-free."
+  [entries output-dir]
+  (let [canonical-collision (->> entries
+                                 (map (fn [[declared-path entry]]
+                                        [declared-path (:canonical entry)]))
+                                 (group-by second)
+                                 (filter #(> (count (second %)) 1))
+                                 first)]
+    (if canonical-collision
+      (let [[target paths] canonical-collision]
+        {:error :unsafe-path
+         :message (str "Output paths " (pr-str (mapv first paths))
+                       " resolve to the same file " target
+                       " under " output-dir)})
+      (let [identity-collision (->> entries
+                                    (map (fn [[declared-path entry]]
+                                           [declared-path (:identity entry)]))
+                                    (filter (comp some? second))
+                                    (group-by second)
+                                    (filter #(> (count (second %)) 1))
+                                    first)]
+        (when identity-collision
+          (let [[_ paths] identity-collision]
+            {:error :unsafe-path
+             :message (str "Output paths " (pr-str (mapv first paths))
+                           " refer to the same file on disk under " output-dir)}))))))
+
+(defn- prepare-layout
+  "Resolve the whole declared layout once and freeze it into the explicit
+   prepared value write-prepared-piece re-validates touched files against:
+   the canonical output dir plus, per declared path, the absolute file, its
+   canonical target, and its filesystem identity at prepare time.
+   Returns {:ok prepared} or {:error ...}."
+  [output-dir sizes]
+  (let [resolved (resolve-entries output-dir (keys sizes))]
+    (if (:error resolved)
+      resolved
+      (let [{canonical-dir :canonical-dir entries :entries} (:ok resolved)]
+        (if-let [collision (alias-error entries output-dir)]
+          collision
+          {:ok {:layout nil
+                :output-dir canonical-dir
+                :resolved (into {}
+                                (map (fn [[declared-path entry]]
+                                       [declared-path
+                                        {:file (.getAbsolutePath ^File (:file entry))
+                                         :canonical (:canonical entry)
+                                         :identity (:identity entry)}])
+                                     entries))}})))))
+
 (defn- resolve-layout
   "Resolve every declared path under output-dir for writing. Each path is
    containment-checked (see resolve-contained), then the resolved targets
@@ -121,40 +201,16 @@
    no inode to compare. Closed the moment either spelling exists.
    Returns {:ok {declared-path File}} or {:error ...}."
   [output-dir declared-paths]
-  (let [resolved (into {} (map (fn [declared-path]
-                                 [declared-path (resolve-contained output-dir declared-path)])
-                               declared-paths))
-        escaped (first (filter #(-> % val :error) resolved))]
-    (if escaped
-      (val escaped)
-      (let [files (into {} (map (fn [[declared-path envelope]]
-                                  [declared-path (:ok envelope)])
-                                resolved))
-            canonical-collision (->> files
-                                     (map (fn [[declared-path out-file]]
-                                            [declared-path (.getCanonicalPath ^File out-file)]))
-                                     (group-by second)
-                                     (filter #(> (count (second %)) 1))
-                                     first)]
-        (if canonical-collision
-          (let [[target entries] canonical-collision]
-            {:error :unsafe-path
-             :message (str "Output paths " (pr-str (mapv first entries))
-                           " resolve to the same file " target
-                           " under " output-dir)})
-          (let [identity-collision (->> files
-                                        (map (fn [[declared-path out-file]]
-                                               [declared-path (file-identity out-file)]))
-                                        (filter (comp some? second))
-                                        (group-by second)
-                                        (filter #(> (count (second %)) 1))
-                                        first)]
-            (if identity-collision
-              (let [[_ entries] identity-collision]
-                {:error :unsafe-path
-                 :message (str "Output paths " (pr-str (mapv first entries))
-                               " refer to the same file on disk under " output-dir)})
-              {:ok files})))))))
+  (let [resolved (resolve-entries output-dir declared-paths)]
+    (if (:error resolved)
+      resolved
+      (let [entries (:entries (:ok resolved))]
+        (if-let [collision (alias-error entries output-dir)]
+          collision
+          {:ok (into {}
+                     (map (fn [[declared-path entry]]
+                            [declared-path (:file entry)])
+                          entries))})))))
 
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Every declared
@@ -291,6 +347,25 @@
 
           :else
           (init-layout! output-dir sizes)))
+      (catch Exception error
+        {:error :write-error :message (.getMessage error)})))
+
+  (prepare-output-layout [_ layout output-dir]
+    (try
+      (let [sizes (:sizes layout)
+            declined (declined-output-dir output-dir)]
+        (cond
+          declined
+          declined
+
+          (not (disk/consistent-output-layout? layout))
+          disk/invalid-output-layout-error
+
+          :else
+          (let [prepared (prepare-layout output-dir sizes)]
+            (if (:error prepared)
+              prepared
+              {:ok (assoc (:ok prepared) :layout layout)}))))
       (catch Exception error
         {:error :write-error :message (.getMessage error)})))
 

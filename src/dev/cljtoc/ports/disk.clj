@@ -64,6 +64,18 @@
 
      Side effects: creates files and directories")
 
+  (prepare-output-layout [this layout output-dir]
+    "Resolve the whole declared layout under output-dir once, up front.
+     layout is the compiled output layout for the download
+     (domain.torrent/compile-output-layout). Runs the full containment
+     and alias checks a per-piece write cannot afford, and returns the
+     explicit prepared value write-prepared-piece re-validates touched
+     files against — threaded by the caller like the compiled layout,
+     never hidden inside the port.
+     Returns {:ok prepared} or {:error reason :message msg}.
+
+     Side effects: creates missing parent directories (containment probing)")
+
   (ensure-directory [this path]
     "Ensure a directory exists, creating it if necessary.
      Returns {:ok :created} or {:error reason :message msg}.
@@ -155,6 +167,42 @@
    and MockDiskPort cannot drift apart on the message."
   {:error :invalid-info
    :message "Invalid output layout: not a compiled output layout"})
+
+(defn valid-prepared-layout?
+  "True when prepared is the explicit value prepare-output-layout returns:
+   a map carrying the compiled layout it was resolved from, the canonical
+   output dir string it was resolved under, and a resolved entry per
+   declared path (absolute file string, canonical target string, and the
+   filesystem identity seen at prepare time, nil when the target did not
+   exist yet). Both DiskPortImpl and MockDiskPort refuse anything else
+   with :invalid-info before writing anything."
+  [prepared]
+  (and (map? prepared)
+       (valid-output-layout? (:layout prepared))
+       (string? (:output-dir prepared))
+       (map? (:resolved prepared))
+       (= (set (keys (:resolved prepared)))
+          (set (keys (:sizes (:layout prepared)))))
+       (every? (fn [[declared-path entry]]
+                 (and (vector? declared-path)
+                      (seq declared-path)
+                      (every? string? declared-path)
+                      (map? entry)
+                      (string? (:file entry))
+                      (string? (:canonical entry))
+                      (contains? entry :identity)))
+               (:resolved prepared))))
+
+(s/fdef valid-prepared-layout?
+  :args (s/cat :prepared any?)
+  :ret boolean?)
+
+(def invalid-prepared-layout-error
+  "The :invalid-info envelope both disk ports return when handed something
+   that is not a prepared output layout. One shared literal so the ports
+   cannot drift apart on the message."
+  {:error :invalid-info
+   :message "Invalid prepared layout: not a prepared output layout"})
 
 ;; ---------------------------------------------------------------------------
 ;; Shared state encoding — the single persistence seam.

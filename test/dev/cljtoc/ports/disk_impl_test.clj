@@ -43,6 +43,7 @@
                  :write-piece #(disk/write-piece % (byte-array 20) 0 piece-bytes)
                  :write-output-piece #(disk/write-output-piece % layout output-dir 0 piece-bytes)
                  :initialize-output-layout #(disk/initialize-output-layout % layout output-dir)
+                 :prepare-output-layout #(disk/prepare-output-layout % layout output-dir)
                  :ensure-directory #(disk/ensure-directory % output-dir)
                  :save-state #(disk/save-state % {:id "contract"})
                  :load-state #(disk/load-state % "contract")
@@ -701,6 +702,84 @@
                                     (.toPath (io/file output-dir "t" "a"))))))))
 
 ;; ---------------------------------------------------------------------------
+
+(deftest prepare-output-layout-returns-explicit-prepared-value-test
+  (testing "prepare resolves the whole layout once without creating files"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-")
+          info {:name "t" :piece-length 4
+                :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+          layout (compile-layout info)
+          result (disk/prepare-output-layout port layout output-dir)]
+      (is (not (:error result)))
+      (let [prepared (:ok result)]
+        (is (disk/valid-prepared-layout? prepared))
+        (is (= layout (:layout prepared)))
+        (is (= #{["t" "a"] ["t" "b"]} (set (keys (:resolved prepared)))))
+        (is (not (.exists (io/file output-dir "t" "a"))))
+        (is (not (.exists (io/file output-dir "t" "b"))))))))
+
+(deftest prepare-output-layout-rejects-filesystem-alias-test
+  (testing "prepare refuses a pre-existing symlink alias across the whole layout"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-alias-")
+          target (io/file output-dir "t" "b")]
+      (.mkdirs (.getParentFile target))
+      (spit target "SENTINEL")
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "t" "a"))
+       (.toPath target)
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+            result (disk/prepare-output-layout port (compile-layout info) output-dir)]
+        (is (= :unsafe-path (:error result)))
+        (is (= "SENTINEL" (slurp target)))))))
+
+(deftest prepare-output-layout-rejects-hardlink-alias-test
+  (testing "prepare refuses a pre-existing hardlink alias"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-hardlink-")
+          target (io/file output-dir "t" "b")]
+      (.mkdirs (.getParentFile target))
+      (spit target "SENTINEL")
+      (java.nio.file.Files/createLink (.toPath (io/file output-dir "t" "a"))
+                                      (.toPath target))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+            result (disk/prepare-output-layout port (compile-layout info) output-dir)]
+        (is (= :unsafe-path (:error result)))
+        (is (= "SENTINEL" (slurp target)))))))
+
+(deftest prepare-output-layout-sees-untouched-targets-test
+  (testing "prepare refuses an alias even when the piece would touch only one side"
+    ;; With piece-length 4, piece 0 touches only a — but prepare still
+    ;; sees b, so the per-piece path never needs the full scan to stay safe.
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-partial-")
+          target (io/file output-dir "t" "b")]
+      (.mkdirs (.getParentFile target))
+      (spit target "SENTINEL")
+      (java.nio.file.Files/createSymbolicLink
+       (.toPath (io/file output-dir "t" "a"))
+       (.toPath target)
+       (into-array java.nio.file.attribute.FileAttribute []))
+      (let [info {:name "t" :piece-length 4
+                  :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+            ;; Sanity: piece 0 spans only a.
+            spans (:ok (torrent/layout-spans (compile-layout info) 0 4))]
+        (is (= #{["t" "a"]} (set (map :path spans))))
+        (let [result (disk/prepare-output-layout port (compile-layout info) output-dir)]
+          (is (= :unsafe-path (:error result)))
+          (is (= "SENTINEL" (slurp target))))))))
+
+(deftest prepare-output-layout-refuses-invalid-layout-test
+  (testing "prepare refuses a non-compiled layout without touching the filesystem"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          output-dir (test-utils/temp-dir "output-prepare-invalid-")
+          result (disk/prepare-output-layout port {:sizes {}} output-dir)]
+      (is (= :invalid-info (:error result)))
+      (is (not (.exists (io/file output-dir "t")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; The property this branch exists to guarantee: a completed download is
