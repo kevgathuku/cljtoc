@@ -36,6 +36,18 @@ Prefer human-readable names everywhere. Avoid single-letter variables;
 use full words that say what the value is (`address-str` not `s`,
 `host` / `port-str` not `h` / `p`, `colon-index` not `i`).
 
+## Writing voice and tone
+
+Follow the Google developer documentation style guide (https://developers.google.com/style) for all human-readable writing: feature docs, ADRs, CONTEXT.md, READMEs, code comments and docstrings, commit messages, and PR comments.
+
+- Write to the reader in second person with active voice and a clear actor: you run, you configure, the peer sends.
+- Keep a conversational, friendly, respectful tone without slang, jargon, or culturally specific references; write for a global audience.
+- Put conditions before instructions: if X holds, do Y.
+- Use sentence case for titles and headings; numbered lists for sequences and bulleted lists for unordered sets, with parallel structure.
+- Format code spans in backticks and write descriptive link text; spell out each acronym on first use.
+- Write inclusively with gender-neutral, accessible language; add alt text for images in docs and READMEs.
+- Commit messages carry the voice subset only: imperative second-person subject (`Add X`), concise body explaining why.
+
 ## Project Overview
 
 A BitTorrent client in Clojure implementing crash-only design with OTP-style supervision, pure domain logic, and explicit effect boundaries. Uses core.async for concurrency.
@@ -139,16 +151,16 @@ See `.specify/memory/constitution.md` for authoritative rules. Key points:
 4. **No Hidden State**: No global atoms/vars for app state; all state explicitly passed
 5. **I/O-Free Testing**: 90%+ coverage without actual I/O; inject test doubles
 
-## Sub-Feature Structure
+## Feature docs
 
-Implementation is split into independently deliverable features in `specs/`:
-- `002-bencode-parser` - Foundation: .torrent file parsing
-- `003-tracker-protocol` - Peer discovery
-- `004-peer-wire-protocol` - BitTorrent peer messages
-- `005-piece-management` - Pure domain logic for pieces
-- `006-download-orchestration` - End-to-end download coordination
+Each feature has a dedicated page under `doc/` (overview plus contract pages):
+- Bencode parsing - `doc/bencode-parser.md` (+ `doc/bencode-contracts.md`)
+- Peer discovery - `doc/tracker-protocol.md` (+ `doc/tracker-http.md`, `doc/tracker-udp.md`, `doc/tracker-fdef.md`)
+- BitTorrent peer messages - `doc/peer-wire-protocol.md` (+ `doc/peer-wire-api.md`, `doc/peer-wire-contracts.md`)
+- Pure domain logic for pieces - `doc/piece-management.md` (+ `doc/piece-contracts.md`)
+- End-to-end download coordination - `doc/download-orchestration.md` (+ `doc/orchestration-contracts.md`)
 
-Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/`
+`doc/architecture.md` maps the layers, principles, and roadmap. When you change behavior, update the matching feature doc in the same branch.
 
 ## Project Conventions
 
@@ -170,6 +182,17 @@ Each feature has: `spec.md`, `plan.md`, `tasks.md`, `data-model.md`, `contracts/
 - A path inside another is the same corruption: no declaration order repairs a layout where one entry claims a path as a file and another needs it as a directory, so refuse it in the shared guard (`torrent/prefix-collision?`, adjacent pairs in sorted order — a prefix sorts immediately before everything it prefixes). Bare `[]` never reaches the port (every layout path carries the root) and the containment primitive refuses it anyway, since a dir is not contained under itself
 - Pin check-grade fdefs with `stest/check`: every pure, total public fn gets a generative check over its fdef (see `test-utils/check-fdefs`; `torrent-test` / `download-test` `fdef-specs-hold-generatively-test`). Fns behind effect ports are excluded on principle, not by accident — the generator cannot conjure a protocol implementation, so a check on `calculate-rate` dies in `(time/now <generated-long>)` before its `:ret` is even reached. Record the exclusion at the test site. A failing check is either a spec to tighten or a real bug: the first run here found `(char b)` in `bencode/decode-value` throwing on negative bytes
 - Calibrate fdef `:args` and `:ret` to each other, never independently to maximum precision: a strict `:ret` over loose `:args` passes only until something emits the shape `:ret` cannot survive (`total-size` with `map?` args + `nat-int?` ret survived 1000 generated cases, yet hand-built `{:length "x"}` returns `"x"`). Tighten args toward the real input shape (`torrent/::totalable-info`: a present `:length` and every present `:files` entry must be nat-int) or loosen the ret — never pin a lucky pass. `stest/instrument` checks `:args` only (proven from `spec-checking-fn` source: it conforms args, calls through, returns unchecked); `:ret`/`:fn` are exercised solely by `stest/check`. `s/keys` matches keys by spec name, so one key carries one meaning per namespace: `:length` cannot be both the pos-int? span length and the nat-int file length — the second meaning gets a predicate (`torrent/span-shaped?`), not a second `s/keys`
+- Name every keyword with its namespace (`:piece/index`, `:tracker/url`): download state merges maps from several layers, and bare keys collide. `{:cljtoc/bytes}` already sets the pattern
+- Suffix predicates with `?` and effectful functions with `!` (`peer-has-piece?`, `write!`) so effects stay visible at the call site
+- Log data, not strings: emit `{:event ...}` maps through a port and keep `println` inside `core.clj` only
+- Construct stateful components with an explicit deps map (`make-coordinator {:keys [network disk time]}`); never reach for global system state
+- Do no work when a namespace loads: no sockets, go blocks, or file reads at top level, so `:reload` stays safe after branch switches
+- Throw `ex-info` only at effect boundaries with a namespaced `:type` plus data, and convert to `{:error ...}` at the layer edge; domain and protocol code returns error maps
+- Enable `*warn-on-reflection*` around byte-array hot paths; the parse loops are where reflection hides
+- Prefer transducers over chained lazy seqs in domain hot paths (selection counts, block decomposition), and measure before claiming speed
+- Never use `with-redefs` in tests; drive seams through injected port doubles instead
+- Write `testing` context strings as behavior claims and use `are` for envelope tables
+- Log user-visible behavior changes in CHANGELOG.md under `[Unreleased]` (Keep a Changelog `Added`/`Fixed`); internal refactors and docs-only `[skip ci]` commits are exempt
 
 ## Common Errors to Avoid
 
@@ -190,6 +213,7 @@ All PRs must verify:
 5. New code has corresponding tests; domain tests are pure
 6. New public fns carry co-located fdefs; pure, total ones are pinned by `stest/check` (effect-port fns excluded with the reason recorded at the test site)
 7. Changed files are `cljfmt`-clean (`cljfmt fix` before committing, `cljfmt check` after)
+8. Behavior changes under `src/` add a CHANGELOG.md entry under `[Unreleased]`; internal refactors and docs-only `[skip ci]` commits are exempt
 
 ## Memory
 

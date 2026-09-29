@@ -4,7 +4,7 @@
 
 - Read `AGENTS.md` first for repo-wide workflow, commands, and architecture constraints.
 - Read `CONTEXT.md` before naming domain concepts; use its vocabulary (`torrent metainfo`, `info hash`, `peer address`, `download`, etc.) instead of ad hoc synonyms.
-- Read the relevant ADRs in `docs/adr/` and the matching feature spec in `specs/<feature>/` before changing behavior.
+- Read the relevant ADRs in `docs/adr/` and the matching feature doc in `doc/<feature>.md` before changing behavior.
 
 ## What this repo is
 
@@ -23,7 +23,8 @@
 - Return errors as data (`{:error ...}` / `{:ok ...}`), not exceptions, for expected failures.
 - Treat torrent/bencode binary fields as raw bytes. Do **not** UTF-8 decode info hashes, piece hashes, or other binary payloads unless the code already does so for a known text field.
 - Use human-readable names; avoid single-letter locals.
-- When changing behavior, update or add tests in `test/dev/cljtoc/...` at the same time.
+- When changing behavior, update or add tests in `test/dev/cljtoc/...` and update the matching `doc/<feature>.md` page at the same time.
+- Write docs, comments, and PR text in the repo voice (`AGENTS.md` "Writing voice and tone"): second person, active voice, sentence-case headings.
 
 ## Fast path to common files
 

@@ -56,7 +56,7 @@ As part of the review, judge whether the touched code could benefit from clojure
 
 ## 8. Update docs and specs
 
-Before opening the PR, keep the docs consistent with the change: search `docs/`, `specs/`, `CONTEXT.md`, and `docs/adr/` for statements this PR invalidates (removed APIs, changed seams, renamed concepts, altered behavior). Update what the change actually breaks, in the same branch so docs and code land together. Scoped to broken assumptions only — never rewrite unrelated docs.
+Before opening the PR, keep the docs consistent with the change: search `docs/`, `doc/`, `CONTEXT.md`, and `docs/adr/` for statements this PR invalidates (removed APIs, changed seams, renamed concepts, altered behavior). If the change alters user-visible behavior, add a CHANGELOG.md entry under `[Unreleased]`. Update what the change actually breaks, in the same branch so docs and code land together. Scoped to broken assumptions only — never rewrite unrelated docs.
 
 ## 9. Open the PR
 
@@ -65,6 +65,7 @@ Stage only intended files, commit with a message describing what changed and why
 - Title naming the change.
 - `Closes #<number>.` as the first body line.
 - Validation / Changes / Verification sections: what was confirmed, what changed, and the test counts.
+- Write the commit message, title, and body in the repo Writing voice and tone (`AGENTS.md`): second person, active voice, sentence-case title, descriptive link text.
 
 Return the PR URL.
 

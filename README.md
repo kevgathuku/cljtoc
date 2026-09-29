@@ -1,4 +1,4 @@
-# BitTorrent Client (Clojure)
+# BitTorrent client (Clojure)
 
 A pure-functional BitTorrent client implementation in Clojure, built with a focus on correctness, testability, and clean architecture.
 
@@ -8,7 +8,7 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
 
 🚧 **In Development** - This is an educational/experimental project implementing the BitTorrent protocol from scratch.
 
-### Implemented Features
+### Implemented features
 
 - ✅ **Bencode Parser** - Full bencode encoder/decoder with comprehensive validation
 - ✅ **Torrent Metadata Parser** - Parse `.torrent` files and extract metadata
@@ -44,7 +44,7 @@ A pure-functional BitTorrent client implementation in Clojure, built with a focu
 - 🚧 Seeding (`torrent.seed`)
 - 🚧 DHT (Distributed Hash Table)
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
@@ -62,9 +62,9 @@ cd cljtoc
 lein test
 ```
 
-### Basic Usage
+### Basic usage
 
-#### Parse a Torrent File
+#### Parse a torrent file
 
 ```bash
 lein run torrent.parse path/to/file.torrent
@@ -84,13 +84,13 @@ Example output:
  :creation-date 1234567890}
 ```
 
-#### Show Available Commands
+#### Show available commands
 
 ```bash
 lein run
 ```
 
-### REPL Usage
+### REPL usage
 
 ```clojure
 # Start a REPL
@@ -115,7 +115,7 @@ lein repl
 ;; => {:ok {...}}
 ```
 
-## Project Structure
+## Project structure
 
 ```
 torrent-client-clj/
@@ -130,20 +130,18 @@ torrent-client-clj/
 │   ├── ports/                    # Effect protocols + real implementations (network, disk, time)
 │   └── test_doubles/             # In-memory ports for tests
 ├── test/dev/cljtoc/              # Mirrors src layout, plus integration/
-├── specs/                        # Feature specifications
-│   ├── 001-clojure-bittorrent-client/
-│   ├── 002-bencode-parser/
-│   ├── 003-tracker-protocol/
-│   ├── 004-peer-wire-protocol/
-│   ├── 005-piece-management/
-│   └── 006-download-orchestration/
-└── doc/
-    └── bencode-parser.md         # Bencode API documentation
+└── doc/                          # Feature documentation
+    ├── architecture.md           # Layer map, principles, roadmap
+    ├── bencode-parser.md         # Bencode API documentation
+    ├── tracker-protocol.md       # Peer discovery (plus tracker-http.md, tracker-udp.md, tracker-fdef.md)
+    ├── peer-wire-protocol.md     # Peer messages (plus peer-wire-api.md, peer-wire-contracts.md)
+    ├── piece-management.md       # Piece tracking and verification (plus piece-contracts.md)
+    └── download-orchestration.md # End-to-end download (plus orchestration-contracts.md)
 ```
 
 ## Development
 
-### Running Tests
+### Running tests
 
 ```bash
 # Run all tests
@@ -158,17 +156,16 @@ The test suite includes:
 - Round-trip verification tests (build → parse → verify)
 - Pure domain/protocol tests with no network I/O; orchestration tests run against in-memory test doubles
 
-### Development Workflow
+### Development workflow
 
 This project follows a specification-driven development approach:
 
-1. **Feature Specification** - Define requirements in `specs/XXX-feature-name/spec.md`
-2. **Implementation Plan** - Create detailed plan in `specs/XXX-feature-name/plan.md`
-3. **Task Breakdown** - Break down into atomic tasks in `specs/XXX-feature-name/tasks.md`
-4. **TDD Implementation** - Write tests first, then implementation
-5. **Documentation** - Update API docs and README
+1. **Requirements** - Open a GitHub issue describing the change and its acceptance criteria
+2. **Data contracts** - Define entities and function contracts in the matching `doc/` feature page
+3. **TDD implementation** - Write tests first, then implementation
+4. **Documentation** - Update the feature doc and README in the same branch
 
-### Code Style
+### Code style
 
 - Pure functional style - no side effects in domain logic
 - Error handling as data - return `{:ok value}` or `{:error ...}` maps
@@ -176,9 +173,9 @@ This project follows a specification-driven development approach:
 - Comprehensive docstrings on all public functions
 - Type hints for performance-critical code
 
-## Architecture Principles
+## Architecture principles
 
-### Domain-Driven Design
+### Domain-driven design
 
 - Domain logic is pure and isolated in `domain/` namespaces
 - No I/O in domain functions
@@ -198,19 +195,20 @@ All domain functions return result maps instead of throwing exceptions:
  :context {...}}
 ```
 
-### Binary Data Handling
+### Binary data handling
 
 The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hashes) without UTF-8 conversion, preventing data corruption. Only known text fields are selectively converted to strings.
 
 ## Documentation
 
-- **[Bencode Parser API](doc/bencode-parser.md)** - Detailed API documentation with examples
-- **[Tracker Protocol Quickstart](specs/003-tracker-protocol/quickstart.md)** - Usage examples for all tracker functions
-- **[Peer Wire Protocol API](specs/004-peer-wire-protocol/README.md)** - Full API reference for peer message parsing and state machine
-- **[Piece Management Quickstart](specs/005-piece-management/quickstart.md)** - Usage examples for piece state machine, selection, blocks, and verification
-- **[Feature Specs](specs/)** - Detailed feature specifications and implementation plans
+- **[Architecture](doc/architecture.md)** - Layer map, design principles, and feature index
+- **[Bencode parser API](doc/bencode-parser.md)** - Detailed API documentation with examples
+- **[Tracker protocol](doc/tracker-protocol.md)** - Peer discovery via HTTP and UDP trackers
+- **[Peer wire protocol](doc/peer-wire-protocol.md)** - Handshake, message types, and connection state
+- **[Piece management](doc/piece-management.md)** - Piece tracking, selection, and verification
+- **[Download orchestration](doc/download-orchestration.md)** - End-to-end download lifecycle
 
-## CLI Commands
+## CLI commands
 
 | Command | Description | Status |
 |---------|-------------|--------|
