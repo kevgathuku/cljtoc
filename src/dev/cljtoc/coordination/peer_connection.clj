@@ -77,22 +77,30 @@
   (let [connect-result (network/connect-peer network-port address)]
     (if (:error connect-result)
       connect-result
-      (let [peer-data (:ok connect-result)
-            handshake-bytes (:ok (peer/build-handshake info-hash our-peer-id))]
-        (network/send-message network-port peer-data handshake-bytes)
-        (let [handshake-result (network/receive-handshake network-port peer-data)]
-          (if (:error handshake-result)
-            (do
-              (network/close-peer network-port peer-data)
-              handshake-result)
-            (if (:error (verify-handshake info-hash (:ok handshake-result)))
-              (do
-                (network/close-peer network-port peer-data)
-                {:error :info-hash-mismatch :message "Info hash mismatch"})
-              (let [interested-bytes (:ok (peer/build-message (peer/->Interested)))]
-                (network/send-message network-port peer-data interested-bytes)
-                {:ok {:peer-data peer-data
-                      :peer-state (initial-state total-pieces)}}))))))))
+      (let [peer-data (:ok connect-result)]
+        ;; An injected or alternate port may throw where the real one
+        ;; returns an envelope; close what the dial opened, then let
+        ;; the worker's catch report it. Returned send-error envelopes
+        ;; stay fire-and-forget, exactly as run-peer always treated them.
+        (try
+          (let [handshake-bytes (:ok (peer/build-handshake info-hash our-peer-id))]
+            (network/send-message network-port peer-data handshake-bytes)
+            (let [handshake-result (network/receive-handshake network-port peer-data)]
+              (if (:error handshake-result)
+                (do
+                  (network/close-peer network-port peer-data)
+                  handshake-result)
+                (if (:error (verify-handshake info-hash (:ok handshake-result)))
+                  (do
+                    (network/close-peer network-port peer-data)
+                    {:error :info-hash-mismatch :message "Info hash mismatch"})
+                  (let [interested-bytes (:ok (peer/build-message (peer/->Interested)))]
+                    (network/send-message network-port peer-data interested-bytes)
+                    {:ok {:peer-data peer-data
+                          :peer-state (initial-state total-pieces)}})))))
+          (catch Exception thrown-error
+            (network/close-peer network-port peer-data)
+            (throw thrown-error)))))))
 
 ;; connect/close ride the INetworkPort seam, so stest/check cannot
 ;; conjure their port argument (same exclusion the fdef gate records

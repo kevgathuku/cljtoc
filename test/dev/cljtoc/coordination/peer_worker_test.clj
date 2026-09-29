@@ -48,7 +48,10 @@
           worker-exit (take-timeout done-ch 2000)]
       (is (not= :timeout event) "worker produced no event")
       (is (= :peer-disconnected (:type event)))
-      (is (not= :timeout worker-exit) "worker thread terminated, nothing leaked"))))
+      (is (not= :timeout worker-exit) "worker thread terminated, nothing leaked")
+      (let [closed (mock-net/closed-peers net)]
+        (is (= 1 (count closed)) "the dialed peer was closed, not leaked")
+        (is (= "127.0.0.1:6881" (:address (first closed))))))))
 
 (deftest worker-survives-throwing-logger-test
   (testing "run-peer still emits :peer-disconnected when :log-fn throws"
