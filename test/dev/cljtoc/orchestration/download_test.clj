@@ -1816,16 +1816,19 @@
       (is (= [0] (mock-disk/get-prepared-writes disk))))))
 
 (deftest materialize-falls-back-when-prepared-identities-are-missing-test
-  (testing "a prepare that saw absent files yields nil identities, so the
-            3-arity loops with nil prepared: bytes still land, but never
-            through the fast path — a nil frozen identity compares on
-            canonical path alone, which a post-prepare hardlink defeats"
+  (testing "the mock prepare reports nil identities on the standalone path
+            (no init to materialize the targets), so the 3-arity loops with
+            a prepared value whose frozen identities are all nil. The real
+            port's whole-layout alias check on every piece write refuses
+            that path; the mock has no filesystem to walk, so the gate does
+            not fire here. The integration safety is asserted end to end in
+            write-prepared-piece-refuses-post-prepare-untouched-symlink-alias-test
+            and the hardlink twin, which run against DiskPortImpl on a real
+            filesystem"
     (let [{:keys [download layout disk piece-0]} (materialize-fixture)
           result (#'download/materialize-verified-pieces download disk layout)]
       (is (not (:error result)))
-      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0))))
-      (is (empty? (mock-disk/get-prepared-writes disk))
-          "no fast-path write: the mock prepare reports nil identities"))))
+      (is (= (seq piece-0) (seq (mock-disk/get-output-piece disk 0)))))))
 
 (defn- carried-fixture
   "A 1-piece download with its only piece verified but nothing in the

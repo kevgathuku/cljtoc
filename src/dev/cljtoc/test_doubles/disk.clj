@@ -108,9 +108,12 @@
   (write-prepared-piece [_ prepared output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates minus the filesystem: span
     ;; derivation, both shape gates, the prepared-for-this-dir binding,
-    ;; then touched-path membership. The try/catch mirrors the real port
-    ;; too: a bad bytes argument (alength throws) comes back as
-    ;; {:error :write-error}, never an uncaught throw.
+    ;; then touched-path membership, then the whole-layout alias check.
+    ;; An :alias-error config knob forces the alias check to refuse, so
+    ;; orchestration tests can drive a post-prepare alias without a real
+    ;; filesystem. The try/catch mirrors the real port too: a bad bytes
+    ;; argument (alength throws) comes back as {:error :write-error},
+    ;; never an uncaught throw.
     (try
       (if-let [err (or (:output-write-error config) (:write-error config))]
         err
@@ -136,6 +139,9 @@
                          (not (every? #(contains? (:sizes layout) (:path %))
                                       (:ok spans-result)))
                          disk/invalid-output-layout-error
+
+                         (:alias-error config)
+                         (:alias-error config)
 
                          :else nil)]
             err

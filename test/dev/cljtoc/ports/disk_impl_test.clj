@@ -477,6 +477,56 @@
       (is (:error result))
       (is (= "SENTINEL" (slurp target))))))
 
+(deftest write-prepared-piece-refuses-post-prepare-untouched-symlink-alias-test
+  ;; The prepared fast path must re-validate the whole layout live, not
+  ;; just the piece's paths: b becomes a symlink to a after a clean
+  ;; prepare, and a write touching only a would otherwise corrupt b while
+  ;; every touched-side check still passes.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-alias-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        target (io/file output-dir "t" "a")
+        alias-link (io/file output-dir "t" "b")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (.delete alias-link)
+    (java.nio.file.Files/createSymbolicLink
+     (.toPath alias-link)
+     (.toPath target)
+     (into-array java.nio.file.attribute.FileAttribute []))
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= :unsafe-path (:error result)))
+      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
+                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+          "the refused write leaves the touched file intact"))))
+
+(deftest write-prepared-piece-refuses-post-prepare-untouched-hardlink-alias-test
+  ;; Same post-prepare alias through a hard link: b shares a's inode, so
+  ;; the canonical targets differ and only a live identity comparison
+  ;; across the whole layout can see the alias.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-hardlink-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        target (io/file output-dir "t" "a")
+        alias-link (io/file output-dir "t" "b")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (.delete alias-link)
+    (java.nio.file.Files/createLink (.toPath alias-link) (.toPath target))
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= :unsafe-path (:error result)))
+      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
+                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+          "the refused write leaves the touched file intact"))))
+
 (deftest initialize-output-layout-rejects-layout-without-lengths-test
   ;; A layout with neither :length nor :files must be refused as
   ;; :invalid-info before anything is created — not attempted until

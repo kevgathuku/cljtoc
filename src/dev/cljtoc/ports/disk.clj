@@ -55,12 +55,18 @@
 
   (write-prepared-piece [this prepared output-dir piece-index bytes]
     "Write one verified piece through an explicitly prepared layout
-     (prepare-output-layout), re-validating only the files the piece
-     overlaps: containment and alias checks over touched paths, pure
-     comparison against the prepared snapshot for the rest. Per-piece
-     filesystem cost is O(touched), not O(files); the full O(files)
-     resolution ran once at prepare time. Returns {:ok :written} or
-     {:error reason :message msg}.
+     (prepare-output-layout), re-validating the whole layout live on every
+     piece: containment and alias checks over every declared path, with
+     touched-side stability against the prepared snapshot catching a
+     touched file moved since prepare. The whole-layout alias check is
+     the only way to catch a post-prepare alias involving an untouched
+     path (e.g. b symlinked onto a after prepare, with the next piece
+     writing only a); a touched-only scan is enough for touched-vs-touched
+     collisions but cannot see an untouched path newly redirected onto a
+     touched target. Per-piece filesystem cost is O(files), matching
+     write-output-piece; the win over the full path is the cached compiled
+     layout, the cached :sizes map, and no per-piece span derivation.
+     Returns {:ok :written} or {:error reason :message msg}.
 
      Side effects: writes to filesystem")
   (initialize-output-layout [this layout output-dir]

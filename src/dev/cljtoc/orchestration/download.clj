@@ -773,18 +773,6 @@
     (disk/write-prepared-piece disk-port prepared output-dir piece-index bytes)
     (disk/write-output-piece disk-port layout output-dir piece-index bytes)))
 
-(defn- complete-prepared-identities?
-  "True when prepared covers every declared path with a filesystem identity
-   seen at prepare time: the fast path then compares identities, not bare
-   canonical paths. False for a refused prepare (nil) or any entry whose
-   target did not exist yet, selecting the full per-piece writer instead."
-  [prepared sizes]
-  (and (some? prepared)
-       (map? (:resolved prepared))
-       (= (set (keys (:resolved prepared))) (set (keys sizes)))
-       (every? (fn [[_ entry]] (some? (:identity entry)))
-               (:resolved prepared))))
-
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
    over the network port, verified pieces go to the piece cache and the
@@ -1042,19 +1030,18 @@
    pieces were requeued does not discard that progress: the failed record
    keeps it instead of re-claiming the holey pieces as verified."
   ([download disk-port output-layout]
-   ;; Prepare once for the whole loop, and fall back per piece when the
-   ;; preparation cannot vouch for every file: a refused prepare yields nil
-   ;; via (:ok ...), and an entry for a target absent at prepare time carries
-   ;; a nil identity that stable-touch? compares on the canonical path alone;
-   ;; a post-prepare hardlink defeats that check while the untouched snapshot
-   ;; stays unscanned. Nil prepared selects the full per-piece writer in
-   ;; write-output, which alias-checks the whole layout, so the fallback
-   ;; costs speed, never safety.
+   ;; Prepare once for the whole loop: the prepared value lets the per-piece
+   ;; write re-validate the whole layout against current filesystem state,
+   ;; catching post-prepare aliases (e.g. a symlink created after prepare
+   ;; pointing one declared path at another) before any byte lands. A
+   ;; refused prepare yields nil and the per-piece write takes the full
+   ;; alias-checked path; either route refuses the unsafe layout. Threading
+   ;; nil as the prepared value is a speed choice, never a safety one:
+   ;; write-output dispatches to the full writer, which alias-checks the
+   ;; whole layout on every piece.
    (let [prepared (:ok (disk/prepare-output-layout
                         disk-port output-layout (:output-dir download)))]
-     (materialize-verified-pieces download disk-port output-layout
-                                  (when (complete-prepared-identities? prepared (:sizes output-layout))
-                                    prepared))))
+     (materialize-verified-pieces download disk-port output-layout prepared)))
   ([download disk-port output-layout prepared]
    (loop [download download
           remaining (sort (:verified (:piece-state download)))]

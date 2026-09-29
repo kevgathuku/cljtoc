@@ -212,28 +212,6 @@
                             [declared-path (:file entry)])
                           entries))})))))
 
-(defn- revalidate-touched
-  "Re-resolve only the touched declared paths under output-dir: containment
-   plus the mkdirs probe per path (see resolve-contained), then the current
-   canonical target and filesystem identity. O(touched) syscalls — the whole
-   point of the prepared path. Returns {:ok {path {:file File :canonical str
-   :identity id-or-nil}}} or the first {:error ...}."
-  [output-dir touched-paths]
-  (loop [remaining touched-paths
-         current {}]
-    (if (empty? remaining)
-      {:ok current}
-      (let [declared-path (first remaining)
-            probed (resolve-contained output-dir declared-path)]
-        (if (:error probed)
-          probed
-          (let [out-file (:ok probed)]
-            (recur (rest remaining)
-                   (assoc current declared-path
-                          {:file out-file
-                           :canonical (.getCanonicalPath ^File out-file)
-                           :identity (file-identity out-file)}))))))))
-
 (defn- stable-touch?
   "True when a touched path still names what prepare saw: same canonical
    target, and the same file once both sides have an identity to compare. A
@@ -251,70 +229,88 @@
 
 (defn- write-prepared!
   "Blocking write of one piece through the prepared layout: re-validate the
-   touched paths, then open, size, and write only the touched files. The
-   re-validation is O(touched): containment plus the mkdirs probe, current
-   canonical target and identity per touched path (revalidate-touched),
-   stability of each touched path against its frozen entry, and a
-   collision check among the touched files' current targets.
+   whole layout live, then open, size, and write only the touched files.
+   The re-validation resolves every declared path fresh (containment plus
+   the mkdirs probe per path, current canonical target and filesystem
+   identity), then runs the same whole-layout alias check as the full
+   write path: two declared paths sharing one canonical target or one
+   filesystem identity are refused as :unsafe-path. The alias check is
+   the only way to catch a post-prepare alias involving an untouched path
+   (e.g. b symlinked onto a after prepare, with the next piece writing
+   only a) — a touched-only scan is enough to catch a touched file moved
+   or aliased to another touched file, but cannot see an untouched path
+   newly redirected onto a touched target.
 
-   The untouched snapshot is deliberately NOT re-scanned: given stability,
-   no live touched target can equal a frozen untouched one (prepare proved
-   every frozen target distinct, and stability pins each touched file to
-   its own frozen target), so that comparison is dead code that would cost
-   O(files) pure work per piece for nothing. What it cannot see — an
-   untouched path newly aliased onto a touched target after prepare — is
-   refused when the untouched path itself is written, and when the touched
-   side moved at all. Callers prepare AFTER init (run-download does), so a
-   frozen entry normally carries an identity; a nil frozen identity (target
-   absent at prepare) is accepted on the canonical alone, and a nil live
-   identity falls back to the canonical check with the write recreating a
-   merely deleted file, exactly as the full path would.
+   Syscalls are O(files) (one resolve-contained per declared path),
+   matching the full write path; the per-piece win over the full path is
+   now the lack of a redundant span derivation and the cached :sizes map,
+   not a smaller filesystem walk. The alias scan is pure work over the
+   re-resolved map, with no further syscalls. Stability is checked
+   touched-side against the frozen snapshot: a touched path that has
+   moved since prepare is refused with :unsafe-path, with no open and no
+   partial write. Callers prepare AFTER init (run-download does), so
+   frozen entries normally carry an identity; a nil frozen identity is
+   accepted on the canonical alone (the init-created file cannot alias
+   anything prepare already cleared), and a nil live identity falls back
+   to the canonical check with the write recreating a merely deleted
+   file, exactly as the full path would.
    Returns {:ok :written} or {:error ...}."
   [prepared output-dir spans bytes]
   (let [sizes (:sizes (:layout prepared))
         touched (distinct (map :path spans))
-        live-result (revalidate-touched output-dir touched)]
+        live-result (resolve-entries output-dir (keys sizes))]
     (if (:error live-result)
       live-result
-      (let [live (:ok live-result)
+      (let [{canonical-dir :canonical-dir live :entries} (:ok live-result)
             frozen (:resolved prepared)
+            ;; Touched-side stability: a touched path must still name what
+            ;; prepare froze it against. Stability on canonical alone is
+            ;; enough when the frozen or live identity is absent (init
+            ;; created the file on the run-download path, so prepare
+            ;; normally sees a non-nil identity; a deleted target falls
+            ;; back the same way as the full write path). Refused here
+            ;; before any open, never on a partial write.
             moved (first (filter (fn [declared-path]
                                    (not (stable-touch?
                                          (get frozen declared-path)
                                          (get live declared-path))))
                                  touched))]
-        (if moved
+        (if (and (not moved)
+                 (not= canonical-dir (:output-dir prepared)))
           {:error :unsafe-path
-           :message (str "Output path " (pr-str moved)
-                         " changed on disk since layout preparation under " output-dir)}
-          (let [live-canonicals (map :canonical (vals (select-keys live touched)))]
-            (if (not= (count (set live-canonicals)) (count live-canonicals))
-              {:error :unsafe-path
-               :message (str "Output paths resolve to the same file on disk under "
-                             output-dir)}
-              (let [live-ids (keep :identity (vals (select-keys live touched)))]
-                (if (not= (count (set live-ids)) (count live-ids))
-                  {:error :unsafe-path
-                   :message (str "Output paths refer to the same file on disk under "
-                                 output-dir)}
-                  (try
-                    (doseq [declared-path touched]
-                      (let [out-file (get-in live [declared-path :file])]
-                        (with-open [raf (RandomAccessFile. out-file "rw")]
-                          (.setLength raf (get sizes declared-path))
-                          (doseq [{file-offset :file-offset
-                                   data-offset :data-offset
-                                   span-length :length}
-                                  (filter #(= declared-path (:path %)) spans)]
-                            (let [slice (Arrays/copyOfRange
-                                         ^bytes bytes
-                                         (int data-offset)
-                                         (int (+ data-offset span-length)))]
-                              (.seek raf file-offset)
-                              (.write raf slice))))))
-                    {:ok :written}
-                    (catch Exception error
-                      {:error :write-error :message (.getMessage error)})))))))))))
+           :message (str "Output directory changed on disk since layout preparation: "
+                         canonical-dir " != " (:output-dir prepared))}
+          (if moved
+            {:error :unsafe-path
+             :message (str "Output path " (pr-str moved)
+                           " changed on disk since layout preparation under " output-dir)}
+            ;; Whole-layout alias check over the live snapshot: catches a
+            ;; post-prepare alias where an untouched path now resolves to
+            ;; the same canonical target or filesystem identity as a
+            ;; touched file (e.g. the user symlinks b to a after prepare,
+            ;; and the next piece writes only a). O(files) pure work,
+            ;; no extra syscalls — resolve-entries already walked the
+            ;; layout. Refused before any open, never on a partial write.
+            (if-let [collision (alias-error live output-dir)]
+              collision
+              (try
+                (doseq [declared-path touched]
+                  (let [out-file (get-in live [declared-path :file])]
+                    (with-open [raf (RandomAccessFile. out-file "rw")]
+                      (.setLength raf (get sizes declared-path))
+                      (doseq [{file-offset :file-offset
+                               data-offset :data-offset
+                               span-length :length}
+                              (filter #(= declared-path (:path %)) spans)]
+                        (let [slice (Arrays/copyOfRange
+                                     ^bytes bytes
+                                     (int data-offset)
+                                     (int (+ data-offset span-length)))]
+                          (.seek raf file-offset)
+                          (.write raf slice))))))
+                {:ok :written}
+                (catch Exception error
+                  {:error :write-error :message (.getMessage error)})))))))))
 
 (defn- write-layout!
   "Blocking write of one piece into the torrent file layout. Every declared
