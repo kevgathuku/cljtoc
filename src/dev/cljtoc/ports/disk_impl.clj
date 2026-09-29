@@ -107,6 +107,38 @@
     {:ok (io/file piece-cache-dir scope (str "piece-" piece-index ".dat"))}
     disk/invalid-info-hash-error))
 
+(defn- snapshot-parent-mtimes
+  "Snapshot the last-modified time of every distinct parent directory of
+   the resolved entries: {parent-absolute-path mtime-ms}. Taken at prepare
+   time so write-prepared! can detect filesystem changes between prepare
+   and a later write without re-resolving the whole layout on every piece:
+   creating, deleting, renaming, symlinking, or hardlinking any entry
+   bumps its parent dir's mtime. Pure map work over the already-resolved
+   entries — no extra syscalls beyond what resolve-entries performed.
+   Stat follows symlinks, so a logical parent that is itself a link still
+   reports its target dir's mtime, which is where entry changes land."
+  [entries]
+  (into {}
+        (comp (map (fn [[_ entry]] (.getParentFile ^File (:file entry))))
+              (filter some?)
+              (distinct)
+              (map (fn [^File parent] [(.getAbsolutePath parent) (.lastModified parent)])))
+        entries))
+
+(defn- parent-mtimes-changed?
+  "True when any snapshotted parent dir's current mtime differs from the
+   prepare-time snapshot. Iterates the snapshot's own keys — prepare
+   already distilled every file down to its distinct parent, so this is
+   O(distinct-parents) stats with zero per-file work. An empty or missing
+   snapshot (hand-built prepared values) counts as changed and degrades
+   to the full re-resolve, never to the fast path."
+  [snapshot]
+  (or (empty? snapshot)
+      (boolean
+       (some (fn [[parent-path frozen]]
+               (not= frozen (.lastModified (io/file parent-path))))
+             snapshot))))
+
 (defn- resolve-entries
   "Containment-resolve every declared path under output-dir. Returns
    {:ok {:canonical-dir dir :entries {path {:file File :canonical str
@@ -168,7 +200,11 @@
   "Resolve the whole declared layout once and freeze it into the explicit
    prepared value write-prepared-piece re-validates touched files against:
    the canonical output dir plus, per declared path, the absolute file, its
-   canonical target, and its filesystem identity at prepare time.
+   canonical target, and its filesystem identity at prepare time. Also
+   snapshots the last-modified time of every distinct parent directory
+   among the declared paths, so write-prepared-piece can detect filesystem
+   changes between prepare and a later write without re-resolving the
+   whole layout on every piece.
    Returns {:ok prepared} or {:error ...}."
   [output-dir sizes]
   (let [resolved (resolve-entries output-dir (keys sizes))]
@@ -179,6 +215,7 @@
           collision
           {:ok {:layout nil
                 :output-dir canonical-dir
+                :parent-mtimes (snapshot-parent-mtimes entries)
                 :resolved (into {}
                                 (map (fn [[declared-path entry]]
                                        [declared-path
@@ -227,72 +264,133 @@
            (nil? (:identity live))
            (= (:identity frozen) (:identity live)))))
 
-(defn- write-prepared!
-  "Blocking write of one piece through the prepared layout: re-validate the
-   whole layout live, then open, size, and write only the touched files.
-   The re-validation resolves every declared path fresh (containment plus
-   the mkdirs probe per path, current canonical target and filesystem
-   identity), then runs the same whole-layout alias check as the full
-   write path: two declared paths sharing one canonical target or one
-   filesystem identity are refused as :unsafe-path. The alias check is
-   the only way to catch a post-prepare alias involving an untouched path
-   (e.g. b symlinked onto a after prepare, with the next piece writing
-   only a) — a touched-only scan is enough to catch a touched file moved
-   or aliased to another touched file, but cannot see an untouched path
-   newly redirected onto a touched target.
+(defn- revalidate-touched
+  "Re-resolve only the touched declared paths under output-dir: containment
+   plus the mkdirs probe per path (see resolve-contained), then the current
+   canonical target and filesystem identity. O(touched) syscalls — the fast
+   path when no parent directory has changed since prepare. Returns
+   {:ok {path {:file File :canonical str :identity id-or-nil}}} or the
+   first {:error ...}."
+  [output-dir touched-paths]
+  (loop [remaining touched-paths
+         current {}]
+    (if (empty? remaining)
+      {:ok current}
+      (let [declared-path (first remaining)
+            probed (resolve-contained output-dir declared-path)]
+        (if (:error probed)
+          probed
+          (let [out-file (:ok probed)]
+            (recur (rest remaining)
+                   (assoc current declared-path
+                          {:file out-file
+                           :canonical (.getCanonicalPath ^File out-file)
+                           :identity (file-identity out-file)}))))))))
 
-   Syscalls are O(files) (one resolve-contained per declared path),
-   matching the full write path; the per-piece win over the full path is
-   now the lack of a redundant span derivation and the cached :sizes map,
-   not a smaller filesystem walk. The alias scan is pure work over the
-   re-resolved map, with no further syscalls. Stability is checked
-   touched-side against the frozen snapshot: a touched path that has
-   moved since prepare is refused with :unsafe-path, with no open and no
-   partial write. Callers prepare AFTER init (run-download does), so
-   frozen entries normally carry an identity; a nil frozen identity is
-   accepted on the canonical alone (the init-created file cannot alias
-   anything prepare already cleared), and a nil live identity falls back
-   to the canonical check with the write recreating a merely deleted
-   file, exactly as the full path would.
+(defn- write-prepared!
+  "Blocking write of one piece through the prepared layout: re-validate
+   touched files against the prepared snapshot, then open, size, and write
+   only the touched files. Uses a parent-directory mtime gate to decide
+   whether to take the fast touched-only path (one stat per distinct
+   parent dir plus O(touched) re-validation) or
+   fall back to the full re-resolve (O(files) syscalls):
+
+   - If no parent directory's mtime has changed since prepare, the
+     prepared snapshot is still valid for untouched paths, so re-validate
+     only the touched paths and check touched-side stability against the
+     frozen snapshot. This is the common case: no filesystem changes
+     between pieces.
+   - If any parent directory's mtime has changed, the prepared snapshot
+     may be stale (a file was created, deleted, or renamed in a parent
+     dir), so re-resolve the whole layout and run the full alias check.
+     This catches post-prepare aliases involving untouched paths (e.g. b
+     symlinked onto a after prepare, with the next piece writing only a).
+
+   The alias check is the only way to catch a post-prepare alias involving
+   an untouched path — a touched-only scan is enough to catch a touched
+   file moved or aliased to another touched file, but cannot see an
+   untouched path newly redirected onto a touched target. The parent-mtime
+   gate makes the common case flat-cost while preserving correctness when
+   the filesystem changes. Residual: the gate trusts parent-dir mtimes,
+   so an alias planted inside the clock granularity — or by an actor able
+   to rewrite a parent's mtime afterwards — defeats detection the way any
+   TOCTOU race defeats a check-then-act sequence. The threat model is
+   accidental or tool-driven mutation, not a mtime-spoofing local
+   adversary (who can rewrite output files directly).
+
+   Stability is checked touched-side against the frozen snapshot: a
+   touched path that has moved since prepare is refused with :unsafe-path,
+   with no open and no partial write. Callers prepare AFTER init
+   (run-download does), so frozen entries normally carry an identity; a
+   nil frozen identity is accepted on the canonical alone (the init-created
+   file cannot alias anything prepare already cleared), and a nil live
+   identity falls back to the canonical check with the write recreating a
+   merely deleted file, exactly as the full path would.
    Returns {:ok :written} or {:error ...}."
   [prepared output-dir spans bytes]
   (let [sizes (:sizes (:layout prepared))
         touched (distinct (map :path spans))
-        live-result (resolve-entries output-dir (keys sizes))]
-    (if (:error live-result)
-      live-result
-      (let [{canonical-dir :canonical-dir live :entries} (:ok live-result)
-            frozen (:resolved prepared)
-            ;; Touched-side stability: a touched path must still name what
-            ;; prepare froze it against. Stability on canonical alone is
-            ;; enough when the frozen or live identity is absent (init
-            ;; created the file on the run-download path, so prepare
-            ;; normally sees a non-nil identity; a deleted target falls
-            ;; back the same way as the full write path). Refused here
-            ;; before any open, never on a partial write.
-            moved (first (filter (fn [declared-path]
-                                   (not (stable-touch?
-                                         (get frozen declared-path)
-                                         (get live declared-path))))
-                                 touched))]
-        (if (and (not moved)
-                 (not= canonical-dir (:output-dir prepared)))
-          {:error :unsafe-path
-           :message (str "Output directory changed on disk since layout preparation: "
-                         canonical-dir " != " (:output-dir prepared))}
-          (if moved
-            {:error :unsafe-path
-             :message (str "Output path " (pr-str moved)
-                           " changed on disk since layout preparation under " output-dir)}
-            ;; Whole-layout alias check over the live snapshot: catches a
-            ;; post-prepare alias where an untouched path now resolves to
-            ;; the same canonical target or filesystem identity as a
-            ;; touched file (e.g. the user symlinks b to a after prepare,
-            ;; and the next piece writes only a). O(files) pure work,
-            ;; no extra syscalls — resolve-entries already walked the
-            ;; layout. Refused before any open, never on a partial write.
-            (if-let [collision (alias-error live output-dir)]
-              collision
+        parent-mtimes (:parent-mtimes prepared)
+        parents-changed (parent-mtimes-changed? parent-mtimes)]
+    (if parents-changed
+      ;; Full re-resolve: some parent dir changed, so the prepared snapshot
+      ;; may be stale. O(files) syscalls, same as the full write path.
+      (let [live-result (resolve-entries output-dir (keys sizes))]
+        (if (:error live-result)
+          live-result
+          (let [{canonical-dir :canonical-dir live :entries} (:ok live-result)
+                frozen (:resolved prepared)
+                moved (first (filter (fn [declared-path]
+                                       (not (stable-touch?
+                                             (get frozen declared-path)
+                                             (get live declared-path))))
+                                     touched))]
+            (if (and (not moved)
+                     (not= canonical-dir (:output-dir prepared)))
+              {:error :unsafe-path
+               :message (str "Output directory changed on disk since layout preparation: "
+                             canonical-dir " != " (:output-dir prepared))}
+              (if moved
+                {:error :unsafe-path
+                 :message (str "Output path " (pr-str moved)
+                               " changed on disk since layout preparation under " output-dir)}
+                (if-let [collision (alias-error live output-dir)]
+                  collision
+                  (try
+                    (doseq [declared-path touched]
+                      (let [out-file (get-in live [declared-path :file])]
+                        (with-open [raf (RandomAccessFile. out-file "rw")]
+                          (.setLength raf (get sizes declared-path))
+                          (doseq [{file-offset :file-offset
+                                   data-offset :data-offset
+                                   span-length :length}
+                                  (filter #(= declared-path (:path %)) spans)]
+                            (let [slice (Arrays/copyOfRange
+                                         ^bytes bytes
+                                         (int data-offset)
+                                         (int (+ data-offset span-length)))]
+                              (.seek raf file-offset)
+                              (.write raf slice))))))
+                    {:ok :written}
+                    (catch Exception error
+                      {:error :write-error :message (.getMessage error)}))))))))
+      ;; Fast path: no parent dir changed, so the prepared snapshot is still
+      ;; valid for untouched paths. Re-validate only the touched paths.
+      ;; O(touched) syscalls.
+      (let [live-result (revalidate-touched output-dir touched)]
+        (if (:error live-result)
+          live-result
+          (let [live (:ok live-result)
+                frozen (:resolved prepared)
+                moved (first (filter (fn [declared-path]
+                                       (not (stable-touch?
+                                             (get frozen declared-path)
+                                             (get live declared-path))))
+                                     touched))]
+            (if moved
+              {:error :unsafe-path
+               :message (str "Output path " (pr-str moved)
+                             " changed on disk since layout preparation under " output-dir)}
               (try
                 (doseq [declared-path touched]
                   (let [out-file (get-in live [declared-path :file])]

@@ -93,12 +93,14 @@
   (prepare-output-layout [_ layout output-dir]
     ;; Mirrors DiskPortImpl's once-per-download gates without touching a
     ;; filesystem: the full invariant check plus an explicit prepared value
-    ;; carrying one resolved entry per declared path, so orchestration
-    ;; tests thread exactly what the real port hands the fast write path.
+    ;; carrying one resolved entry per declared path and an empty
+    ;; parent-mtimes map (no filesystem to track), so orchestration tests
+    ;; thread exactly what the real port hands the fast write path.
     (if (not (disk/consistent-output-layout? layout))
       disk/invalid-output-layout-error
       {:ok {:layout layout
             :output-dir output-dir
+            :parent-mtimes {}
             :resolved (into {} (map (fn [declared-path]
                                       [declared-path {:file (pr-str declared-path)
                                                       :canonical (pr-str declared-path)

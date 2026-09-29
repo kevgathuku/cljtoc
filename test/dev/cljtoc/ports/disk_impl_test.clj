@@ -497,6 +497,10 @@
      (.toPath alias-link)
      (.toPath target)
      (into-array java.nio.file.attribute.FileAttribute []))
+    ;; Force the gate trip deterministically (see the benign-change test):
+    ;; the alias itself must be caught by the full re-resolve, not by luck
+    ;; of the millisecond clock.
+    (.setLastModified (io/file output-dir "t") 0)
     (let [result (disk/write-prepared-piece port prepared output-dir 0
                                             (byte-array [1 2 3 4]))]
       (is (= :unsafe-path (:error result)))
@@ -520,12 +524,43 @@
     (is (some? prepared) "prepare must succeed on the clean layout")
     (.delete alias-link)
     (java.nio.file.Files/createLink (.toPath alias-link) (.toPath target))
+    ;; Force the gate trip deterministically (see the benign-change test).
+    (.setLastModified (io/file output-dir "t") 0)
     (let [result (disk/write-prepared-piece port prepared output-dir 0
                                             (byte-array [1 2 3 4]))]
       (is (= :unsafe-path (:error result)))
       (is (java.util.Arrays/equals (byte-array [0 0 0 0])
                                    (java.nio.file.Files/readAllBytes (.toPath target)))
           "the refused write leaves the touched file intact"))))
+
+(deftest write-prepared-piece-writes-through-benign-post-prepare-change-test
+  ;; Tripping the parent-mtime gate must not break honest writes: a new
+  ;; unrelated file after prepare forces the full re-resolve, which finds
+  ;; no alias and writes the piece. The gate is a tripwire, not a refusal.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-prepared-benign-")
+        info {:name "t" :piece-length 4
+              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
+        layout (compile-layout info)
+        _ (disk/initialize-output-layout port layout output-dir)
+        prepared (:ok (disk/prepare-output-layout port layout output-dir))
+        bystander (io/file output-dir "t" "c")]
+    (is (some? prepared) "prepare must succeed on the clean layout")
+    (spit bystander "bystander")
+    ;; Force the trip deterministically: `.lastModified` has millisecond
+    ;; granularity, so the spit above could land in the same tick as the
+    ;; snapshot and sail through the fast path. Backdating the dir
+    ;; guarantees the gate fires; either branch must still write.
+    (.setLastModified (io/file output-dir "t") 0)
+    (let [result (disk/write-prepared-piece port prepared output-dir 0
+                                            (byte-array [1 2 3 4]))]
+      (is (= {:ok :written} result))
+      (is (java.util.Arrays/equals (byte-array [1 2 3 4])
+                                   (java.nio.file.Files/readAllBytes
+                                    (.toPath (io/file output-dir "t" "a"))))
+          "the piece lands in the touched file")
+      (is (= "bystander" (slurp bystander))
+          "the unrelated file is untouched"))))
 
 (deftest initialize-output-layout-rejects-layout-without-lengths-test
   ;; A layout with neither :length nor :files must be refused as

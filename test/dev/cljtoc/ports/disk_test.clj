@@ -184,11 +184,13 @@
 
 (defn- prepared-for
   "A prepared value for layout as prepare-output-layout would freeze it:
-   one resolved entry per declared path. The filesystem strings are
-   arbitrary — validity is shape, not reachability."
+   one resolved entry per declared path and an empty parent-mtimes map.
+   The filesystem strings are arbitrary — validity is shape, not
+   reachability."
   [layout]
   {:layout layout
    :output-dir "/tmp/out"
+   :parent-mtimes {}
    :resolved (into {}
                    (map (fn [declared-path]
                           [declared-path {:file (str "/tmp/out/" (last declared-path))
@@ -225,11 +227,13 @@
 (def prepared-mutations
   "One-field breaks of a valid prepared value; every one must fail the
    predicate. Each targets a different clause: the carried layout, the
-   output dir, resolved membership, and entry shapes."
+   output dir, the parent-mtimes map, resolved membership, and entry shapes."
   [(fn [prepared] (assoc-in prepared [:layout :piece-length] 0))
    (fn [prepared] (assoc prepared :layout nil))
    (fn [prepared] (assoc prepared :output-dir 42))
    (fn [prepared] (assoc prepared :output-dir nil))
+   (fn [prepared] (dissoc prepared :parent-mtimes))
+   (fn [prepared] (assoc prepared :parent-mtimes "not-a-map"))
    (fn [prepared] (dissoc prepared :resolved))
    (fn [prepared] (update prepared :resolved
                           dissoc (first (keys (:resolved prepared)))))

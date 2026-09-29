@@ -55,18 +55,19 @@
 
   (write-prepared-piece [this prepared output-dir piece-index bytes]
     "Write one verified piece through an explicitly prepared layout
-     (prepare-output-layout), re-validating the whole layout live on every
-     piece: containment and alias checks over every declared path, with
-     touched-side stability against the prepared snapshot catching a
-     touched file moved since prepare. The whole-layout alias check is
-     the only way to catch a post-prepare alias involving an untouched
-     path (e.g. b symlinked onto a after prepare, with the next piece
-     writing only a); a touched-only scan is enough for touched-vs-touched
+     (prepare-output-layout), re-validating live on every piece. A
+     parent-directory mtime gate decides the depth: when no parent dir
+     changed since prepare, only the touched files are re-resolved and
+     checked for touched-side stability against the snapshot (one stat
+     per distinct parent plus O(touched) work — flat in file count for
+     the usual layouts where many files share few dirs); when a parent
+     changed, the whole layout is re-resolved and the full alias check
+     runs, catching a post-prepare alias involving an untouched path
+     (e.g. b symlinked onto a after prepare, with the next piece writing
+     only a). A touched-only scan alone is enough for touched-vs-touched
      collisions but cannot see an untouched path newly redirected onto a
-     touched target. Per-piece filesystem cost is O(files), matching
-     write-output-piece; the win over the full path is the cached compiled
-     layout, the cached :sizes map, and no per-piece span derivation.
-     Returns {:ok :written} or {:error reason :message msg}.
+     touched target, so the fallback — not the gate — carries the alias
+     guarantee. Returns {:ok :written} or {:error reason :message msg}.
 
      Side effects: writes to filesystem")
   (initialize-output-layout [this layout output-dir]
@@ -187,15 +188,17 @@
 (defn valid-prepared-layout?
   "True when prepared is the explicit value prepare-output-layout returns:
    a map carrying the compiled layout it was resolved from, the canonical
-   output dir string it was resolved under, and a resolved entry per
-   declared path (absolute file string, canonical target string, and the
-   filesystem identity seen at prepare time, nil when the target did not
-   exist yet). Both DiskPortImpl and MockDiskPort refuse anything else
-   with :invalid-info before writing anything."
+   output dir string it was resolved under, a parent-mtimes map (parent
+   directory path to last-modified time, empty for the mock port), and a
+   resolved entry per declared path (absolute file string, canonical
+   target string, and the filesystem identity seen at prepare time, nil
+   when the target did not exist yet). Both DiskPortImpl and MockDiskPort
+   refuse anything else with :invalid-info before writing anything."
   [prepared]
   (and (map? prepared)
        (valid-output-layout? (:layout prepared))
        (string? (:output-dir prepared))
+       (map? (:parent-mtimes prepared))
        (map? (:resolved prepared))
        (= (set (keys (:resolved prepared)))
           (set (keys (:sizes (:layout prepared)))))
