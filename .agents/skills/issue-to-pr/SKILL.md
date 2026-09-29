@@ -8,7 +8,7 @@ Take a GitHub issue number through validation, TDD implementation, and an opened
 
 ## 1. Fetch and validate
 
-Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. Check the palace before finalizing verdicts: `mempalace_search` (wing `torrent_client_clj`, room `decisions`) for prior verdicts on the touched files — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
+Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. Trace related code through the graft graph per the `AGENTS.md` Graft section; raw `grep -rn` is the fallback for unindexed files only. Check the palace before finalizing verdicts: `mempalace_search` (wing `torrent_client_clj`, room `decisions`) for prior verdicts on the touched files — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
 
 ## 2. Branch
 
