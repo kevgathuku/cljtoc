@@ -66,6 +66,39 @@
   :fn #(= (-> % :args :connection-state :total-pieces)
           (-> % :ret :total-pieces)))
 
+(defn connect
+  "Open a peer connection: dial, exchange handshakes, verify the
+   peer's info-hash, send Interested, and return the ready posture.
+   Blocking: the caller already sits on a worker thread.
+   Returns {:ok {:peer-data _ :peer-state _}} or {:error reason ...}.
+   A refused connection closes the socket before returning, so the
+   caller only closes what connect handed back as :ok."
+  [network-port info-hash our-peer-id address total-pieces]
+  (let [connect-result (network/connect-peer network-port address)]
+    (if (:error connect-result)
+      connect-result
+      (let [peer-data (:ok connect-result)
+            handshake-bytes (:ok (peer/build-handshake info-hash our-peer-id))]
+        (network/send-message network-port peer-data handshake-bytes)
+        (let [handshake-result (network/receive-handshake network-port peer-data)]
+          (if (:error handshake-result)
+            (do
+              (network/close-peer network-port peer-data)
+              handshake-result)
+            (if (:error (verify-handshake info-hash (:ok handshake-result)))
+              (do
+                (network/close-peer network-port peer-data)
+                {:error :info-hash-mismatch :message "Info hash mismatch"})
+              (let [interested-bytes (:ok (peer/build-message (peer/->Interested)))]
+                (network/send-message network-port peer-data interested-bytes)
+                {:ok {:peer-data peer-data
+                       :peer-state (initial-state total-pieces)}}))))))))
+
+(defn close
+  "Release a connected peer through the port. Returns nil."
+  [network-port peer-data]
+  (network/close-peer network-port peer-data))
+
 (defn can-request?
   "True when the connection may carry block traffic: the peer has
    unchoked us and we are interested."

@@ -6,6 +6,7 @@
             [dev.cljtoc.coordination.peer-connection :as peer-connection]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
+            [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-utils :as test-utils]))
 
 (defn- test-info-hash
@@ -69,6 +70,47 @@
       (is (true? (-> fresh
                      (peer-connection/on-message (peer/->Unchoke))
                      (peer-connection/can-request?)))))))
+
+(deftest connect-test
+  (testing "matching handshake connects: ready posture, Interested sent"
+    (let [info-hash (test-info-hash)
+          sent (atom [])
+          net (mock-net/create {:handshake-response {:ok {:info-hash info-hash
+                                                           :peer-id (test-peer-id)}}
+                                :on-send (fn [_peer message] (swap! sent conj message))})
+          result (peer-connection/connect net info-hash (test-peer-id)
+                                           "127.0.0.1:6881" 4)]
+      (is (some? (:ok result)))
+      (let [{:keys [peer-data peer-state]} (:ok result)]
+        (is (= "127.0.0.1:6881" (:address peer-data)))
+        (is (true? (:am-interested peer-state)))
+        (is (true? (:peer-choking peer-state))))
+      (is (= 2 (count @sent)) "handshake bytes, then Interested")
+      (is (instance? dev.cljtoc.protocol.peer.Interested
+                      (:ok (peer/parse-message (second @sent))))
+          "second send parses back as Interested")))
+  (testing "mismatched info-hash refuses the connection"
+    (let [net (mock-net/create {:handshake-response {:ok {:info-hash (byte-array (repeat 20 (byte 9)))
+                                                           :peer-id (test-peer-id)}}})
+          result (peer-connection/connect net (test-info-hash) (test-peer-id)
+                                           "127.0.0.1:6881" 4)]
+      (is (= :info-hash-mismatch (:error result)))))
+  (testing "a failed handshake read surfaces the port error"
+    (let [net (mock-net/create {:handshake-response {:error :timeout
+                                                     :message "Handshake read timed out"}})
+          result (peer-connection/connect net (test-info-hash) (test-peer-id)
+                                           "127.0.0.1:6881" 4)]
+      (is (= :timeout (:error result))))))
+
+(deftest close-test
+  (testing "close releases the connection through the port"
+    (let [info-hash (test-info-hash)
+          net (mock-net/create {:handshake-response {:ok {:info-hash info-hash
+                                                           :peer-id (test-peer-id)}}})
+          peer-data (:peer-data (:ok (peer-connection/connect net info-hash (test-peer-id)
+                                                              "127.0.0.1:6881" 4)))]
+      (is (nil? (peer-connection/close net peer-data)))
+      (is (contains? (mock-net/closed-peers net) peer-data)))))
 
 ;; Only verify-handshake is pinned generatively: initial-state takes a
 ;; plain pos-int but on-message/can-request? take a PeerState whose
