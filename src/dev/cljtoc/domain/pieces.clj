@@ -89,16 +89,16 @@
   random needed / in-flight / verified partition of its range, so every
   generated state is one the transitions could actually produce."
   (gen/bind (gen/choose 1 12)
-              (fn [total-pieces]
-                (gen/fmap (fn [buckets]
-                            (let [assigned (map vector (range total-pieces) buckets)
-                                  in-bucket (fn [bucket]
-                                              (set (map first (filter #(= bucket (second %)) assigned))))]
-                              (->PieceState total-pieces
-                                            (in-bucket 0)
-                                            (in-bucket 1)
-                                            (in-bucket 2))))
-                          (gen/vector (gen/choose 0 2) total-pieces)))))
+            (fn [total-pieces]
+              (gen/fmap (fn [buckets]
+                          (let [assigned (map vector (range total-pieces) buckets)
+                                in-bucket (fn [bucket]
+                                            (set (map first (filter #(= bucket (second %)) assigned))))]
+                            (->PieceState total-pieces
+                                          (in-bucket 0)
+                                          (in-bucket 1)
+                                          (in-bucket 2))))
+                        (gen/vector (gen/choose 0 2) total-pieces)))))
 
 ;; ============================================================================
 ;; Specs — primitive types
@@ -433,7 +433,7 @@
                    spl    (-> % :args :standard-piece-length)
                    tl     (-> % :args :total-length)
                    expected-len (long (max 0 (- (min (+ (* (bigint pi) spl) spl) tl)
-                                                  (* (bigint pi) spl))))]
+                                                (* (bigint pi) spl))))]
                (and (seq blocks)
                     (every? (fn [b] (<= (:length b) 16384)) blocks)
                     (= expected-len (reduce + (map :length blocks)))))))

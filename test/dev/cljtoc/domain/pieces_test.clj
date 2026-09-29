@@ -466,16 +466,16 @@
 (deftest piece-state-spec-rejects-unreachable-shapes-test
   (testing "over-full verified set (issue #40 repro) is invalid"
     (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
-                        {:total-pieces 1 :needed #{} :in-flight #{} :verified #{0 1}}))))
+                       {:total-pieces 1 :needed #{} :in-flight #{} :verified #{0 1}}))))
   (testing "out-of-range indices are invalid"
     (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
-                        {:total-pieces 2 :needed #{0 1 5} :in-flight #{} :verified #{}}))))
+                       {:total-pieces 2 :needed #{0 1 5} :in-flight #{} :verified #{}}))))
   (testing "overlapping sets are invalid"
     (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
-                        {:total-pieces 2 :needed #{0} :in-flight #{0} :verified #{1}}))))
+                       {:total-pieces 2 :needed #{0} :in-flight #{0} :verified #{1}}))))
   (testing "a short partition (missing index) is invalid"
     (is (not (s/valid? :dev.cljtoc.domain.pieces/piece-state
-                        {:total-pieces 2 :needed #{0} :in-flight #{} :verified #{}}))))
+                       {:total-pieces 2 :needed #{0} :in-flight #{} :verified #{}}))))
   (testing "every reachable shape stays valid"
     (let [state0 (pieces/initial-piece-state 3)
           state1 (:ok (pieces/mark-in-flight state0 1))
@@ -521,7 +521,7 @@
    [state (s/gen :dev.cljtoc.domain.pieces/piece-state)]
    (let [{:keys [total-pieces needed in-flight verified]} state]
      (and (= (set (range total-pieces))
-              (set/union needed in-flight verified))
-           (empty? (set/intersection needed in-flight))
-           (empty? (set/intersection needed verified))
-           (empty? (set/intersection in-flight verified))))))
+             (set/union needed in-flight verified))
+          (empty? (set/intersection needed in-flight))
+          (empty? (set/intersection needed verified))
+          (empty? (set/intersection in-flight verified))))))
