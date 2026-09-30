@@ -49,6 +49,7 @@
 (s/def ::udp-timeout-ms ::timeout-ms)
 (s/def ::http-timeout-ms ::timeout-ms)
 (s/def ::udp-retry-base-delay-ms ::timeout-ms)
+(s/def ::udp-tracker-budget-ms ::timeout-ms)
 ;; Attempt counts never reach a Java API, so any positive int retries;
 ;; only non-positive/non-int is refused.
 (s/def ::udp-max-attempts pos-int?)
@@ -59,16 +60,18 @@
 (s/def ::adapter-config
   (s/keys :opt-un [::connect-timeout-ms ::socket-timeout-ms
                    ::udp-timeout-ms ::http-timeout-ms ::log-fn
-                   ::udp-retry-base-delay-ms ::udp-max-attempts]))
+                   ::udp-retry-base-delay-ms ::udp-max-attempts
+                   ::udp-tracker-budget-ms]))
 
 (def retry-count-opt-keys
   "Adapter config keys holding retry attempt counts (plain positive ints)."
   [:udp-max-attempts])
 
 (def timeout-opt-keys
-  "Adapter config keys holding socket timeouts in milliseconds."
+  "Adapter config keys holding millisecond quantities: socket timeouts,
+   the UDP retry base delay, and the per-tracker retry budget."
   [:connect-timeout-ms :socket-timeout-ms :udp-timeout-ms :http-timeout-ms
-   :udp-retry-base-delay-ms])
+   :udp-retry-base-delay-ms :udp-tracker-budget-ms])
 
 (defn check-adapter-config
   "Validate adapter opts before any network I/O: present timeouts must be

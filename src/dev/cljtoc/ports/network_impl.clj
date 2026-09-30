@@ -23,14 +23,16 @@
 (def ^:private default-timeouts
   "Historical socket timeout literals, now overridable via create opts:
    :connect-timeout-ms, :socket-timeout-ms, :udp-timeout-ms,
-   :http-timeout-ms, plus the UDP retry knobs :udp-max-attempts and
-   :udp-retry-base-delay-ms (BEP 15 backoff, see backoff-delay-ms)."
+   :http-timeout-ms, plus the UDP retry knobs :udp-max-attempts,
+   :udp-retry-base-delay-ms, and :udp-tracker-budget-ms (BEP 15 backoff,
+   see backoff-delay-ms; overall per-tracker wait cap, see try-udp-step)."
   {:connect-timeout-ms 5000
    :socket-timeout-ms 10000
    :udp-timeout-ms 5000
    :http-timeout-ms 10000
    :udp-max-attempts 3
-   :udp-retry-base-delay-ms 15000})
+   :udp-retry-base-delay-ms 15000
+   :udp-tracker-budget-ms 60000})
 
 (defn- timeout-ms
   "Read a timeout from the adapter config, falling back to the default."
@@ -150,30 +152,49 @@
       false)))
 
 (defn- try-udp-step
-  "Run one UDP tracker step (connect or announce) with BEP 15 retries.
+  "Run one UDP tracker step (connect or announce) with BEP 15 retries,
+   inside the tracker's overall budget.
    build-request maps a fresh transaction-id to {:ok bytes} | {:error ...};
    a refused build fails fast, since retrying a spec refusal never helps.
    Each attempt sends once, then keeps receiving until its wait runs out:
    a stray (action/transaction mismatch, e.g. a late duplicate of the
    previous attempt) is discarded and the attempt keeps waiting for the
    live reply; anything else unparseable fails the attempt at once.
-   Fresh transaction-id per attempt, first success wins; anything but a
-   timeout or a mismatch fails the step at once. Returns {:ok parsed} or
-   {:error fail-keyword :message ...} naming the step and the attempts."
-  [network socket addr fail-keyword step-label action build-request parse-response tracker-url]
+   budget is {:deadline-ms :budget-ms}: one deadline shared across the
+   tracker's connect and announce steps, so a dead tracker costs at most
+   its budget however the steps split it. Socket waits and backoff sleeps
+   are each capped to what remains; a spent budget fails the step without
+   sending. Fresh transaction-id per attempt, first success wins.
+   Returns {:ok parsed} or {:error fail-keyword :message ...} naming the
+   step and the attempts."
+  [network socket addr fail-keyword step-label action build-request parse-response tracker-url budget]
   (let [socket-timeout-ms (timeout-ms network :udp-timeout-ms)
         max-attempts (timeout-ms network :udp-max-attempts)
-        base-delay-ms (timeout-ms network :udp-retry-base-delay-ms)]
-    (loop [attempt 1]
-      (let [txn-id (.nextInt (java.util.Random.))
-            built (build-request txn-id)]
-        (if (:error built)
-          {:error fail-keyword
-           :message (str tracker-url ": " step-label " request refused: " (:message built))}
-          (let [attempt-start (System/currentTimeMillis)
-                outcome (try
-                          (udp-send! socket (:ok built) addr)
-                          (loop []
+        base-delay-ms (timeout-ms network :udp-retry-base-delay-ms)
+        {:keys [deadline-ms budget-ms]} budget]
+    (loop [attempt 1
+           last-unanswered "no response yet"]
+      (let [remaining (- deadline-ms (System/currentTimeMillis))]
+        (if (<= remaining 0)
+          (let [spent (dec attempt)]
+            {:error fail-keyword
+             :message (str tracker-url ": " step-label " failed after "
+                           (if (= 1 spent) "1 attempt" (str spent " attempts"))
+                           " (tracker budget " budget-ms " ms exhausted): "
+                           last-unanswered)})
+          (let [txn-id (.nextInt (java.util.Random.))
+                built (build-request txn-id)]
+            (if (:error built)
+              {:error fail-keyword
+               :message (str tracker-url ": " step-label " request refused: " (:message built))}
+              (let [attempt-start (System/currentTimeMillis)
+                    ;; The attempt ends at its own wait or the tracker
+                    ;; deadline, whichever comes first: one step cannot
+                    ;; spend the other step's share of the budget.
+                    attempt-deadline (min (+ attempt-start socket-timeout-ms) deadline-ms)
+                    outcome (try
+                              (udp-send! socket (:ok built) addr)
+                              (loop []
                             ;; The clock is read on every turn: each receive
                             ;; waits only what the attempt still owns, so a
                             ;; stray storm cannot stretch one attempt past
@@ -181,49 +202,59 @@
                             ;; The recur stays outside the inner try (recur
                             ;; cannot cross it): a stray returns a marker
                             ;; the if below turns back into a receive.
-                            (let [remaining (- (+ attempt-start socket-timeout-ms)
-                                               (System/currentTimeMillis))]
-                              (if (<= remaining 0)
-                                {:unanswered (str "no matching response in " socket-timeout-ms " ms")}
-                                (let [received (try
-                                                 (let [response (udp-receive socket (min socket-timeout-ms remaining))
-                                                       parsed (parse-response response {:action action
-                                                                                        :transaction-id txn-id})]
-                                                   (if (:error parsed)
-                                                     (if (contains? stray-response-errors (:error parsed))
-                                                       {:wait-more true}
-                                                       {:unanswered (:message parsed)})
-                                                     {:answered parsed}))
-                                                 (catch SocketTimeoutException _
-                                                   {:unanswered (str "no response in " socket-timeout-ms " ms")})
-                                                 (catch Exception exchange-error
-                                                   {:failed (.getMessage exchange-error)}))]
-                                  (if (:wait-more received)
-                                    (recur)
-                                    received)))))
-                          (catch Exception send-error
-                            {:failed (.getMessage send-error)}))]
-            (cond
-              (:answered outcome)
-              (:answered outcome)
+                                (let [remaining (- attempt-deadline
+                                                   (System/currentTimeMillis))]
+                                  (if (<= remaining 0)
+                                    {:unanswered (str "no matching response in " socket-timeout-ms " ms")}
+                                    (let [received (try
+                                                     (let [response (udp-receive socket (min socket-timeout-ms remaining))
+                                                           parsed (parse-response response {:action action
+                                                                                            :transaction-id txn-id})]
+                                                       (if (:error parsed)
+                                                         (if (contains? stray-response-errors (:error parsed))
+                                                           {:wait-more true}
+                                                           {:unanswered (:message parsed)})
+                                                         {:answered parsed}))
+                                                     (catch SocketTimeoutException _
+                                                       {:unanswered (str "no response in " socket-timeout-ms " ms")})
+                                                     (catch Exception exchange-error
+                                                       {:failed (.getMessage exchange-error)}))]
+                                      (if (:wait-more received)
+                                        (recur)
+                                        received)))))
+                              (catch Exception send-error
+                                {:failed (.getMessage send-error)}))]
+                (cond
+                  (:answered outcome)
+                  (:answered outcome)
 
-              (:failed outcome)
-              {:error fail-keyword
-               :message (str tracker-url ": " step-label " exchange failed: " (:failed outcome))}
+                  (:failed outcome)
+                  {:error fail-keyword
+                   :message (str tracker-url ": " step-label " exchange failed: " (:failed outcome))}
 
-              (< attempt max-attempts)
-              (if (sleep-retry-delay! (backoff-delay-ms base-delay-ms (dec attempt)))
-                (recur (inc attempt))
-                {:error fail-keyword
-                 :message (str tracker-url ": " step-label " interrupted during retry backoff")})
+                  (< attempt max-attempts)
+                  (let [note (or (:unanswered outcome) last-unanswered)]
+                    (if (sleep-retry-delay! (min (backoff-delay-ms base-delay-ms (dec attempt))
+                                             ;; A negative sleep throws, so floor
+                                             ;; at zero: the loop-top check then
+                                             ;; fails the step on budget.
+                                                 (max 0 (- deadline-ms (System/currentTimeMillis)))))
+                      (recur (inc attempt) note)
+                      {:error fail-keyword
+                       :message (str tracker-url ": " step-label " interrupted during retry backoff")}))
 
-              :else
-              {:error fail-keyword
-               :message (str tracker-url ": " step-label " failed after "
-                             attempt " attempts: " (:unanswered outcome))})))))))
+                  :else
+                  {:error fail-keyword
+                   :message (str tracker-url ": " step-label " failed after "
+                                 attempt " attempts: "
+                                 (or (:unanswered outcome) last-unanswered))})))))))))
 
 (defn- try-udp-tracker
-  "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
+  "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}.
+   Both steps share one overall budget (:udp-tracker-budget-ms): a dead
+   tracker costs at most its budget, however connect and announce split
+   it, so sequential fallback trackers cannot stall one announce call
+   for many minutes."
   [network tracker-url request]
   (try
     (let [uri (URI. tracker-url)
@@ -231,20 +262,23 @@
           port (let [p (.getPort uri)] (if (= p -1) 6969 p))
           addr (InetSocketAddress. host (int port))
           timeout (timeout-ms network :udp-timeout-ms)
+          budget-ms (timeout-ms network :udp-tracker-budget-ms)
+          budget {:deadline-ms (+ (System/currentTimeMillis) budget-ms)
+                  :budget-ms budget-ms}
           socket (doto (DatagramSocket.) (.setSoTimeout timeout))]
       (try
         ;; Step 1: Connect. Builds are checked before unwrapping: a refused
         ;; build is a typed step error carrying the builder's message, never
         ;; an NPE downstream. Each attempt carries a fresh transaction-id
-        ;; and parses against it, so a stray or duplicate datagram fails the
-        ;; attempt instead of connecting to a stranger's connection id;
-        ;; timeouts and mismatches back off (BEP 15) and re-send.
+        ;; and parses against it; strays are discarded within the attempt
+        ;; while timeouts back off (BEP 15) and re-send. Both steps share
+        ;; the tracker's budget, computed once above.
         (let [connect-result (try-udp-step network socket addr
                                            :udp-connect-failed "connect" :connect
                                            (fn [txn-id] (tracker/build-udp-connect-request
                                                          {:transaction-id txn-id}))
                                            tracker/parse-udp-connect-response
-                                           tracker-url)]
+                                           tracker-url budget)]
           (if (:error connect-result)
             connect-result
             (let [conn-id (:connection-id (:ok connect-result))
@@ -263,7 +297,7 @@
                                                                :num-want (or (:num-want request) 50)
                                                                :port (:port request)}))
                                                 tracker/parse-udp-announce-response
-                                                tracker-url)]
+                                                tracker-url budget)]
               (if (:error announce-result)
                 announce-result
                 (let [peers (:peers (:ok announce-result))]

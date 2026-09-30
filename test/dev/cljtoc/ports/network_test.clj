@@ -291,11 +291,15 @@
           valid-cfgs [{} {:connect-timeout-ms 1} {:log-fn println}
                       {:connect-timeout-ms 1 :socket-timeout-ms 2
                        :udp-timeout-ms 3 :http-timeout-ms Integer/MAX_VALUE}
+                      {:udp-retry-base-delay-ms 10 :udp-max-attempts 2
+                       :udp-tracker-budget-ms 1200}
                       {:unrelated-key "ignored"}]
           invalid-cfgs (concat (for [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
                                      timeout-key [:connect-timeout-ms :socket-timeout-ms
-                                                  :udp-timeout-ms :http-timeout-ms]]
+                                                  :udp-timeout-ms :http-timeout-ms
+                                                  :udp-retry-base-delay-ms :udp-tracker-budget-ms]]
                                  {timeout-key bad})
+                               (for [bad [0 -1 "3" 2.5 nil]] {:udp-max-attempts bad})
                                (for [bad ["x" 42 nil 0]] {:log-fn bad}))]
       (doseq [cfg valid-cfgs]
         (is (s/valid? ::network/adapter-config cfg)
@@ -314,19 +318,21 @@
 
 (deftest udp-retry-opts-are-validated-at-creation-test
   (testing "present-but-invalid retry opts throw instead of silently changing retry behavior"
-    ;; :udp-retry-base-delay-ms shares the timeout shape (positive int ms
-    ;; within Java int range); :udp-max-attempts is a loop count, so any
-    ;; positive int retries and only non-positive/non-int is refused.
+    ;; :udp-retry-base-delay-ms and :udp-tracker-budget-ms share the
+    ;; timeout shape (positive int ms within Java int range);
+    ;; :udp-max-attempts is a loop count, so any positive int retries
+    ;; and only non-positive/non-int is refused.
     (doseq [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+            retry-key [:udp-retry-base-delay-ms :udp-tracker-budget-ms]
             [label make] [["real" network-impl/create]
                           ["mock" mock-network/create]]]
-      (let [err (try (make {:udp-retry-base-delay-ms bad}) nil
+      (let [err (try (make {retry-key bad}) nil
                      (catch clojure.lang.ExceptionInfo e e))]
         (is (some? err)
-            (str label " port accepted :udp-retry-base-delay-ms=" (pr-str bad)))
+            (str label " port accepted " retry-key "=" (pr-str bad)))
         (when (some? err)
           (is (re-find #"Invalid network adapter opt" (ex-message err)))
-          (is (= :udp-retry-base-delay-ms (:key (ex-data err)))))))
+          (is (= retry-key (:key (ex-data err)))))))
     (doseq [bad [0 -1 "3" 2.5 nil]
             [label make] [["real" network-impl/create]
                           ["mock" mock-network/create]]]
@@ -338,7 +344,8 @@
           (is (re-find #"Invalid network adapter opt" (ex-message err)))
           (is (= :udp-max-attempts (:key (ex-data err))))))))
   (testing "valid retry opts pass through on both ports"
-    (let [opts {:udp-retry-base-delay-ms 10 :udp-max-attempts 2}]
+    (let [opts {:udp-retry-base-delay-ms 10 :udp-max-attempts 2
+                :udp-tracker-budget-ms 1200}]
       (is (= opts (:config (network-impl/create opts))))
       (is (= opts (:config (mock-network/create opts)))))))
 
@@ -741,13 +748,16 @@
     ;; binding blocks and clears a set flag as a side effect, so an
     ;; assertion across the boundary reads the runner, not the code.
     (.interrupt (Thread/currentThread))
-    (let [slept? (#'network-impl/sleep-retry-delay! 15000)
-          flag-kept? (.isInterrupted (Thread/currentThread))]
-      ;; Clear the flag so it cannot leak into other tests.
-      (Thread/interrupted)
-      (is (false? slept?))
-      (is (true? flag-kept?)
-          "the interrupt flag was swallowed instead of restored"))))
+    (try
+      (let [slept? (#'network-impl/sleep-retry-delay! 15000)
+            flag-kept? (.isInterrupted (Thread/currentThread))]
+        (is (false? slept?))
+        (is (true? flag-kept?)
+            "the interrupt flag was swallowed instead of restored"))
+      ;; The flag must not leak into other tests even when an
+      ;; assertion above throws: one leaked flag fails the next
+      ;; blocking call on this shared test thread.
+      (finally (Thread/interrupted)))))
 
 (deftest udp-step-fails-fast-on-a-dead-socket-test
   (testing "a non-timeout socket error fails the step at once, spending no retries"
@@ -764,7 +774,10 @@
                   socket addr :udp-connect-failed "connect" :connect
                   (fn [txn-id] (tracker/build-udp-connect-request {:transaction-id txn-id}))
                   tracker/parse-udp-connect-response
-                  "udp://127.0.0.1:1/announce")
+                  "udp://127.0.0.1:1/announce"
+                  ;; Far-future deadline: this test pins the fail-fast
+                  ;; branch, where the budget must never bind.
+                  {:deadline-ms Long/MAX_VALUE :budget-ms 60000})
           elapsed-ms (- (System/currentTimeMillis) started-at)]
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (re-find #"exchange failed" (:message result)) (pr-str result))
@@ -784,16 +797,20 @@
     (let [{:keys [responder-error received-count] :as outer}
           (with-loopback-udp-tracker
             (fn [url]
-              (let [result (network/announce-to-url
-                            (network-impl/create {:udp-timeout-ms 500
-                                                  :udp-retry-base-delay-ms 30000
-                                                  :udp-max-attempts 3})
-                            url
-                            (valid-announce-request))
-                    flag-kept? (.isInterrupted (Thread/currentThread))]
-                ;; Clear the flag so it cannot leak into other tests.
-                (Thread/interrupted)
-                {:result result :flag-kept? flag-kept?}))
+              (try
+                (let [result (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 30000
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request))
+                      flag-kept? (.isInterrupted (Thread/currentThread))]
+                  {:result result :flag-kept? flag-kept?})
+                ;; Clear before leaving: the double's deref blocks, and
+                ;; blocking under a set flag throws. Finally, so even an
+                ;; unexpected throw cannot leak the flag onto this shared
+                ;; test thread and fail a later test's first blocking call.
+                (finally (Thread/interrupted))))
             ;; One dropped connect: the client burns its 500 ms wait,
             ;; then the 30 s backoff throws at once on the set flag.
             {:drop-first-n 1 :expect-datagrams 1})
@@ -842,6 +859,62 @@
       (is (= 2 received-count)
           (str "the stray burned a retry and re-sent the connect; got " received-count))
       (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
+(deftest udp-tracker-budget-caps-total-wait-test
+  (testing "a silent tracker stops retrying once its tracker budget runs out"
+    (let [started-at (System/currentTimeMillis)
+          {:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; Five attempts fit the budget only twice:
+                              ;; 500 ms wait + 2000 ms backoff, then the
+                              ;; remaining budget covers one more wait.
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 2000
+                                                    :udp-max-attempts 5
+                                                    :udp-tracker-budget-ms 3000})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; Two sends prove the budget bound the five-attempt
+            ;; allowance; the double waits for exactly those two.
+            {:drop-first-n 2 :expect-datagrams 2})
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the client spent its whole attempt allowance; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"budget" (:message result)) (pr-str result))
+      (is (< elapsed-ms 10000)
+          (str "the budget must bound the wait, took " elapsed-ms " ms")))))
+
+(deftest udp-step-with-spent-budget-sends-nothing-test
+  (testing "a step whose tracker budget already ran out fails without sending"
+    ;; The deadline is driven directly: no timing is involved, so the
+    ;; only observable is that no datagram goes out.
+    (let [socket (DatagramSocket.)]
+      (try
+        (let [result (#'network-impl/try-udp-step
+                      (network-impl/create {:udp-timeout-ms 200
+                                            :udp-retry-base-delay-ms 25
+                                            :udp-max-attempts 3})
+                      socket (InetSocketAddress. "127.0.0.1" 1)
+                      :udp-connect-failed "connect" :connect
+                      (fn [txn-id] (tracker/build-udp-connect-request {:transaction-id txn-id}))
+                      tracker/parse-udp-connect-response
+                      "udp://127.0.0.1:1/announce"
+                      {:deadline-ms 0 :budget-ms 1200})]
+          (is (= :udp-connect-failed (:error result)) (pr-str result))
+          (is (re-find #"budget" (:message result)) (pr-str result)))
+        (finally (.close socket))))))
+
+(deftest udp-tracker-budget-default-is-one-step-test
+  (testing "the default budget covers one step's worst case under default knobs"
+    ;; 3 attempts x 5 s waits + 15 s + 30 s backoffs = 60 s: the connect
+    ;; step always gets its full retries, and the announce step only
+    ;; spends what a fast connect leaves over.
+    (is (= 60000 (:udp-tracker-budget-ms @#'network-impl/default-timeouts)))))
 
 (deftest udp-loopback-silent-tracker-fails-after-max-attempts-test
   (testing "a tracker that never answers fails after exactly max-attempts, never hanging"
