@@ -558,27 +558,38 @@
 
 (defn- with-loopback-udp-tracker
   "Run run-with-url against a loopback UDP tracker double (see answer-udp-double),
-   answering exactly the connect + announce datagrams at an ephemeral
-   port. Returns {:result (run-with-url's value) :responder-error (the double's
-   failure, if any)}. Generous timeouts bound both sides without making
-   the suite wait on them: the double answers in microseconds, so any
-   wait past them is scheduler stall, and a stuck exchange still fails
-   the assertion instead of hanging the suite."
+   answering the connect + announce datagrams at an ephemeral port.
+   Returns {:result (run-with-url's value) :responder-error (the double's
+   failure, if any) :received-count (datagrams the double saw)}.
+   Double opts: :drop-first-n silently swallows the first N datagrams
+   (lossy mode: nothing is sent back, so the client must retry);
+   :expect-datagrams bounds how many datagrams the responder waits for
+   (2 covers one connect + one announce; a retrying client sends more).
+   The rest of answer-udp-double's misbehavior modes pass through.
+   Generous timeouts bound both sides without making the suite wait on
+   them: the double answers in microseconds, so any wait past them is
+   scheduler stall, and a stuck exchange still fails the assertion
+   instead of hanging the suite."
   ([run-with-url] (with-loopback-udp-tracker run-with-url {}))
   ([run-with-url double-opts]
    (let [socket (doto (DatagramSocket. 0 (InetAddress/getByName "127.0.0.1"))
                   (.setSoTimeout 30000))
          errors (atom nil)
+         received-count (atom 0)
+         drop-first-n (:drop-first-n double-opts 0)
+         expect-datagrams (:expect-datagrams double-opts 2)
          responder (future
                      (try
-                       (dotimes [_ 2]
+                       (dotimes [receive-index expect-datagrams]
                          (let [buf (byte-array 65536)
                                pkt (DatagramPacket. buf (alength buf))]
                            (.receive socket pkt)
                            (let [data (Arrays/copyOf buf (.getLength pkt))
-                                 from (.getSocketAddress pkt)
-                                 reply (answer-udp-double data double-opts)]
-                             (.send socket (DatagramPacket. reply (alength reply) from)))))
+                                 from (.getSocketAddress pkt)]
+                             (swap! received-count inc)
+                             (when (>= receive-index drop-first-n)
+                               (let [reply (answer-udp-double data double-opts)]
+                                 (.send socket (DatagramPacket. reply (alength reply) from)))))))
                        (catch SocketTimeoutException _quiet
                         ;; Production stopped sending: the expected end on
                         ;; refusal paths. Caller-side bounds still catch a
@@ -591,14 +602,22 @@
      (try
        (let [result (run-with-url (str "udp://127.0.0.1:" (.getLocalPort socket) "/announce"))]
          (deref responder 45000 ::stuck)
-         {:result result :responder-error @errors})
+         {:result result :responder-error @errors :received-count @received-count})
        (finally
          (future-cancel responder)
          (.close socket))))))
 
+(defn- fast-retry-opts
+  "Test retry knobs: production socket waits, millisecond backoffs, two
+   attempts. Suite time stays flat while still exercising one real retry."
+  [socket-timeout-ms]
+  {:udp-timeout-ms socket-timeout-ms
+   :udp-retry-base-delay-ms 10
+   :udp-max-attempts 2})
+
 (deftest udp-loopback-announce-returns-double-peer-test
   (testing "connect + announce through the real port code returns the double's peer"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
@@ -610,63 +629,97 @@
                               (valid-announce-request)))
                      60000 :timed-out)))]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "green path sends exactly connect + announce, no resends; got " received-count))
       (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
 
 (deftest udp-loopback-connect-txn-mismatch-is-an-error-test
   (testing "a connect response for another transaction fails the attempt instead of connecting"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create {:udp-timeout-ms 15000})
+                              (network-impl/create (fast-retry-opts 15000))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
-            {:connect-txn 424242})]
+            {:connect-txn 424242 :expect-datagrams 2})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the mismatch consumed an attempt and retried once; got " received-count))
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
 (deftest udp-loopback-announce-txn-mismatch-is-an-error-test
   (testing "an announce response for another transaction fails the attempt instead of returning peers"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create {:udp-timeout-ms 15000})
+                              (network-impl/create (fast-retry-opts 15000))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
-            {:announce-txn 424243})]
+            {:announce-txn 424243 :expect-datagrams 3})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 3 received-count)
+          (str "expected connect + two mismatched announces; got " received-count))
       (is (= :udp-announce-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
 (deftest udp-loopback-connect-action-mismatch-is-an-error-test
   (testing "a connect response carrying another action fails the attempt instead of connecting"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create {:udp-timeout-ms 15000})
+                              (network-impl/create (fast-retry-opts 15000))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
-            {:connect-action 1})]
+            {:connect-action 1 :expect-datagrams 2})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the mismatch consumed an attempt and retried once; got " received-count))
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
+(deftest udp-loopback-lossy-tracker-recovers-with-retries-test
+  (testing "a dropped first datagram is recovered: the retry re-sends and the announce returns the double's peer"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; Fast retry knobs, not production timing:
+                              ;; 300 ms waits plus 25/50 ms backoffs keep a
+                              ;; red run near one second instead of minutes.
+                              (network-impl/create {:udp-timeout-ms 300
+                                                    :udp-retry-base-delay-ms 25
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:drop-first-n 1 :expect-datagrams 3})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 3 received-count)
+          (str "expected dropped connect, retried connect, announce; got " received-count))
+      (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
 (deftest udp-loopback-announce-build-failure-is-an-envelope-test
   (testing "a request the builder refuses comes back as an error envelope naming validation, never a throw"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
                               (network-impl/create {:udp-timeout-ms 15000})
                               url
                               (assoc (valid-announce-request) :info-hash (byte-array 4))))
-                     60000 :timed-out)))]
+                     60000 :timed-out))
+            ;; Only the connect ever goes out: the refused announce build
+            ;; fails fast with no retry, so the double waits for exactly
+            ;; one datagram instead of idling on its socket timeout.
+            {:expect-datagrams 1})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 1 received-count) (str "the refused build sent nothing further; got " received-count))
       (is (= :udp-announce-failed (:error result)) (pr-str result))
       (is (re-find #"validation" (:message result)) (pr-str result)))))

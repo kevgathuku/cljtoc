@@ -10,7 +10,7 @@
             [dev.cljtoc.protocol.tracker :as tracker]
             [dev.cljtoc.utils :as utils])
   (:import [java.net DatagramPacket DatagramSocket InetSocketAddress Socket
-            HttpURLConnection URI URL]
+            HttpURLConnection SocketTimeoutException URI URL]
            [java.io ByteArrayOutputStream InputStream]
            [java.security SecureRandom]))
 
@@ -124,6 +124,68 @@
   [{:keys [ip port]}]
   (peer-address/format-address {:host ip :port port}))
 
+(defn- sleep-retry-delay!
+  "Sleep delay-ms between UDP attempts. Returns true when the full delay
+   elapsed, false when interrupted (restoring the flag so the step fails
+   instead of swallowing the interrupt)."
+  [delay-ms]
+  (try
+    (Thread/sleep (long delay-ms))
+    true
+    (catch InterruptedException _
+      (.interrupt (Thread/currentThread))
+      false)))
+
+(defn- try-udp-step
+  "Run one UDP tracker step (connect or announce) with BEP 15 retries.
+   build-request maps a fresh transaction-id to {:ok bytes} | {:error ...};
+   a refused build fails fast, since retrying a spec refusal never helps.
+   parse-response validates [bytes expectation]; a mismatch is one more
+   unanswered attempt, never a success (#19 pairs: a stray duplicate must
+   not connect the client to a stranger's connection id). Fresh
+   transaction-id per attempt, first success wins; anything but a timeout
+   or a mismatch fails the step at once. Returns {:ok parsed} or
+   {:error fail-keyword :message ...} naming the step and the attempts."
+  [network socket addr fail-keyword step-label action build-request parse-response tracker-url]
+  (let [socket-timeout-ms (timeout-ms network :udp-timeout-ms)
+        max-attempts (timeout-ms network :udp-max-attempts)
+        base-delay-ms (timeout-ms network :udp-retry-base-delay-ms)]
+    (loop [attempt 1]
+      (let [txn-id (.nextInt (java.util.Random.))
+            built (build-request txn-id)]
+        (if (:error built)
+          {:error fail-keyword
+           :message (str tracker-url ": " step-label " request refused: " (:message built))}
+          (let [outcome (try
+                          (let [response (udp-exchange socket (:ok built) addr socket-timeout-ms)
+                                parsed (parse-response response {:action action
+                                                                 :transaction-id txn-id})]
+                            (if (:error parsed)
+                              {:unanswered (:message parsed)}
+                              {:answered parsed}))
+                          (catch SocketTimeoutException _
+                            {:unanswered (str "no response in " socket-timeout-ms " ms")})
+                          (catch Exception exchange-error
+                            {:failed (.getMessage exchange-error)}))]
+            (cond
+              (:answered outcome)
+              (:answered outcome)
+
+              (:failed outcome)
+              {:error fail-keyword
+               :message (str tracker-url ": " step-label " exchange failed: " (:failed outcome))}
+
+              (< attempt max-attempts)
+              (if (sleep-retry-delay! (backoff-delay-ms base-delay-ms (dec attempt)))
+                (recur (inc attempt))
+                {:error fail-keyword
+                 :message (str tracker-url ": " step-label " interrupted during retry backoff")})
+
+              :else
+              {:error fail-keyword
+               :message (str tracker-url ": " step-label " failed after "
+                             attempt " attempts: " (:unanswered outcome))})))))))
+
 (defn- try-udp-tracker
   "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}."
   [network tracker-url request]
@@ -133,51 +195,43 @@
           port (let [p (.getPort uri)] (if (= p -1) 6969 p))
           addr (InetSocketAddress. host (int port))
           timeout (timeout-ms network :udp-timeout-ms)
-          socket (doto (DatagramSocket.) (.setSoTimeout timeout))
-          txn-id (.nextInt (java.util.Random.))]
+          socket (doto (DatagramSocket.) (.setSoTimeout timeout))]
       (try
-        ;; Step 1: Connect. Build envelopes are checked before
-        ;; unwrapping: a refused build is a typed step error carrying
-        ;; the builder's message, never an NPE downstream. Parses run
-        ;; against the live request's action and transaction-id, so a
-        ;; stray or duplicate datagram fails the attempt instead of
-        ;; connecting to a stranger's connection id.
-        (let [connect-built (tracker/build-udp-connect-request
-                             {:transaction-id txn-id})]
-          (if (:error connect-built)
-            {:error :udp-connect-failed
-             :message (str tracker-url ": " (:message connect-built))}
-            (let [connect-resp (udp-exchange socket (:ok connect-built) addr timeout)
-                  connect-parsed (tracker/parse-udp-connect-response
-                                  connect-resp
-                                  {:action :connect :transaction-id txn-id})]
-              (if (:error connect-parsed)
-                {:error :udp-connect-failed :message (str tracker-url ": " (:message connect-parsed))}
-                (let [conn-id (:connection-id (:ok connect-parsed))
-                      txn-id2 (.nextInt (java.util.Random.))
-                      ;; Step 2: Announce
-                      announce-built (tracker/build-udp-announce-request
-                                      {:connection-id conn-id
-                                       :transaction-id txn-id2
-                                       :info-hash (:info-hash request)
-                                       :peer-id (:peer-id request)
-                                       :downloaded (:downloaded request)
-                                       :left (:left request)
-                                       :uploaded (:uploaded request)
-                                       :event (:event request)
-                                       :num-want (or (:num-want request) 50)
-                                       :port (:port request)})]
-                  (if (:error announce-built)
-                    {:error :udp-announce-failed
-                     :message (str tracker-url ": " (:message announce-built))}
-                    (let [announce-resp (udp-exchange socket (:ok announce-built) addr timeout)
-                          announce-parsed (tracker/parse-udp-announce-response
-                                           announce-resp
-                                           {:action :announce :transaction-id txn-id2})]
-                      (if (:error announce-parsed)
-                        {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
-                        (let [peers (:peers (:ok announce-parsed))]
-                          {:ok (set (map tracker-peer->address peers))})))))))))
+        ;; Step 1: Connect. Builds are checked before unwrapping: a refused
+        ;; build is a typed step error carrying the builder's message, never
+        ;; an NPE downstream. Each attempt carries a fresh transaction-id
+        ;; and parses against it, so a stray or duplicate datagram fails the
+        ;; attempt instead of connecting to a stranger's connection id;
+        ;; timeouts and mismatches back off (BEP 15) and re-send.
+        (let [connect-result (try-udp-step network socket addr
+                                           :udp-connect-failed "connect" :connect
+                                           (fn [txn-id] (tracker/build-udp-connect-request
+                                                         {:transaction-id txn-id}))
+                                           tracker/parse-udp-connect-response
+                                           tracker-url)]
+          (if (:error connect-result)
+            connect-result
+            (let [conn-id (:connection-id (:ok connect-result))
+                  ;; Step 2: Announce
+                  announce-result (try-udp-step network socket addr
+                                                :udp-announce-failed "announce" :announce
+                                                (fn [txn-id] (tracker/build-udp-announce-request
+                                                              {:connection-id conn-id
+                                                               :transaction-id txn-id
+                                                               :info-hash (:info-hash request)
+                                                               :peer-id (:peer-id request)
+                                                               :downloaded (:downloaded request)
+                                                               :left (:left request)
+                                                               :uploaded (:uploaded request)
+                                                               :event (:event request)
+                                                               :num-want (or (:num-want request) 50)
+                                                               :port (:port request)}))
+                                                tracker/parse-udp-announce-response
+                                                tracker-url)]
+              (if (:error announce-result)
+                announce-result
+                (let [peers (:peers (:ok announce-result))]
+                  {:ok (set (map tracker-peer->address peers))})))))
         (finally (.close socket))))
     (catch Exception e
       {:error :udp-failed :message (str tracker-url ": " (.getMessage e))})))
