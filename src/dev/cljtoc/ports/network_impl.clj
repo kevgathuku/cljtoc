@@ -111,33 +111,48 @@
           socket (doto (DatagramSocket.) (.setSoTimeout timeout))
           txn-id (.nextInt (java.util.Random.))]
       (try
-        ;; Step 1: Connect
-        (let [connect-req (:ok (tracker/build-udp-connect-request
-                                {:transaction-id txn-id}))
-              connect-resp (udp-exchange socket connect-req addr timeout)
-              connect-parsed (tracker/parse-udp-connect-response connect-resp)]
-          (if (:error connect-parsed)
-            {:error :udp-connect-failed :message (str tracker-url ": " (:message connect-parsed))}
-            (let [conn-id (:connection-id (:ok connect-parsed))
-                  txn-id2 (.nextInt (java.util.Random.))
-                  ;; Step 2: Announce
-                  announce-req (:ok (tracker/build-udp-announce-request
-                                     {:connection-id conn-id
-                                      :transaction-id txn-id2
-                                      :info-hash (:info-hash request)
-                                      :peer-id (:peer-id request)
-                                      :downloaded (:downloaded request)
-                                      :left (:left request)
-                                      :uploaded (:uploaded request)
-                                      :event (:event request)
-                                      :num-want (or (:num-want request) 50)
-                                      :port (:port request)}))
-                  announce-resp (udp-exchange socket announce-req addr timeout)
-                  announce-parsed (tracker/parse-udp-announce-response announce-resp)]
-              (if (:error announce-parsed)
-                {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
-                (let [peers (:peers (:ok announce-parsed))]
-                  {:ok (set (map tracker-peer->address peers))})))))
+        ;; Step 1: Connect. Build envelopes are checked before
+        ;; unwrapping: a refused build is a typed step error carrying
+        ;; the builder's message, never an NPE downstream. Parses run
+        ;; against the live request's action and transaction-id, so a
+        ;; stray or duplicate datagram fails the attempt instead of
+        ;; connecting to a stranger's connection id.
+        (let [connect-built (tracker/build-udp-connect-request
+                             {:transaction-id txn-id})]
+          (if (:error connect-built)
+            {:error :udp-connect-failed
+             :message (str tracker-url ": " (:message connect-built))}
+            (let [connect-resp (udp-exchange socket (:ok connect-built) addr timeout)
+                  connect-parsed (tracker/parse-udp-connect-response
+                                  connect-resp
+                                  {:action :connect :transaction-id txn-id})]
+              (if (:error connect-parsed)
+                {:error :udp-connect-failed :message (str tracker-url ": " (:message connect-parsed))}
+                (let [conn-id (:connection-id (:ok connect-parsed))
+                      txn-id2 (.nextInt (java.util.Random.))
+                      ;; Step 2: Announce
+                      announce-built (tracker/build-udp-announce-request
+                                      {:connection-id conn-id
+                                       :transaction-id txn-id2
+                                       :info-hash (:info-hash request)
+                                       :peer-id (:peer-id request)
+                                       :downloaded (:downloaded request)
+                                       :left (:left request)
+                                       :uploaded (:uploaded request)
+                                       :event (:event request)
+                                       :num-want (or (:num-want request) 50)
+                                       :port (:port request)})]
+                  (if (:error announce-built)
+                    {:error :udp-announce-failed
+                     :message (str tracker-url ": " (:message announce-built))}
+                    (let [announce-resp (udp-exchange socket (:ok announce-built) addr timeout)
+                          announce-parsed (tracker/parse-udp-announce-response
+                                           announce-resp
+                                           {:action :announce :transaction-id txn-id2})]
+                      (if (:error announce-parsed)
+                        {:error :udp-announce-failed :message (str tracker-url ": " (:message announce-parsed))}
+                        (let [peers (:peers (:ok announce-parsed))]
+                          {:ok (set (map tracker-peer->address peers))})))))))))
         (finally (.close socket))))
     (catch Exception e
       {:error :udp-failed :message (str tracker-url ": " (.getMessage e))})))

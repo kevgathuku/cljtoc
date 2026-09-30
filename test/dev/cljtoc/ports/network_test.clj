@@ -474,41 +474,44 @@
    98-byte announce (action 1 + that connection id) yields interval plus
    one compact peer. Both echo the request's transaction id, like a real
    tracker. Anything else throws with the offending bytes described."
-  [^bytes data]
-  (let [in (ByteBuffer/wrap data)]
-    (cond
-      (= 16 (alength data))
-      (let [magic (.getLong in 0)
-            action (.getInt in 8)
-            txn-id (.getInt in 12)]
-        (when (or (not= udp-protocol-magic magic) (not= 0 action))
-          (throw (ex-info "double: not a BEP 15 connect"
-                          {:magic magic :action action})))
-        (let [out (ByteBuffer/allocate 16)]
-          (.putInt out 0)
-          (.putInt out txn-id)
-          (.putLong out udp-test-connection-id)
-          (.array out)))
+  ([^bytes data]
+   (answer-udp-double data {}))
+  ([^bytes data {:keys [connect-txn announce-txn connect-action announce-action]
+                 :or {connect-action 0 announce-action 1}}]
+   (let [in (ByteBuffer/wrap data)]
+     (cond
+       (= 16 (alength data))
+       (let [magic (.getLong in 0)
+             action (.getInt in 8)
+             txn-id (.getInt in 12)]
+         (when (or (not= udp-protocol-magic magic) (not= 0 action))
+           (throw (ex-info "double: not a BEP 15 connect"
+                           {:magic magic :action action})))
+         (let [out (ByteBuffer/allocate 16)]
+           (.putInt out connect-action)
+           (.putInt out (or connect-txn txn-id))
+           (.putLong out udp-test-connection-id)
+           (.array out)))
 
-      (= 98 (alength data))
-      (let [conn-id (.getLong in 0)
-            action (.getInt in 8)
-            txn-id (.getInt in 12)]
-        (when (or (not= udp-test-connection-id conn-id) (not= 1 action))
-          (throw (ex-info "double: not a BEP 15 announce for this connection"
-                          {:connection-id conn-id :action action})))
-        (let [out (ByteBuffer/allocate 26)]
-          (.putInt out 1)
-          (.putInt out txn-id)
-          (.putInt out 1800)
-          (.putInt out 0)
-          (.putInt out 0)
-          (.put out (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)]))
-          (.array out)))
+       (= 98 (alength data))
+       (let [conn-id (.getLong in 0)
+             action (.getInt in 8)
+             txn-id (.getInt in 12)]
+         (when (or (not= udp-test-connection-id conn-id) (not= 1 action))
+           (throw (ex-info "double: not a BEP 15 announce for this connection"
+                           {:connection-id conn-id :action action})))
+         (let [out (ByteBuffer/allocate 26)]
+           (.putInt out announce-action)
+           (.putInt out (or announce-txn txn-id))
+           (.putInt out 1800)
+           (.putInt out 0)
+           (.putInt out 0)
+           (.put out (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)]))
+           (.array out)))
 
-      :else
-      (throw (ex-info "double: unexpected datagram length"
-                      {:length (alength data)})))))
+       :else
+       (throw (ex-info "double: unexpected datagram length"
+                       {:length (alength data)}))))))
 
 (defn- with-loopback-udp-tracker
   "Run run-with-url against a loopback UDP tracker double (see answer-udp-double),
@@ -518,33 +521,37 @@
    the suite wait on them: the double answers in microseconds, so any
    wait past them is scheduler stall, and a stuck exchange still fails
    the assertion instead of hanging the suite."
-  [run-with-url]
-  (let [socket (doto (DatagramSocket. 0 (InetAddress/getByName "127.0.0.1"))
-                 (.setSoTimeout 30000))
-        errors (atom nil)
-        responder (future
-                    (try
-                      (dotimes [_ 2]
-                        (let [buf (byte-array 65536)
-                              pkt (DatagramPacket. buf (alength buf))]
-                          (.receive socket pkt)
-                          (let [data (Arrays/copyOf buf (.getLength pkt))
-                                from (.getSocketAddress pkt)
-                                reply (answer-udp-double data)]
-                            (.send socket (DatagramPacket. reply (alength reply) from)))))
-                      (catch SocketTimeoutException timeout
-                        (reset! errors timeout))
-                      (catch SocketException closed
-                        (reset! errors closed))
-                      (catch Exception protocol-error
-                        (reset! errors protocol-error))))]
-    (try
-      (let [result (run-with-url (str "udp://127.0.0.1:" (.getLocalPort socket) "/announce"))]
-        (deref responder 30000 ::stuck)
-        {:result result :responder-error @errors})
-      (finally
-        (future-cancel responder)
-        (.close socket)))))
+  ([run-with-url] (with-loopback-udp-tracker run-with-url {}))
+  ([run-with-url double-opts]
+   (let [socket (doto (DatagramSocket. 0 (InetAddress/getByName "127.0.0.1"))
+                  (.setSoTimeout 30000))
+         errors (atom nil)
+         responder (future
+                     (try
+                       (dotimes [_ 2]
+                         (let [buf (byte-array 65536)
+                               pkt (DatagramPacket. buf (alength buf))]
+                           (.receive socket pkt)
+                           (let [data (Arrays/copyOf buf (.getLength pkt))
+                                 from (.getSocketAddress pkt)
+                                 reply (answer-udp-double data double-opts)]
+                             (.send socket (DatagramPacket. reply (alength reply) from)))))
+                       (catch SocketTimeoutException _quiet
+                        ;; Production stopped sending: the expected end on
+                        ;; refusal paths. Caller-side bounds still catch a
+                        ;; genuinely stuck exchange.
+                         nil)
+                       (catch SocketException closed
+                         (reset! errors closed))
+                       (catch Exception protocol-error
+                         (reset! errors protocol-error))))]
+     (try
+       (let [result (run-with-url (str "udp://127.0.0.1:" (.getLocalPort socket) "/announce"))]
+         (deref responder 45000 ::stuck)
+         {:result result :responder-error @errors})
+       (finally
+         (future-cancel responder)
+         (.close socket))))))
 
 (deftest udp-loopback-announce-returns-double-peer-test
   (testing "connect + announce through the real port code returns the double's peer"
@@ -561,3 +568,62 @@
                      60000 :timed-out)))]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
       (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
+(deftest udp-loopback-connect-txn-mismatch-is-an-error-test
+  (testing "a connect response for another transaction fails the attempt instead of connecting"
+    (let [{:keys [result responder-error]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 15000})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:connect-txn 424242})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result)))))
+
+(deftest udp-loopback-announce-txn-mismatch-is-an-error-test
+  (testing "an announce response for another transaction fails the attempt instead of returning peers"
+    (let [{:keys [result responder-error]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 15000})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:announce-txn 424243})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= :udp-announce-failed (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result)))))
+
+(deftest udp-loopback-connect-action-mismatch-is-an-error-test
+  (testing "a connect response carrying another action fails the attempt instead of connecting"
+    (let [{:keys [result responder-error]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 15000})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:connect-action 1})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result)))))
+
+(deftest udp-loopback-announce-build-failure-is-an-envelope-test
+  (testing "a request the builder refuses comes back as an error envelope naming validation, never a throw"
+    (let [{:keys [result responder-error]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 15000})
+                              url
+                              (assoc (valid-announce-request) :info-hash (byte-array 4))))
+                     60000 :timed-out)))]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= :udp-announce-failed (:error result)) (pr-str result))
+      (is (re-find #"validation" (:message result)) (pr-str result)))))

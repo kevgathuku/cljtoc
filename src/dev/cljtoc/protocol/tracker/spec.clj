@@ -128,6 +128,12 @@
 (s/def ::completed nat-int?)
 (s/def ::action #{:connect :announce :scrape :error})
 
+;; The request side a UDP response is checked against: the action and
+;; transaction-id the live request sent. Either key may be absent to skip
+;; that check; both present is the strict check.
+(s/def ::udp-response-expectation
+  (s/keys :opt-un [::action ::transaction-id]))
+
 ;; Scrape entry per torrent
 (s/def ::scrape-stat
   (s/keys :req-un [::seeders ::completed ::leechers]))

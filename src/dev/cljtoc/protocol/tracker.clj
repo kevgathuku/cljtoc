@@ -445,6 +445,30 @@
 ;; UDP Tracker Response Parsing (BEP 15)
 ;; ---------------------------------------------------------------------------
 
+(defn- match-udp-response
+  "Check a parsed UDP response against the live request's expectations:
+   the action keyword and transaction-id the request sent. A stray or
+   duplicate datagram parses cleanly but answers a question nobody asked,
+   so a mismatch is :action-mismatch / :txn-mismatch rather than a peer
+   set — the retry loop treats those as no-answer, never success. Either
+   expectation key may be absent to skip that check."
+  [action parsed expected]
+  (let [expected-action (:action expected)
+        expected-txn (:transaction-id expected)
+        actual-txn (:transaction-id (:ok parsed))]
+    (cond
+      (and (some? expected-action) (not= action expected-action))
+      (tracker-error :action-mismatch
+                     (str "Expected action " expected-action ", got " action)
+                     :expected expected-action :actual action)
+
+      (and (some? expected-txn) (not= expected-txn actual-txn))
+      (tracker-error :txn-mismatch
+                     (str "Expected transaction " expected-txn ", got " actual-txn)
+                     :expected expected-txn :actual actual-txn)
+
+      :else parsed)))
+
 (defn parse-udp-connect-response
   "Parse UDP tracker connect response (BEP 15).
 
@@ -455,28 +479,37 @@
 
   Parameters:
     response-bytes - 16-byte byte array
+    expected - optional {:action keyword :transaction-id int} the live
+      request sent; a mismatch is :action-mismatch / :txn-mismatch
 
   Returns:
     {:ok {:action :connect, :transaction-id int, :connection-id long}} or {:error ...}"
-  [response-bytes]
-  (if-let [err (validate-input bytes? response-bytes)]
-    err
-    (if (not= 16 (alength ^bytes response-bytes))
-      (tracker-error :invalid-message-length "Connect response must be 16 bytes"
-                     :length (alength ^bytes response-bytes))
-      (let [buf (ByteBuffer/wrap response-bytes)
-            action (.getInt buf)
-            transaction-id (.getInt buf)
-            connection-id (.getLong buf)]
-        (if (not= 0 action)
-          (tracker-error :invalid-action-code "Expected action 0 (connect)"
-                         :action action)
-          {:ok {:action :connect
-                :transaction-id transaction-id
-                :connection-id connection-id}})))))
+  ([response-bytes]
+   (if-let [err (validate-input bytes? response-bytes)]
+     err
+     (if (not= 16 (alength ^bytes response-bytes))
+       (tracker-error :invalid-message-length "Connect response must be 16 bytes"
+                      :length (alength ^bytes response-bytes))
+       (let [buf (ByteBuffer/wrap response-bytes)
+             action (.getInt buf)
+             transaction-id (.getInt buf)
+             connection-id (.getLong buf)]
+         (if (not= 0 action)
+           (tracker-error :invalid-action-code "Expected action 0 (connect)"
+                          :action action)
+           {:ok {:action :connect
+                 :transaction-id transaction-id
+                 :connection-id connection-id}})))))
 
+  ([response-bytes expected]
+   (let [parsed (parse-udp-connect-response response-bytes)]
+     (if (or (:error parsed) (nil? expected))
+       parsed
+       (match-udp-response :connect parsed expected)))))
 (s/fdef parse-udp-connect-response
-  :args (s/cat :response-bytes bytes?)
+  :args (s/or :unary (s/cat :response-bytes bytes?)
+              :binary (s/cat :response-bytes bytes?
+                             :expected ::spec/udp-response-expectation))
   :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
                              #(s/valid? ::spec/udp-connect-response (:ok %)))
              :error ::spec/error-result)
@@ -501,40 +534,47 @@
   Returns:
     {:ok {:action :announce, :transaction-id, :interval, :leechers, :seeders, :peers [...]}}
     or {:error ...}"
-  [response-bytes]
-  (if-let [err (validate-input bytes? response-bytes)]
-    err
-    (let [len (alength ^bytes response-bytes)]
-      (if (< len 20)
-        (tracker-error :invalid-message-length "Announce response must be >= 20 bytes"
-                       :length len)
-        (let [buf (ByteBuffer/wrap response-bytes)
-              action (.getInt buf)
-              transaction-id (.getInt buf)
-              interval (.getInt buf)
-              leechers (.getInt buf)
-              seeders (.getInt buf)]
-          (if (not= 1 action)
-            (tracker-error :invalid-action-code "Expected action 1 (announce)"
-                           :action action)
-            (let [peer-bytes (byte-array (- len 20))
-                  _ (.get buf peer-bytes)
-                  peers-result (if (and (pos? (alength peer-bytes))
-                                        (= 0 (mod (alength peer-bytes) 18))
-                                        (not= 0 (mod (alength peer-bytes) 6)))
-                                 (parse-compact-peers-ipv6 peer-bytes)
-                                 (parse-compact-peers-ipv4 peer-bytes))]
-              (if (:error peers-result)
-                peers-result
-                {:ok {:action :announce
-                      :transaction-id transaction-id
-                      :interval interval
-                      :leechers leechers
-                      :seeders seeders
-                      :peers (:ok peers-result)}}))))))))
+  ([response-bytes]
+   (if-let [err (validate-input bytes? response-bytes)]
+     err
+     (let [len (alength ^bytes response-bytes)]
+       (if (< len 20)
+         (tracker-error :invalid-message-length "Announce response must be >= 20 bytes"
+                        :length len)
+         (let [buf (ByteBuffer/wrap response-bytes)
+               action (.getInt buf)
+               transaction-id (.getInt buf)
+               interval (.getInt buf)
+               leechers (.getInt buf)
+               seeders (.getInt buf)]
+           (if (not= 1 action)
+             (tracker-error :invalid-action-code "Expected action 1 (announce)"
+                            :action action)
+             (let [peer-bytes (byte-array (- len 20))
+                   _ (.get buf peer-bytes)
+                   peers-result (if (and (pos? (alength peer-bytes))
+                                         (= 0 (mod (alength peer-bytes) 18))
+                                         (not= 0 (mod (alength peer-bytes) 6)))
+                                  (parse-compact-peers-ipv6 peer-bytes)
+                                  (parse-compact-peers-ipv4 peer-bytes))]
+               (if (:error peers-result)
+                 peers-result
+                 {:ok {:action :announce
+                       :transaction-id transaction-id
+                       :interval interval
+                       :leechers leechers
+                       :seeders seeders
+                       :peers (:ok peers-result)}}))))))))
 
+  ([response-bytes expected]
+   (let [parsed (parse-udp-announce-response response-bytes)]
+     (if (or (:error parsed) (nil? expected))
+       parsed
+       (match-udp-response :announce parsed expected)))))
 (s/fdef parse-udp-announce-response
-  :args (s/cat :response-bytes bytes?)
+  :args (s/or :unary (s/cat :response-bytes bytes?)
+              :binary (s/cat :response-bytes bytes?
+                             :expected ::spec/udp-response-expectation))
   :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
                              #(s/valid? ::spec/udp-announce-response (:ok %)))
              :error ::spec/error-result)
