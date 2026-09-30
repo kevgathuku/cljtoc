@@ -16,13 +16,14 @@
             [clojure.spec.gen.alpha :as gen]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.protocol.peer :as peer]
+            [dev.cljtoc.protocol.tracker :as tracker]
             [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.test-doubles.network :as mock-network])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream
             InputStream OutputStream]
-           [java.net DatagramPacket DatagramSocket InetAddress
+           [java.net DatagramPacket DatagramSocket InetAddress InetSocketAddress
             SocketException SocketTimeoutException]
            [java.nio ByteBuffer]
            [java.util Arrays]))
@@ -630,7 +631,10 @@
                               ;; absorbs scheduler stalls, never slowness.
                               (network-impl/create {:udp-timeout-ms 15000})
                               url
-                              (valid-announce-request)))
+                              ;; :num-want present here covers the
+                              ;; build's num-want subform; the other
+                              ;; tests cover its absence.
+                              (assoc (valid-announce-request) :num-want 10)))
                      60000 :timed-out)))]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
       (is (= 2 received-count)
@@ -708,6 +712,93 @@
       (is (= 3 received-count)
           (str "expected dropped connect, retried connect, announce; got " received-count))
       (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
+(deftest udp-retry-sleep-restores-interrupt-flag-test
+  (testing "an interrupted backoff returns false and keeps the interrupt visible"
+    ;; Self-interrupt: sleep clears the flag when it throws, so a false
+    ;; below with a cleared flag would prove the restore missing. Flag
+    ;; state is captured into locals BEFORE any `is`: lein's report
+    ;; binding blocks and clears a set flag as a side effect, so an
+    ;; assertion across the boundary reads the runner, not the code.
+    (.interrupt (Thread/currentThread))
+    (let [slept? (#'network-impl/sleep-retry-delay! 15000)
+          flag-kept? (.isInterrupted (Thread/currentThread))]
+      ;; Clear the flag so it cannot leak into other tests.
+      (Thread/interrupted)
+      (is (false? slept?))
+      (is (true? flag-kept?)
+          "the interrupt flag was swallowed instead of restored"))))
+
+(deftest udp-step-fails-fast-on-a-dead-socket-test
+  (testing "a non-timeout socket error fails the step at once, spending no retries"
+    ;; try-udp-step is driven directly here: killing the port's own
+    ;; socket mid-flight is the only deterministic way to raise a
+    ;; non-timeout exchange error, and it is timing-race-free.
+    (let [socket (doto (DatagramSocket.) (.close))
+          addr (InetSocketAddress. "127.0.0.1" 1)
+          started-at (System/currentTimeMillis)
+          result (#'network-impl/try-udp-step
+                  (network-impl/create {:udp-timeout-ms 200
+                                        :udp-retry-base-delay-ms 25
+                                        :udp-max-attempts 3})
+                  socket addr :udp-connect-failed "connect" :connect
+                  (fn [txn-id] (tracker/build-udp-connect-request {:transaction-id txn-id}))
+                  tracker/parse-udp-connect-response
+                  "udp://127.0.0.1:1/announce")
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"exchange failed" (:message result)) (pr-str result))
+      (is (< elapsed-ms 5000)
+          (str "a dead socket must not burn retries: took " elapsed-ms " ms")))))
+
+(deftest udp-step-interrupted-backoff-fails-the-step-test
+  (testing "interrupting a backed-off retry fails the step instead of sleeping on"
+    ;; Self-interrupt on the test thread (never a pooled future thread:
+    ;; a restored flag left on a pool thread would outlive the test and
+    ;; fail unrelated sleeps later). The datagram receive ignores the
+    ;; flag and still waits out its timeout, so the backoff sleep is the
+    ;; first thing that can throw -- deterministically, no race.
+    (.interrupt (Thread/currentThread))
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (network/announce-to-url
+               (network-impl/create {:udp-timeout-ms 500
+                                     :udp-retry-base-delay-ms 30000
+                                     :udp-max-attempts 3})
+               url
+               (valid-announce-request)))
+            ;; One dropped connect: the client burns its 500 ms wait,
+            ;; then the 30 s backoff throws at once on the set flag.
+            {:drop-first-n 1 :expect-datagrams 1})
+          flag-kept? (.isInterrupted (Thread/currentThread))]
+      ;; Clear the flag so it cannot leak into other tests.
+      (Thread/interrupted)
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 1 received-count)
+          (str "the interrupt struck during the first backoff; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"interrupted" (:message result)) (pr-str result))
+      (is (true? flag-kept?)
+          "the step swallowed the interrupt instead of restoring it"))))
+
+(deftest udp-announce-defaults-missing-port-to-6969-test
+  (testing "a UDP tracker URL without a port attempts the BEP 15 default instead of failing to build"
+    ;; Nothing listens on 6969 here, so the attempt must fail -- but as
+    ;; a connect failure after a bounded wait, never as a build error or
+    ;; an IllegalArgumentException from a -1 port reaching the socket.
+    (let [started-at (System/currentTimeMillis)
+          result (network/announce-to-url
+                  (network-impl/create {:udp-timeout-ms 200
+                                        :udp-retry-base-delay-ms 25
+                                        :udp-max-attempts 1})
+                  "udp://127.0.0.1/announce"
+                  (valid-announce-request))
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result))
+      (is (< elapsed-ms 5000)
+          (str "a defaulted port must fail bounded, took " elapsed-ms " ms")))))
 
 (deftest udp-loopback-silent-tracker-fails-after-max-attempts-test
   (testing "a tracker that never answers fails after exactly max-attempts, never hanging"
