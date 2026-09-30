@@ -64,10 +64,12 @@ Parse a UDP tracker connect response message.
 
   Parameters:
     response-bytes - 16-byte UDP response message
+    expected - optional {:action keyword :transaction-id int} the live
+      request sent
 
   Returns:
     {:ok tracker-response} or {:error ...}"
-  [response-bytes])
+  ([response-bytes] [response-bytes expected])
 ```
 
 **Preconditions**:
@@ -88,7 +90,8 @@ Parse a UDP tracker connect response message.
 ```clojure
 {:error :invalid-length :message "Connect response must be 16 bytes" :length 10}
 {:error :invalid-action :message "Expected action 0 (connect)" :action 3}
-{:error :transaction-mismatch :message "Transaction ID does not match request" :expected 0x12345678 :actual 0x87654321}
+{:error :txn-mismatch :message "Expected transaction 42, got 43" :expected 42 :actual 43}
+{:error :action-mismatch :message "Expected action :connect, got :announce" :expected :connect :actual :announce}
 ```
 
 **Example**:
@@ -186,10 +189,12 @@ Parse a UDP tracker announce response message.
 
   Parameters:
     response-bytes - UDP response message (20 bytes + N*6 bytes for peers)
+    expected - optional {:action keyword :transaction-id int} the live
+      request sent
 
   Returns:
     {:ok tracker-response} or {:error ...}"
-  [response-bytes])
+  ([response-bytes] [response-bytes expected])
 ```
 
 **Preconditions**:
@@ -216,6 +221,8 @@ Parse a UDP tracker announce response message.
 {:error :invalid-length :message "Announce response must be at least 20 bytes" :length 15}
 {:error :invalid-action :message "Expected action 1 (announce)" :action 0}
 {:error :invalid-peer-data :message "Peer data length must be multiple of 6" :length 13}
+{:error :txn-mismatch :message "Expected transaction 42, got 43" :expected 42 :actual 43}
+{:error :action-mismatch :message "Expected action :announce, got :connect" :expected :announce :actual :connect}
 ```
 
 **Example**:

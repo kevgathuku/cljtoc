@@ -1128,3 +1128,39 @@
       (let [check-result (stest/check sym {:clojure.spec.test.check/opts {:num-tests 50}})]
         (is (nil? (-> check-result first :failure))
             (str sym " should pass all generative tests"))))))
+
+(deftest parse-udp-connect-response-rejects-unexpected-transaction-test
+  (testing "a well-formed connect response for another transaction is :txn-mismatch, not a connection"
+    (let [bytes (make-connect-response-bytes 0 43 100)
+          result (tracker/parse-udp-connect-response bytes {:action :connect :transaction-id 42})]
+      (is (= :txn-mismatch (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result))))
+  (testing "the matching transaction still parses"
+    (let [bytes (make-connect-response-bytes 0 42 100)
+          result (tracker/parse-udp-connect-response bytes {:action :connect :transaction-id 42})]
+      (is (= 42 (:transaction-id (:ok result))) (pr-str result)))))
+
+(deftest parse-udp-connect-response-rejects-unexpected-action-test
+  (testing "a well-formed connect response checked against another action is :action-mismatch"
+    (let [bytes (make-connect-response-bytes 0 42 100)
+          result (tracker/parse-udp-connect-response bytes {:action :announce :transaction-id 42})]
+      (is (= :action-mismatch (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result)))))
+
+(deftest parse-udp-announce-response-rejects-unexpected-transaction-test
+  (testing "a well-formed announce response for another transaction is :txn-mismatch, not peers"
+    (let [bytes (make-announce-response-bytes 1 43 1800 0 1 (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)]))
+          result (tracker/parse-udp-announce-response bytes {:action :announce :transaction-id 42})]
+      (is (= :txn-mismatch (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result))))
+  (testing "the matching transaction still parses its peer"
+    (let [bytes (make-announce-response-bytes 1 42 1800 0 1 (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)]))
+          result (tracker/parse-udp-announce-response bytes {:action :announce :transaction-id 42})]
+      (is (= [{:ip "127.0.0.1" :port 6881}] (:peers (:ok result))) (pr-str result)))))
+
+(deftest parse-udp-announce-response-rejects-unexpected-action-test
+  (testing "a well-formed announce response checked against another action is :action-mismatch"
+    (let [bytes (make-announce-response-bytes 1 42 1800 0 1 (byte-array [127 0 0 1 0x1A (unchecked-byte 0xE1)]))
+          result (tracker/parse-udp-announce-response bytes {:action :connect :transaction-id 42})]
+      (is (= :action-mismatch (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result)))))
