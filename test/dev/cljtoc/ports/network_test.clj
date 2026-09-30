@@ -16,13 +16,14 @@
             [clojure.spec.gen.alpha :as gen]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.protocol.peer :as peer]
+            [dev.cljtoc.protocol.tracker :as tracker]
             [dev.cljtoc.test-utils :refer [an-envelope? channel?] :as test-utils]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.test-doubles.network :as mock-network])
   (:import [java.io ByteArrayInputStream ByteArrayOutputStream
             InputStream OutputStream]
-           [java.net DatagramPacket DatagramSocket InetAddress
+           [java.net DatagramPacket DatagramSocket InetAddress InetSocketAddress
             SocketException SocketTimeoutException]
            [java.nio ByteBuffer]
            [java.util Arrays]))
@@ -290,11 +291,15 @@
           valid-cfgs [{} {:connect-timeout-ms 1} {:log-fn println}
                       {:connect-timeout-ms 1 :socket-timeout-ms 2
                        :udp-timeout-ms 3 :http-timeout-ms Integer/MAX_VALUE}
+                      {:udp-retry-base-delay-ms 10 :udp-max-attempts 2
+                       :udp-tracker-budget-ms 1200}
                       {:unrelated-key "ignored"}]
           invalid-cfgs (concat (for [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
                                      timeout-key [:connect-timeout-ms :socket-timeout-ms
-                                                  :udp-timeout-ms :http-timeout-ms]]
+                                                  :udp-timeout-ms :http-timeout-ms
+                                                  :udp-retry-base-delay-ms :udp-tracker-budget-ms]]
                                  {timeout-key bad})
+                               (for [bad [0 -1 "3" 2.5 nil]] {:udp-max-attempts bad})
                                (for [bad ["x" 42 nil 0]] {:log-fn bad}))]
       (doseq [cfg valid-cfgs]
         (is (s/valid? ::network/adapter-config cfg)
@@ -311,13 +316,62 @@
       (is (= cfg (network/check-adapter-config cfg))
           (str "checker rejected generated " (pr-str cfg))))))
 
+(deftest udp-retry-opts-are-validated-at-creation-test
+  (testing "present-but-invalid retry opts throw instead of silently changing retry behavior"
+    ;; :udp-retry-base-delay-ms and :udp-tracker-budget-ms share the
+    ;; timeout shape (positive int ms within Java int range);
+    ;; :udp-max-attempts is a loop count, so any positive int retries
+    ;; and only non-positive/non-int is refused.
+    (doseq [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+            retry-key [:udp-retry-base-delay-ms :udp-tracker-budget-ms]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {retry-key bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted " retry-key "=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= retry-key (:key (ex-data err)))))))
+    (doseq [bad [0 -1 "3" 2.5 nil]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {:udp-max-attempts bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted :udp-max-attempts=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= :udp-max-attempts (:key (ex-data err))))))))
+  (testing "valid retry opts pass through on both ports"
+    (let [opts {:udp-retry-base-delay-ms 10 :udp-max-attempts 2
+                :udp-tracker-budget-ms 1200}]
+      (is (= opts (:config (network-impl/create opts))))
+      (is (= opts (:config (mock-network/create opts)))))))
+
+(deftest udp-backoff-delay-doubles-per-retry-test
+  (testing "BEP 15 backoff: base * 2^n for the nth retry"
+    ;; The oracle is arithmetic written out by hand, not the fn itself.
+    (is (= 15000 (#'network-impl/backoff-delay-ms 15000 0)))
+    (is (= 30000 (#'network-impl/backoff-delay-ms 15000 1)))
+    (is (= 60000 (#'network-impl/backoff-delay-ms 15000 2)))
+    (is (= 120000 (#'network-impl/backoff-delay-ms 15000 3)))
+    (is (= 10 (#'network-impl/backoff-delay-ms 10 0))))
+  (testing "astronomical shifts saturate instead of wrapping negative"
+    (is (= Long/MAX_VALUE (#'network-impl/backoff-delay-ms Integer/MAX_VALUE 100)))
+    (is (pos? (#'network-impl/backoff-delay-ms 15000 62)))))
+
 (deftest fdef-specs-hold-generatively-test
   (testing "log-fn fdef holds over generated inputs"
     ;; announce-to-url is excluded on principle, like log!: the generator
     ;; cannot conjure a live tracker URL, so a check would die in socket
-    ;; I/O before its :ret is even reached.
+    ;; I/O before its :ret is even reached. try-udp-step shares the
+    ;; exclusion (it needs a live socket and a answering peer), and
+    ;; sleep-retry-delay! is excluded because generated delays would
+    ;; block the test thread for unbounded real time.
     (let [failures (test-utils/check-fdefs
-                    '[dev.cljtoc.ports.network/log-fn]
+                    '[dev.cljtoc.ports.network/log-fn
+                      dev.cljtoc.ports.network-impl/backoff-delay-ms]
                     50)]
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))
@@ -515,27 +569,57 @@
 
 (defn- with-loopback-udp-tracker
   "Run run-with-url against a loopback UDP tracker double (see answer-udp-double),
-   answering exactly the connect + announce datagrams at an ephemeral
-   port. Returns {:result (run-with-url's value) :responder-error (the double's
-   failure, if any)}. Generous timeouts bound both sides without making
-   the suite wait on them: the double answers in microseconds, so any
-   wait past them is scheduler stall, and a stuck exchange still fails
-   the assertion instead of hanging the suite."
+   answering the connect + announce datagrams at an ephemeral port.
+   Returns {:result (run-with-url's value) :responder-error (the double's
+   failure, if any) :received-count (datagrams the double saw)}.
+   Double opts: :drop-first-n silently swallows the first N datagrams
+   (lossy mode: nothing is sent back, so the client must retry);
+   :drop-indices swallows exactly those zero-based datagram indices
+   (e.g. #{1 2 3} answers the connect, then drops three announces);
+   :stray-connect? answers each connect twice: first a stray stamped
+   with the next transaction id (a late duplicate by construction),
+   then the genuine reply, so the client must discard and keep
+   receiving within the same attempt instead of burning a retry;
+   :expect-datagrams bounds how many datagrams the responder waits for
+   (2 covers one connect + one announce; a retrying client sends more).
+   The rest of answer-udp-double's misbehavior modes pass through.
+   Generous timeouts bound both sides without making the suite wait on
+   them: the double answers in microseconds, so any wait past them is
+   scheduler stall, and a stuck exchange still fails the assertion
+   instead of hanging the suite."
   ([run-with-url] (with-loopback-udp-tracker run-with-url {}))
   ([run-with-url double-opts]
    (let [socket (doto (DatagramSocket. 0 (InetAddress/getByName "127.0.0.1"))
                   (.setSoTimeout 30000))
          errors (atom nil)
+         received-count (atom 0)
+         drop-first-n (:drop-first-n double-opts 0)
+         drop-indices (:drop-indices double-opts #{})
+         expect-datagrams (:expect-datagrams double-opts 2)
          responder (future
                      (try
-                       (dotimes [_ 2]
+                       (dotimes [receive-index expect-datagrams]
                          (let [buf (byte-array 65536)
                                pkt (DatagramPacket. buf (alength buf))]
                            (.receive socket pkt)
                            (let [data (Arrays/copyOf buf (.getLength pkt))
-                                 from (.getSocketAddress pkt)
-                                 reply (answer-udp-double data double-opts)]
-                             (.send socket (DatagramPacket. reply (alength reply) from)))))
+                                 from (.getSocketAddress pkt)]
+                             (swap! received-count inc)
+                             (when-not (or (< receive-index drop-first-n)
+                                           (contains? drop-indices receive-index))
+                               (let [reply (answer-udp-double data double-opts)]
+                                 ;; A stray precedes the genuine reply: its
+                                 ;; id is the live one plus one, so it can
+                                 ;; never accidentally match.
+                                 (when (and (:stray-connect? double-opts)
+                                            (= 16 (alength data)))
+                                   (let [live-txn (.getInt (ByteBuffer/wrap data) 12)
+                                         stray (answer-udp-double
+                                                data
+                                                (assoc double-opts :connect-txn
+                                                       (unchecked-inc (int live-txn))))]
+                                     (.send socket (DatagramPacket. stray (alength stray) from))))
+                                 (.send socket (DatagramPacket. reply (alength reply) from)))))))
                        (catch SocketTimeoutException _quiet
                         ;; Production stopped sending: the expected end on
                         ;; refusal paths. Caller-side bounds still catch a
@@ -548,14 +632,24 @@
      (try
        (let [result (run-with-url (str "udp://127.0.0.1:" (.getLocalPort socket) "/announce"))]
          (deref responder 45000 ::stuck)
-         {:result result :responder-error @errors})
+         {:result result :responder-error @errors :received-count @received-count})
        (finally
          (future-cancel responder)
          (.close socket))))))
 
+(defn- fast-retry-opts
+  "Test retry knobs: caller-chosen socket waits, millisecond backoffs,
+   two attempts. Suite time stays flat while still exercising one real
+   retry. Mismatch tests pass short waits because an attempt with no
+   genuine reply now burns its whole wait instead of failing fast."
+  [socket-timeout-ms]
+  {:udp-timeout-ms socket-timeout-ms
+   :udp-retry-base-delay-ms 10
+   :udp-max-attempts 2})
+
 (deftest udp-loopback-announce-returns-double-peer-test
   (testing "connect + announce through the real port code returns the double's peer"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
@@ -564,66 +658,372 @@
                               ;; absorbs scheduler stalls, never slowness.
                               (network-impl/create {:udp-timeout-ms 15000})
                               url
-                              (valid-announce-request)))
+                              ;; :num-want present here covers the
+                              ;; build's num-want subform; the other
+                              ;; tests cover its absence.
+                              (assoc (valid-announce-request) :num-want 10)))
                      60000 :timed-out)))]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "green path sends exactly connect + announce, no resends; got " received-count))
       (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
 
 (deftest udp-loopback-connect-txn-mismatch-is-an-error-test
   (testing "a connect response for another transaction fails the attempt instead of connecting"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create {:udp-timeout-ms 15000})
+                              (network-impl/create (fast-retry-opts 300))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
-            {:connect-txn 424242})]
+            {:connect-txn 424242 :expect-datagrams 2})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "with no genuine reply the wait expires unanswered and the step retries; got " received-count))
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
 (deftest udp-loopback-announce-txn-mismatch-is-an-error-test
   (testing "an announce response for another transaction fails the attempt instead of returning peers"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create {:udp-timeout-ms 15000})
+                              (network-impl/create (fast-retry-opts 300))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
-            {:announce-txn 424243})]
+            {:announce-txn 424243 :expect-datagrams 3})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 3 received-count)
+          (str "expected connect + two mismatched announces; got " received-count))
       (is (= :udp-announce-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
 (deftest udp-loopback-connect-action-mismatch-is-an-error-test
   (testing "a connect response carrying another action fails the attempt instead of connecting"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create {:udp-timeout-ms 15000})
+                              (network-impl/create (fast-retry-opts 300))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
-            {:connect-action 1})]
+            {:connect-action 1 :expect-datagrams 2})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "with no genuine reply the wait expires unanswered and the step retries; got " received-count))
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
+(deftest udp-loopback-lossy-tracker-recovers-with-retries-test
+  (testing "a dropped first datagram is recovered: the retry re-sends and the announce returns the double's peer"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; Fast retry knobs, not production timing:
+                              ;; 300 ms waits plus 25/50 ms backoffs keep a
+                              ;; red run near one second instead of minutes.
+                              (network-impl/create {:udp-timeout-ms 300
+                                                    :udp-retry-base-delay-ms 25
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:drop-first-n 1 :expect-datagrams 3})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 3 received-count)
+          (str "expected dropped connect, retried connect, announce; got " received-count))
+      (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
+(deftest udp-retry-sleep-restores-interrupt-flag-test
+  (testing "an interrupted backoff returns false and keeps the interrupt visible"
+    ;; Self-interrupt: sleep clears the flag when it throws, so a false
+    ;; below with a cleared flag would prove the restore missing. Flag
+    ;; state is captured into locals BEFORE any `is`: lein's report
+    ;; binding blocks and clears a set flag as a side effect, so an
+    ;; assertion across the boundary reads the runner, not the code.
+    (.interrupt (Thread/currentThread))
+    (try
+      (let [slept? (#'network-impl/sleep-retry-delay! 15000)
+            flag-kept? (.isInterrupted (Thread/currentThread))]
+        (is (false? slept?))
+        (is (true? flag-kept?)
+            "the interrupt flag was swallowed instead of restored"))
+      ;; The flag must not leak into other tests even when an
+      ;; assertion above throws: one leaked flag fails the next
+      ;; blocking call on this shared test thread.
+      (finally (Thread/interrupted)))))
+
+(deftest udp-step-fails-fast-on-a-dead-socket-test
+  (testing "a non-timeout socket error fails the step at once, spending no retries"
+    ;; try-udp-step is driven directly here: killing the port's own
+    ;; socket mid-flight is the only deterministic way to raise a
+    ;; non-timeout exchange error, and it is timing-race-free.
+    (let [socket (doto (DatagramSocket.) (.close))
+          addr (InetSocketAddress. "127.0.0.1" 1)
+          started-at (System/currentTimeMillis)
+          result (#'network-impl/try-udp-step
+                  (network-impl/create {:udp-timeout-ms 200
+                                        :udp-retry-base-delay-ms 25
+                                        :udp-max-attempts 3})
+                  socket addr :udp-connect-failed "connect" :connect
+                  (fn [txn-id] (tracker/build-udp-connect-request {:transaction-id txn-id}))
+                  tracker/parse-udp-connect-response
+                  "udp://127.0.0.1:1/announce"
+                  ;; Far-future deadline: this test pins the fail-fast
+                  ;; branch, where the budget must never bind.
+                  {:deadline-ms Long/MAX_VALUE :budget-ms 60000})
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"exchange failed" (:message result)) (pr-str result))
+      (is (< elapsed-ms 5000)
+          (str "a dead socket must not burn retries: took " elapsed-ms " ms")))))
+
+(deftest udp-step-interrupted-backoff-fails-the-step-test
+  (testing "interrupting a backed-off retry fails the step instead of sleeping on"
+    ;; Self-interrupt on the test thread (never a pooled future thread:
+    ;; a restored flag left on a pool thread would outlive the test and
+    ;; fail unrelated sleeps later). The datagram receive ignores the
+    ;; flag and still waits out its timeout, so the backoff sleep is the
+    ;; first thing that can throw -- deterministically, no race. The
+    ;; flag is cleared before leaving run-with-url: the double's deref
+    ;; afterwards blocks, and blocking under a set flag throws.
+    (.interrupt (Thread/currentThread))
+    (let [{:keys [responder-error received-count] :as outer}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (try
+                (let [result (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 30000
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request))
+                      flag-kept? (.isInterrupted (Thread/currentThread))]
+                  {:result result :flag-kept? flag-kept?})
+                ;; Clear before leaving: the double's deref blocks, and
+                ;; blocking under a set flag throws. Finally, so even an
+                ;; unexpected throw cannot leak the flag onto this shared
+                ;; test thread and fail a later test's first blocking call.
+                (finally (Thread/interrupted))))
+            ;; One dropped connect: the client burns its 500 ms wait,
+            ;; then the 30 s backoff throws at once on the set flag.
+            {:drop-first-n 1 :expect-datagrams 1})
+          {:keys [result flag-kept?]} (:result outer)]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 1 received-count)
+          (str "the interrupt struck during the first backoff; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"interrupted" (:message result)) (pr-str result))
+      (is (true? flag-kept?)
+          "the step swallowed the interrupt instead of restoring it"))))
+
+(deftest udp-announce-defaults-missing-port-to-6969-test
+  (testing "a UDP tracker URL without a port attempts the BEP 15 default instead of failing to build"
+    ;; Nothing listens on 6969 here, so the attempt must fail -- but as
+    ;; a connect failure after a bounded wait, never as a build error or
+    ;; an IllegalArgumentException from a -1 port reaching the socket.
+    (let [started-at (System/currentTimeMillis)
+          result (network/announce-to-url
+                  (network-impl/create {:udp-timeout-ms 200
+                                        :udp-retry-base-delay-ms 25
+                                        :udp-max-attempts 1})
+                  "udp://127.0.0.1/announce"
+                  (valid-announce-request))
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (nil? (:ok result)) (pr-str result))
+      (is (< elapsed-ms 5000)
+          (str "a defaulted port must fail bounded, took " elapsed-ms " ms")))))
+
+(deftest udp-loopback-stray-connect-reply-waits-for-genuine-test
+  (testing "a stray connect reply is discarded and the same attempt reads the genuine one"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create (fast-retry-opts 2000))
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; The connect draws two replies (stray first) but goes out
+            ;; exactly once; with the announce that follows, the double
+            ;; sees two datagrams. Burning a retry would send three.
+            {:stray-connect? true :expect-datagrams 2})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the stray burned a retry and re-sent the connect; got " received-count))
+      (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
+(deftest udp-tracker-budget-caps-total-wait-test
+  (testing "a silent tracker stops retrying once its tracker budget runs out"
+    (let [started-at (System/currentTimeMillis)
+          {:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; Five attempts fit the budget only twice:
+                              ;; 500 ms wait + 2000 ms backoff, then the
+                              ;; remaining budget covers one more wait.
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 2000
+                                                    :udp-max-attempts 5
+                                                    :udp-tracker-budget-ms 3000})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; Two sends prove the budget bound the five-attempt
+            ;; allowance; the double waits for exactly those two.
+            {:drop-first-n 2 :expect-datagrams 2})
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the client spent its whole attempt allowance; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"budget" (:message result)) (pr-str result))
+      (is (< elapsed-ms 10000)
+          (str "the budget must bound the wait, took " elapsed-ms " ms")))))
+
+(deftest udp-tracker-budget-caps-waits-and-sleeps-test
+  (testing "socket waits and backoff sleeps each yield to the remaining budget"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; 2600 ms buys attempt one (500 ms wait +
+                              ;; 2000 ms backoff) plus one capped 100 ms
+                              ;; wait: the second backoff never happens.
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 2000
+                                                    :udp-max-attempts 5
+                                                    :udp-tracker-budget-ms 2600})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:drop-first-n 2 :expect-datagrams 2})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the budget stopped the five-attempt allowance at two sends; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"2 attempts.*budget" (:message result)) (pr-str result)))))
+
+(deftest udp-tracker-budget-after-one-attempt-test
+  (testing "a budget spent by the first attempt fails in the singular"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; 1200 ms buys exactly one attempt (500 ms
+                              ;; wait + 700 ms of the 2000 ms backoff).
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 2000
+                                                    :udp-max-attempts 5
+                                                    :udp-tracker-budget-ms 1200})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:drop-first-n 1 :expect-datagrams 1})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 1 received-count)
+          (str "only the first attempt went out; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"1 attempt.*budget" (:message result)) (pr-str result)))))
+
+(deftest udp-step-with-spent-budget-sends-nothing-test
+  (testing "a step whose tracker budget already ran out fails without sending"
+    ;; The deadline is driven directly: no timing is involved, so the
+    ;; only observable is that no datagram goes out.
+    (let [socket (DatagramSocket.)]
+      (try
+        (let [result (#'network-impl/try-udp-step
+                      (network-impl/create {:udp-timeout-ms 200
+                                            :udp-retry-base-delay-ms 25
+                                            :udp-max-attempts 3})
+                      socket (InetSocketAddress. "127.0.0.1" 1)
+                      :udp-connect-failed "connect" :connect
+                      (fn [txn-id] (tracker/build-udp-connect-request {:transaction-id txn-id}))
+                      tracker/parse-udp-connect-response
+                      "udp://127.0.0.1:1/announce"
+                      {:deadline-ms 0 :budget-ms 1200})]
+          (is (= :udp-connect-failed (:error result)) (pr-str result))
+          (is (re-find #"budget" (:message result)) (pr-str result)))
+        (finally (.close socket))))))
+
+(deftest udp-tracker-budget-default-is-one-step-test
+  (testing "the default budget covers one step's worst case under default knobs"
+    ;; 3 attempts x 5 s waits + 15 s + 30 s backoffs = 60 s: the connect
+    ;; step always gets its full retries, and the announce step only
+    ;; spends what a fast connect leaves over.
+    (is (= 60000 (:udp-tracker-budget-ms @#'network-impl/default-timeouts)))))
+
+(deftest udp-loopback-silent-tracker-fails-after-max-attempts-test
+  (testing "a tracker that never answers fails after exactly max-attempts, never hanging"
+    (let [started-at (System/currentTimeMillis)
+          {:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; 200 ms waits plus 25/50 ms backoffs: a ~700 ms
+                              ;; run against a 10 s bound proves exhaustion
+                              ;; terminates instead of hanging.
+                              (network-impl/create {:udp-timeout-ms 200
+                                                    :udp-retry-base-delay-ms 25
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; The double swallows everything: connect never succeeds, so
+            ;; the announce step never runs and every datagram is a connect.
+            {:drop-first-n 3 :expect-datagrams 3})
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 3 received-count)
+          (str "the client sent all three attempts, neither giving up early nor resending past the cap; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"3 attempts" (:message result)) (pr-str result))
+      (is (< elapsed-ms 10000)
+          (str "exhaustion took " elapsed-ms " ms: retries must stay bounded, never hang")))))
+
+(deftest udp-loopback-silent-announce-retries-past-connect-test
+  (testing "retries apply to the announce step too, not just the connect"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 200
+                                                    :udp-retry-base-delay-ms 25
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; Datagram 0 (connect) is answered; 1-3 (announces) vanish.
+            {:drop-indices #{1 2 3} :expect-datagrams 4})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 4 received-count)
+          (str "expected connect + three dropped announces; got " received-count))
+      (is (= :udp-announce-failed (:error result)) (pr-str result))
+      (is (re-find #"3 attempts" (:message result)) (pr-str result)))))
+
 (deftest udp-loopback-announce-build-failure-is-an-envelope-test
   (testing "a request the builder refuses comes back as an error envelope naming validation, never a throw"
-    (let [{:keys [result responder-error]}
+    (let [{:keys [result responder-error received-count]}
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
                               (network-impl/create {:udp-timeout-ms 15000})
                               url
                               (assoc (valid-announce-request) :info-hash (byte-array 4))))
-                     60000 :timed-out)))]
+                     60000 :timed-out))
+            ;; Only the connect ever goes out: the refused announce build
+            ;; fails fast with no retry, so the double waits for exactly
+            ;; one datagram instead of idling on its socket timeout.
+            {:expect-datagrams 1})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 1 received-count) (str "the refused build sent nothing further; got " received-count))
       (is (= :udp-announce-failed (:error result)) (pr-str result))
       (is (re-find #"validation" (:message result)) (pr-str result)))))
