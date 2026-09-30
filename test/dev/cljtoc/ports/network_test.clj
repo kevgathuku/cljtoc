@@ -760,23 +760,27 @@
     ;; a restored flag left on a pool thread would outlive the test and
     ;; fail unrelated sleeps later). The datagram receive ignores the
     ;; flag and still waits out its timeout, so the backoff sleep is the
-    ;; first thing that can throw -- deterministically, no race.
+    ;; first thing that can throw -- deterministically, no race. The
+    ;; flag is cleared before leaving run-with-url: the double's deref
+    ;; afterwards blocks, and blocking under a set flag throws.
     (.interrupt (Thread/currentThread))
-    (let [{:keys [result responder-error received-count]}
+    (let [{:keys [responder-error received-count] :as outer}
           (with-loopback-udp-tracker
             (fn [url]
-              (network/announce-to-url
-               (network-impl/create {:udp-timeout-ms 500
-                                     :udp-retry-base-delay-ms 30000
-                                     :udp-max-attempts 3})
-               url
-               (valid-announce-request)))
+              (let [result (network/announce-to-url
+                            (network-impl/create {:udp-timeout-ms 500
+                                                  :udp-retry-base-delay-ms 30000
+                                                  :udp-max-attempts 3})
+                            url
+                            (valid-announce-request))
+                    flag-kept? (.isInterrupted (Thread/currentThread))]
+                ;; Clear the flag so it cannot leak into other tests.
+                (Thread/interrupted)
+                {:result result :flag-kept? flag-kept?}))
             ;; One dropped connect: the client burns its 500 ms wait,
             ;; then the 30 s backoff throws at once on the set flag.
             {:drop-first-n 1 :expect-datagrams 1})
-          flag-kept? (.isInterrupted (Thread/currentThread))]
-      ;; Clear the flag so it cannot leak into other tests.
-      (Thread/interrupted)
+          {:keys [result flag-kept?]} (:result outer)]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
       (is (= 1 received-count)
           (str "the interrupt struck during the first backoff; got " received-count))
