@@ -311,13 +311,56 @@
       (is (= cfg (network/check-adapter-config cfg))
           (str "checker rejected generated " (pr-str cfg))))))
 
+(deftest udp-retry-opts-are-validated-at-creation-test
+  (testing "present-but-invalid retry opts throw instead of silently changing retry behavior"
+    ;; :udp-retry-base-delay-ms shares the timeout shape (positive int ms
+    ;; within Java int range); :udp-max-attempts is a loop count, so any
+    ;; positive int retries and only non-positive/non-int is refused.
+    (doseq [bad [0 -1 "5000" 1.5 nil (inc Integer/MAX_VALUE)]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {:udp-retry-base-delay-ms bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted :udp-retry-base-delay-ms=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= :udp-retry-base-delay-ms (:key (ex-data err)))))))
+    (doseq [bad [0 -1 "3" 2.5 nil]
+            [label make] [["real" network-impl/create]
+                          ["mock" mock-network/create]]]
+      (let [err (try (make {:udp-max-attempts bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err)
+            (str label " port accepted :udp-max-attempts=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err)))
+          (is (= :udp-max-attempts (:key (ex-data err))))))))
+  (testing "valid retry opts pass through on both ports"
+    (let [opts {:udp-retry-base-delay-ms 10 :udp-max-attempts 2}]
+      (is (= opts (:config (network-impl/create opts))))
+      (is (= opts (:config (mock-network/create opts)))))))
+
+(deftest udp-backoff-delay-doubles-per-retry-test
+  (testing "BEP 15 backoff: base * 2^n for the nth retry"
+    ;; The oracle is arithmetic written out by hand, not the fn itself.
+    (is (= 15000 (#'network-impl/backoff-delay-ms 15000 0)))
+    (is (= 30000 (#'network-impl/backoff-delay-ms 15000 1)))
+    (is (= 60000 (#'network-impl/backoff-delay-ms 15000 2)))
+    (is (= 120000 (#'network-impl/backoff-delay-ms 15000 3)))
+    (is (= 10 (#'network-impl/backoff-delay-ms 10 0))))
+  (testing "astronomical shifts saturate instead of wrapping negative"
+    (is (= Long/MAX_VALUE (#'network-impl/backoff-delay-ms Integer/MAX_VALUE 100)))
+    (is (pos? (#'network-impl/backoff-delay-ms 15000 62)))))
+
 (deftest fdef-specs-hold-generatively-test
   (testing "log-fn fdef holds over generated inputs"
     ;; announce-to-url is excluded on principle, like log!: the generator
     ;; cannot conjure a live tracker URL, so a check would die in socket
     ;; I/O before its :ret is even reached.
     (let [failures (test-utils/check-fdefs
-                    '[dev.cljtoc.ports.network/log-fn]
+                    '[dev.cljtoc.ports.network/log-fn
+                      dev.cljtoc.ports.network-impl/backoff-delay-ms]
                     50)]
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))

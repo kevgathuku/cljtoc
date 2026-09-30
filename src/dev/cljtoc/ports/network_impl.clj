@@ -3,6 +3,7 @@
 
    Provides functions for TCP peer connections and tracker communication."
   (:require [clojure.string :as str]
+            [clojure.spec.alpha :as s]
             [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.protocol.peer :as peer]
@@ -22,16 +23,40 @@
 (def ^:private default-timeouts
   "Historical socket timeout literals, now overridable via create opts:
    :connect-timeout-ms, :socket-timeout-ms, :udp-timeout-ms,
-   :http-timeout-ms."
+   :http-timeout-ms, plus the UDP retry knobs :udp-max-attempts and
+   :udp-retry-base-delay-ms (BEP 15 backoff, see backoff-delay-ms)."
   {:connect-timeout-ms 5000
    :socket-timeout-ms 10000
    :udp-timeout-ms 5000
-   :http-timeout-ms 10000})
+   :http-timeout-ms 10000
+   :udp-max-attempts 3
+   :udp-retry-base-delay-ms 15000})
 
 (defn- timeout-ms
   "Read a timeout from the adapter config, falling back to the default."
   [network timeout-key]
   (get (:config network) timeout-key (get default-timeouts timeout-key)))
+
+(defn- backoff-delay-ms
+  "BEP 15 retry delay: base-ms * 2^retry-index for the nth retry
+   (retry-index 0 is the wait before the second attempt). Exact bigint
+   math saturates at Long/MAX_VALUE, so astronomical shifts never wrap
+   negative into Thread/sleep. Kept separate from
+   tracker/calculate-exponential-backoff: that one is the fixed 1s-base
+   re-announce schedule (pending #22 policy); this one parameterizes the
+   base per the adapter config for UDP transport retries."
+  [base-ms retry-index]
+  ;; 2^63 already exceeds Long/MAX_VALUE for any base >= 1, so indices
+  ;; past 62 saturate without shifting (a long shift by 63 would wrap).
+  (if (>= retry-index 63)
+    Long/MAX_VALUE
+    (long (min (* (bigint base-ms) (bigint (bit-shift-left 1 retry-index)))
+               Long/MAX_VALUE))))
+
+(s/fdef backoff-delay-ms
+  :args (s/cat :base-ms pos-int? :retry-index nat-int?)
+  :ret (s/and integer? pos?)
+  :fn #(<= (:ret %) Long/MAX_VALUE))
 
 (defn- log!
   "Private delegate for network/log!: the network alias is shadowed by

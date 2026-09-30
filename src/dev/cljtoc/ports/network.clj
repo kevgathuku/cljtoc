@@ -48,24 +48,35 @@
 (s/def ::socket-timeout-ms ::timeout-ms)
 (s/def ::udp-timeout-ms ::timeout-ms)
 (s/def ::http-timeout-ms ::timeout-ms)
+(s/def ::udp-retry-base-delay-ms ::timeout-ms)
+;; Attempt counts never reach a Java API, so any positive int retries;
+;; only non-positive/non-int is refused.
+(s/def ::udp-max-attempts pos-int?)
 ;; fn? has no generator, so the bare predicate would make the shape
 ;; un-generatable (s/gen fails at :log-fn); generate println instead,
 ;; mirroring tracker/spec.clj's with-gen precedent.
 (s/def ::log-fn (s/with-gen fn? #(gen/return println)))
 (s/def ::adapter-config
   (s/keys :opt-un [::connect-timeout-ms ::socket-timeout-ms
-                   ::udp-timeout-ms ::http-timeout-ms ::log-fn]))
+                   ::udp-timeout-ms ::http-timeout-ms ::log-fn
+                   ::udp-retry-base-delay-ms ::udp-max-attempts]))
+
+(def retry-count-opt-keys
+  "Adapter config keys holding retry attempt counts (plain positive ints)."
+  [:udp-max-attempts])
 
 (def timeout-opt-keys
   "Adapter config keys holding socket timeouts in milliseconds."
-  [:connect-timeout-ms :socket-timeout-ms :udp-timeout-ms :http-timeout-ms])
+  [:connect-timeout-ms :socket-timeout-ms :udp-timeout-ms :http-timeout-ms
+   :udp-retry-base-delay-ms])
 
 (defn check-adapter-config
   "Validate adapter opts before any network I/O: present timeouts must be
    positive ints within the Java int range the socket APIs take (zero means
    infinite, so present-but-invalid values throw instead of falling back),
-   and a present :log-fn must be a fn. Absent keys are fine (historical
-   defaults apply at use). Returns config unchanged."
+   a present :udp-max-attempts must be a positive int, and a present
+   :log-fn must be a fn. Absent keys are fine (historical defaults apply
+   at use). Returns config unchanged."
   [config]
   (doseq [timeout-key timeout-opt-keys
           :when (contains? config timeout-key)
@@ -75,6 +86,14 @@
                            ": expected positive int ms within Java int range, got "
                            (pr-str value))
                       {:key timeout-key :value value}))))
+  (doseq [count-key retry-count-opt-keys
+          :when (contains? config count-key)
+          :let [value (get config count-key)]]
+    (when-not (pos-int? value)
+      (throw (ex-info (str "Invalid network adapter opt " count-key
+                           ": expected positive int attempt count, got "
+                           (pr-str value))
+                      {:key count-key :value value}))))
   (when (contains? config :log-fn)
     (let [log-fn-value (:log-fn config)]
       (when-not (fn? log-fn-value)
