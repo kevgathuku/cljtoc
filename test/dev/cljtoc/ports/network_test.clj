@@ -563,6 +563,8 @@
    failure, if any) :received-count (datagrams the double saw)}.
    Double opts: :drop-first-n silently swallows the first N datagrams
    (lossy mode: nothing is sent back, so the client must retry);
+   :drop-indices swallows exactly those zero-based datagram indices
+   (e.g. #{1 2 3} answers the connect, then drops three announces);
    :expect-datagrams bounds how many datagrams the responder waits for
    (2 covers one connect + one announce; a retrying client sends more).
    The rest of answer-udp-double's misbehavior modes pass through.
@@ -577,6 +579,7 @@
          errors (atom nil)
          received-count (atom 0)
          drop-first-n (:drop-first-n double-opts 0)
+         drop-indices (:drop-indices double-opts #{})
          expect-datagrams (:expect-datagrams double-opts 2)
          responder (future
                      (try
@@ -587,7 +590,8 @@
                            (let [data (Arrays/copyOf buf (.getLength pkt))
                                  from (.getSocketAddress pkt)]
                              (swap! received-count inc)
-                             (when (>= receive-index drop-first-n)
+                             (when-not (or (< receive-index drop-first-n)
+                                           (contains? drop-indices receive-index))
                                (let [reply (answer-udp-double data double-opts)]
                                  (.send socket (DatagramPacket. reply (alength reply) from)))))))
                        (catch SocketTimeoutException _quiet
@@ -704,6 +708,54 @@
       (is (= 3 received-count)
           (str "expected dropped connect, retried connect, announce; got " received-count))
       (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
+
+(deftest udp-loopback-silent-tracker-fails-after-max-attempts-test
+  (testing "a tracker that never answers fails after exactly max-attempts, never hanging"
+    (let [started-at (System/currentTimeMillis)
+          {:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; 200 ms waits plus 25/50 ms backoffs: a ~700 ms
+                              ;; run against a 10 s bound proves exhaustion
+                              ;; terminates instead of hanging.
+                              (network-impl/create {:udp-timeout-ms 200
+                                                    :udp-retry-base-delay-ms 25
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; The double swallows everything: connect never succeeds, so
+            ;; the announce step never runs and every datagram is a connect.
+            {:drop-first-n 3 :expect-datagrams 3})
+          elapsed-ms (- (System/currentTimeMillis) started-at)]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 3 received-count)
+          (str "the client sent all three attempts, neither giving up early nor resending past the cap; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"3 attempts" (:message result)) (pr-str result))
+      (is (< elapsed-ms 10000)
+          (str "exhaustion took " elapsed-ms " ms: retries must stay bounded, never hang")))))
+
+(deftest udp-loopback-silent-announce-retries-past-connect-test
+  (testing "retries apply to the announce step too, not just the connect"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create {:udp-timeout-ms 200
+                                                    :udp-retry-base-delay-ms 25
+                                                    :udp-max-attempts 3})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; Datagram 0 (connect) is answered; 1-3 (announces) vanish.
+            {:drop-indices #{1 2 3} :expect-datagrams 4})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 4 received-count)
+          (str "expected connect + three dropped announces; got " received-count))
+      (is (= :udp-announce-failed (:error result)) (pr-str result))
+      (is (re-find #"3 attempts" (:message result)) (pr-str result)))))
 
 (deftest udp-loopback-announce-build-failure-is-an-envelope-test
   (testing "a request the builder refuses comes back as an error envelope naming validation, never a throw"
