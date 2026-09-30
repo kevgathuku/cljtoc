@@ -358,7 +358,10 @@
   (testing "log-fn fdef holds over generated inputs"
     ;; announce-to-url is excluded on principle, like log!: the generator
     ;; cannot conjure a live tracker URL, so a check would die in socket
-    ;; I/O before its :ret is even reached.
+    ;; I/O before its :ret is even reached. try-udp-step shares the
+    ;; exclusion (it needs a live socket and a answering peer), and
+    ;; sleep-retry-delay! is excluded because generated delays would
+    ;; block the test thread for unbounded real time.
     (let [failures (test-utils/check-fdefs
                     '[dev.cljtoc.ports.network/log-fn
                       dev.cljtoc.ports.network-impl/backoff-delay-ms]
