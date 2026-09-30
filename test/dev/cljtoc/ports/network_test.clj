@@ -889,6 +889,51 @@
       (is (< elapsed-ms 10000)
           (str "the budget must bound the wait, took " elapsed-ms " ms")))))
 
+(deftest udp-tracker-budget-caps-waits-and-sleeps-test
+  (testing "socket waits and backoff sleeps each yield to the remaining budget"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; 2600 ms buys attempt one (500 ms wait +
+                              ;; 2000 ms backoff) plus one capped 100 ms
+                              ;; wait: the second backoff never happens.
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 2000
+                                                    :udp-max-attempts 5
+                                                    :udp-tracker-budget-ms 2600})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:drop-first-n 2 :expect-datagrams 2})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the budget stopped the five-attempt allowance at two sends; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"2 attempts.*budget" (:message result)) (pr-str result)))))
+
+(deftest udp-tracker-budget-after-one-attempt-test
+  (testing "a budget spent by the first attempt fails in the singular"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              ;; 1200 ms buys exactly one attempt (500 ms
+                              ;; wait + 700 ms of the 2000 ms backoff).
+                              (network-impl/create {:udp-timeout-ms 500
+                                                    :udp-retry-base-delay-ms 2000
+                                                    :udp-max-attempts 5
+                                                    :udp-tracker-budget-ms 1200})
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            {:drop-first-n 1 :expect-datagrams 1})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 1 received-count)
+          (str "only the first attempt went out; got " received-count))
+      (is (= :udp-connect-failed (:error result)) (pr-str result))
+      (is (re-find #"1 attempt.*budget" (:message result)) (pr-str result)))))
+
 (deftest udp-step-with-spent-budget-sends-nothing-test
   (testing "a step whose tracker budget already ran out fails without sending"
     ;; The deadline is driven directly: no timing is involved, so the

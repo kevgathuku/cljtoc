@@ -216,9 +216,7 @@
                                                            {:unanswered (:message parsed)})
                                                          {:answered parsed}))
                                                      (catch SocketTimeoutException _
-                                                       {:unanswered (str "no response in " socket-timeout-ms " ms")})
-                                                     (catch Exception exchange-error
-                                                       {:failed (.getMessage exchange-error)}))]
+                                                       {:unanswered (str "no response in " socket-timeout-ms " ms")}))]
                                       (if (:wait-more received)
                                         (recur)
                                         received)))))
@@ -233,21 +231,21 @@
                    :message (str tracker-url ": " step-label " exchange failed: " (:failed outcome))}
 
                   (< attempt max-attempts)
-                  (let [note (or (:unanswered outcome) last-unanswered)]
-                    (if (sleep-retry-delay! (min (backoff-delay-ms base-delay-ms (dec attempt))
+                  ;; outcome is :unanswered here (answered and failed return
+                  ;; above), so its note carries forward directly.
+                  (if (sleep-retry-delay! (min (backoff-delay-ms base-delay-ms (dec attempt))
                                              ;; A negative sleep throws, so floor
                                              ;; at zero: the loop-top check then
                                              ;; fails the step on budget.
-                                                 (max 0 (- deadline-ms (System/currentTimeMillis)))))
-                      (recur (inc attempt) note)
-                      {:error fail-keyword
-                       :message (str tracker-url ": " step-label " interrupted during retry backoff")}))
+                                               (max 0 (- deadline-ms (System/currentTimeMillis)))))
+                    (recur (inc attempt) (:unanswered outcome))
+                    {:error fail-keyword
+                     :message (str tracker-url ": " step-label " interrupted during retry backoff")})
 
                   :else
                   {:error fail-keyword
                    :message (str tracker-url ": " step-label " failed after "
-                                 attempt " attempts: "
-                                 (or (:unanswered outcome) last-unanswered))})))))))))
+                                 attempt " attempts: " (:unanswered outcome))})))))))))
 
 (defn- try-udp-tracker
   "Try announcing to a UDP tracker. Returns {:ok peers} or {:error ...}.
