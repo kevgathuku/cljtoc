@@ -107,16 +107,29 @@
           {:ok (.toByteArray baos)})
         {:error (str "HTTP " response-code)}))))
 
-(defn- udp-exchange
-  "Send a UDP datagram and wait for a response. Returns byte array or throws."
-  [^DatagramSocket socket ^bytes send-data ^InetSocketAddress addr timeout-ms]
-  (let [send-pkt (DatagramPacket. send-data (alength send-data) addr)]
-    (.send socket send-pkt)
-    (let [recv-buf (byte-array 65536)
-          recv-pkt (DatagramPacket. recv-buf (alength recv-buf))]
-      (.setSoTimeout socket timeout-ms)
-      (.receive socket recv-pkt)
-      (java.util.Arrays/copyOf recv-buf (.getLength recv-pkt)))))
+(defn- udp-send!
+  "Send one UDP datagram. Returns nil or throws. Split from the receive
+   half so an attempt sends once yet keeps receiving past strays."
+  [^DatagramSocket socket ^bytes send-data ^InetSocketAddress addr]
+  (.send socket (DatagramPacket. send-data (alength send-data) addr))
+  nil)
+
+(defn- udp-receive
+  "Wait up to wait-ms for one UDP datagram. Returns the bytes or throws,
+   including SocketTimeoutException when nothing arrives in time."
+  [^DatagramSocket socket wait-ms]
+  (.setSoTimeout socket (int wait-ms))
+  (let [recv-buf (byte-array 65536)
+        recv-pkt (DatagramPacket. recv-buf (alength recv-buf))]
+    (.receive socket recv-pkt)
+    (java.util.Arrays/copyOf recv-buf (.getLength recv-pkt))))
+
+(def ^:private stray-response-errors
+  "Parse errors that mark a live-but-foreign datagram: a late duplicate
+   or a stranger's reply. Anything else (short reads, bad action codes,
+   broken peers) fails the attempt at once -- a tracker answering
+   garbage will not improve within the wait."
+  #{:txn-mismatch :action-mismatch})
 
 (defn- tracker-peer->address
   "Render a tracker {:ip :port} peer map as a canonical address string.
@@ -140,11 +153,12 @@
   "Run one UDP tracker step (connect or announce) with BEP 15 retries.
    build-request maps a fresh transaction-id to {:ok bytes} | {:error ...};
    a refused build fails fast, since retrying a spec refusal never helps.
-   parse-response validates [bytes expectation]; a mismatch is one more
-   unanswered attempt, never a success (#19 pairs: a stray duplicate must
-   not connect the client to a stranger's connection id). Fresh
-   transaction-id per attempt, first success wins; anything but a timeout
-   or a mismatch fails the step at once. Returns {:ok parsed} or
+   Each attempt sends once, then keeps receiving until its wait runs out:
+   a stray (action/transaction mismatch, e.g. a late duplicate of the
+   previous attempt) is discarded and the attempt keeps waiting for the
+   live reply; anything else unparseable fails the attempt at once.
+   Fresh transaction-id per attempt, first success wins; anything but a
+   timeout or a mismatch fails the step at once. Returns {:ok parsed} or
    {:error fail-keyword :message ...} naming the step and the attempts."
   [network socket addr fail-keyword step-label action build-request parse-response tracker-url]
   (let [socket-timeout-ms (timeout-ms network :udp-timeout-ms)
@@ -156,17 +170,39 @@
         (if (:error built)
           {:error fail-keyword
            :message (str tracker-url ": " step-label " request refused: " (:message built))}
-          (let [outcome (try
-                          (let [response (udp-exchange socket (:ok built) addr socket-timeout-ms)
-                                parsed (parse-response response {:action action
-                                                                 :transaction-id txn-id})]
-                            (if (:error parsed)
-                              {:unanswered (:message parsed)}
-                              {:answered parsed}))
-                          (catch SocketTimeoutException _
-                            {:unanswered (str "no response in " socket-timeout-ms " ms")})
-                          (catch Exception exchange-error
-                            {:failed (.getMessage exchange-error)}))]
+          (let [attempt-start (System/currentTimeMillis)
+                outcome (try
+                          (udp-send! socket (:ok built) addr)
+                          (loop []
+                            ;; The clock is read on every turn: each receive
+                            ;; waits only what the attempt still owns, so a
+                            ;; stray storm cannot stretch one attempt past
+                            ;; its wait, and the loop always terminates.
+                            ;; The recur stays outside the inner try (recur
+                            ;; cannot cross it): a stray returns a marker
+                            ;; the if below turns back into a receive.
+                            (let [remaining (- (+ attempt-start socket-timeout-ms)
+                                               (System/currentTimeMillis))]
+                              (if (<= remaining 0)
+                                {:unanswered (str "no matching response in " socket-timeout-ms " ms")}
+                                (let [received (try
+                                                 (let [response (udp-receive socket (min socket-timeout-ms remaining))
+                                                       parsed (parse-response response {:action action
+                                                                                        :transaction-id txn-id})]
+                                                   (if (:error parsed)
+                                                     (if (contains? stray-response-errors (:error parsed))
+                                                       {:wait-more true}
+                                                       {:unanswered (:message parsed)})
+                                                     {:answered parsed}))
+                                                 (catch SocketTimeoutException _
+                                                   {:unanswered (str "no response in " socket-timeout-ms " ms")})
+                                                 (catch Exception exchange-error
+                                                   {:failed (.getMessage exchange-error)}))]
+                                  (if (:wait-more received)
+                                    (recur)
+                                    received)))))
+                          (catch Exception send-error
+                            {:failed (.getMessage send-error)}))]
             (cond
               (:answered outcome)
               (:answered outcome)

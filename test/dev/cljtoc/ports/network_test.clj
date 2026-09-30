@@ -569,6 +569,10 @@
    (lossy mode: nothing is sent back, so the client must retry);
    :drop-indices swallows exactly those zero-based datagram indices
    (e.g. #{1 2 3} answers the connect, then drops three announces);
+   :stray-connect? answers each connect twice: first a stray stamped
+   with the next transaction id (a late duplicate by construction),
+   then the genuine reply, so the client must discard and keep
+   receiving within the same attempt instead of burning a retry;
    :expect-datagrams bounds how many datagrams the responder waits for
    (2 covers one connect + one announce; a retrying client sends more).
    The rest of answer-udp-double's misbehavior modes pass through.
@@ -597,6 +601,17 @@
                              (when-not (or (< receive-index drop-first-n)
                                            (contains? drop-indices receive-index))
                                (let [reply (answer-udp-double data double-opts)]
+                                 ;; A stray precedes the genuine reply: its
+                                 ;; id is the live one plus one, so it can
+                                 ;; never accidentally match.
+                                 (when (and (:stray-connect? double-opts)
+                                            (= 16 (alength data)))
+                                   (let [live-txn (.getInt (ByteBuffer/wrap data) 12)
+                                         stray (answer-udp-double
+                                                data
+                                                (assoc double-opts :connect-txn
+                                                       (unchecked-inc (int live-txn))))]
+                                     (.send socket (DatagramPacket. stray (alength stray) from))))
                                  (.send socket (DatagramPacket. reply (alength reply) from)))))))
                        (catch SocketTimeoutException _quiet
                         ;; Production stopped sending: the expected end on
@@ -616,8 +631,10 @@
          (.close socket))))))
 
 (defn- fast-retry-opts
-  "Test retry knobs: production socket waits, millisecond backoffs, two
-   attempts. Suite time stays flat while still exercising one real retry."
+  "Test retry knobs: caller-chosen socket waits, millisecond backoffs,
+   two attempts. Suite time stays flat while still exercising one real
+   retry. Mismatch tests pass short waits because an attempt with no
+   genuine reply now burns its whole wait instead of failing fast."
   [socket-timeout-ms]
   {:udp-timeout-ms socket-timeout-ms
    :udp-retry-base-delay-ms 10
@@ -650,14 +667,14 @@
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create (fast-retry-opts 15000))
+                              (network-impl/create (fast-retry-opts 300))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
             {:connect-txn 424242 :expect-datagrams 2})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
       (is (= 2 received-count)
-          (str "the mismatch consumed an attempt and retried once; got " received-count))
+          (str "with no genuine reply the wait expires unanswered and the step retries; got " received-count))
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
@@ -667,7 +684,7 @@
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create (fast-retry-opts 15000))
+                              (network-impl/create (fast-retry-opts 300))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
@@ -684,14 +701,14 @@
           (with-loopback-udp-tracker
             (fn [url]
               (deref (future (network/announce-to-url
-                              (network-impl/create (fast-retry-opts 15000))
+                              (network-impl/create (fast-retry-opts 300))
                               url
                               (valid-announce-request)))
                      60000 :timed-out))
             {:connect-action 1 :expect-datagrams 2})]
       (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
       (is (= 2 received-count)
-          (str "the mismatch consumed an attempt and retried once; got " received-count))
+          (str "with no genuine reply the wait expires unanswered and the step retries; got " received-count))
       (is (= :udp-connect-failed (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
 
@@ -806,6 +823,25 @@
       (is (nil? (:ok result)) (pr-str result))
       (is (< elapsed-ms 5000)
           (str "a defaulted port must fail bounded, took " elapsed-ms " ms")))))
+
+(deftest udp-loopback-stray-connect-reply-waits-for-genuine-test
+  (testing "a stray connect reply is discarded and the same attempt reads the genuine one"
+    (let [{:keys [result responder-error received-count]}
+          (with-loopback-udp-tracker
+            (fn [url]
+              (deref (future (network/announce-to-url
+                              (network-impl/create (fast-retry-opts 2000))
+                              url
+                              (valid-announce-request)))
+                     60000 :timed-out))
+            ;; The connect draws two replies (stray first) but goes out
+            ;; exactly once; with the announce that follows, the double
+            ;; sees two datagrams. Burning a retry would send three.
+            {:stray-connect? true :expect-datagrams 2})]
+      (is (nil? responder-error) (str "double raised: " (pr-str responder-error)))
+      (is (= 2 received-count)
+          (str "the stray burned a retry and re-sent the connect; got " received-count))
+      (is (= {:ok #{"127.0.0.1:6881"}} result) (pr-str result)))))
 
 (deftest udp-loopback-silent-tracker-fails-after-max-attempts-test
   (testing "a tracker that never answers fails after exactly max-attempts, never hanging"
