@@ -25,9 +25,15 @@ Corrupt pieces requeue automatically onto a different peer. Dead peers trigger r
 
 ## Concurrency and supervision
 
+The supervision layer lives in `dev.cljtoc.supervision.*` and sits above the coordination layer in the four-layer architecture. See [ADR-0011](../adr/0011-supervision-layer.md) for the design rationale.
+
 * **core.async channels** carry peer events with backpressure from buffer sizes — no thread-per-peer overhead, no callback tangle.
-* **One supervisor per peer worker** (`:one-for-one` restart). A worker that hits a corrupt peer or a dropped socket crashes alone; its siblings keep downloading.
-* **No retries inside workers** — recovery belongs to supervisors, per the crash-only rule.
+* **Two supervisor namespaces.** A peer supervisor (one-for-one) owns the peer workers and their per-connection restart budget. A download supervisor (rest-for-one) owns the coordinator plus the re-announcer (`#22`) and watchdog (`#23`) children. Both live inside one CLI invocation; cross-invocation recovery still goes through `torrent.resume` and the persistence seam.
+* **No retries inside workers** — recovery belongs to supervisors, per the crash-only rule. A worker that hits a corrupt peer or a dropped socket exits cleanly via an `INetworkPort` envelope `:error`; the peer supervisor observes the done-channel close and decides restart-or-drop against its per-connection budget.
+* **Per-connection restart budget at the peer layer.** Each handshake attempt is its own budget window; a flapping peer that drops `N` times in `T` seconds is dropped from the address set, but a fresh connection attempt at the same address starts with a fresh budget. One supervisor-wide prune timer (every `T/4` seconds) sweeps old entries from the in-memory map.
+* **Per-supervisor intensity budget at the download layer.** The whole coordinator subtree is bounded by a sliding-window intensity; the download supervisor is charged on coordinator crashes, swarm-exhaustion transitions, and re-announce failures — *not* on every peer restart (those stay at the peer layer).
+* **Crash detection is the port-envelope boundary.** Clean exits are `INetworkPort` envelope `:error` returns; crashes are spec failures, NPEs, or malformed-message exceptions. Both surface as done-channel closes; the supervisor logs them differently but budgets them identically.
+* **Clean shutdown on SIGINT.** A shutdown hook signals the peer supervisor to stop: peer connections close, in-progress state persists through `IDiskPort`, then the JVM exits cleanly. Without this, JVM-default SIGINT kills workers mid-piece-write and loses everything since the last save. Periodic persistence remains out of scope — file a follow-up issue for save-during-run.
 
 ## Persistence
 

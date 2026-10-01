@@ -23,7 +23,7 @@ Domain Layer       → pure torrent logic (piece selection, state transitions, v
 | Coordination | `dev.cljtoc.coordination.*` | core.async flows connecting domain decisions to effects. No business rules. |
 | Orchestration | `dev.cljtoc.orchestration.*` | Download lifecycle: start, pause, resume, stop, progress. |
 | Ports | `dev.cljtoc.ports.*` | Effect protocols plus real implementations (network, disk, time). |
-| Supervision | per-peer workers + supervisors | Workers crash on error; supervisors restart them. |
+| Supervision | `dev.cljtoc.supervision.peer-supervisor`, `dev.cljtoc.supervision.download-supervisor` | Workers crash on envelope-bounded errors and clean-exit on port `:error` returns; supervisors own restart decisions and budgets. Peer supervisor is one-for-one; download supervisor is rest-for-one. See [ADR-0011](../adr/0011-supervision-layer.md). |
 
 ## Effect ports
 
@@ -32,7 +32,7 @@ Every side effect sits behind an injectable protocol, so you can test the whole 
 * `INetworkPort` — peer connections, message send/receive.
 * `IDiskPort` — piece read/write, state persistence.
 * `ITimePort` — timestamps, timeouts, intervals.
-* Randomness — peer-selection jitter.
+* `IRandomnessPort` — peer-selection jitter, protocol ids, backoff jitter.
 
 In tests you inject in-memory doubles; in production you inject the real implementations.
 
@@ -43,7 +43,7 @@ Six rules constrain every change. The authoritative wording lives in `AGENTS.md`
 1. **Pure domain core** — business logic is deterministic functions with no side effects.
 2. **Explicit effect isolation** — effects happen only behind ports.
 3. **Crash-only design** — restart is the recovery path; state rebuilds from durable storage.
-4. **Supervision hierarchies** — every concurrent process has an explicit supervisor with a restart policy.
+4. **Supervision hierarchies** — every concurrent process has an explicit supervisor with a defined restart policy (one-for-one at the peer layer, rest-for-one at the download layer) and a restart budget that bounds churn. See [ADR-0011](../adr/0011-supervision-layer.md).
 5. **Zero global state** — state travels in function arguments or lives in supervised components.
 6. **Contract-first protocols** — interfaces are protocols first, so production and test implementations stay interchangeable.
 
@@ -54,7 +54,7 @@ Six rules constrain every change. The authoritative wording lives in `AGENTS.md`
 * **Block** — 16 KiB network transfer unit inside a piece (index, offset, length).
 * **Peer** — remote client: peer-id, address, bitfield, choke/interest flags, transfer statistics.
 * **Tracker** — announce endpoint (`:http` or `:udp`) with interval and last peer list.
-* **Supervisor** — owns worker lifecycles with a restart strategy and failure budget.
+* **Supervisor** — owns worker lifecycles with a restart strategy (one-for-one or rest-for-one) and a restart budget that bounds churn in a sliding window.
 
 ## Feature docs
 

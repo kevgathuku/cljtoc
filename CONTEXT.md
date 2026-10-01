@@ -42,7 +42,30 @@ A peer's network location: a host plus a port, written canonically as `host:port
 _Avoid_: peer string, endpoint, peer ID
 
 **Swarm exhaustion**:
-No live peer connections, no dials still in flight, and pieces still incomplete — the counter-based condition under which the coordinator fails a download for lack of peers. A closed event channel (every peer worker exited) fails the download the same way. Connected-but-choking peers and tracker re-announce are deliberately outside this definition.
+No live peer connections, no dials still in flight, and pieces still incomplete — the counter-based condition under which the coordinator fails a download for lack of peers. A closed event channel (every peer worker exited) fails the download the same way. Connected-but-choking peers and tracker re-announce are deliberately outside this definition. Supervisor exhaustion (per-supervisor restart intensity exceeded) is also a download-failure path.
+
+## Lifecycle and supervision
+
+**Worker**:
+A concurrent unit whose lifecycle is owned by a supervisor. Workers exit cleanly on envelope-bounded errors (an `INetworkPort` returning `{:error …}`) and crash on anything else (spec failures, NPEs, malformed-message exceptions). The supervisor observes both through the worker's done-channel close.
+_Avoid_: thread, goroutine, task, daemon
+
+**Supervisor**:
+The component responsible for a worker's lifecycle: detecting exits or crashes, deciding restart or drop, and enforcing the restart budget that bounds in-flight churn. Sits above the coordination layer in the four-layer architecture. The current build distinguishes a peer supervisor (one-for-one, owns peer workers and the per-connection budget) and a download supervisor (rest-for-one, owns the coordinator and its sibling children).
+_Avoid_: parent thread, retry loop, watchdog (lives inside the supervisor)
+
+**Restart budget**:
+The sliding-window bound on how often a supervisor may restart a child. Per-connection at the peer supervisor (each handshake attempt has its own budget keyed by peer address and pruned by a supervisor-wide timer); per-supervisor intensity at the download supervisor (the whole coordinator subtree, charged only on coordinator-level failures, not on every peer restart).
+_Avoid_: retry counter, max retries, attempt limit
+
+**Clean shutdown**:
+A SIGINT-triggered orderly stop: peer connections close, in-progress state persists through `IDiskPort`, then the JVM exits. Without it, JVM-default SIGINT kills workers mid-piece-write and loses everything since the last save.
+
+**Re-announcer**:
+A child of the download supervisor that issues tracker announces on swarm exhaustion (issue #22). A re-announce failure triggers rest-for-one restart of the coordinator subtree.
+
+**Watchdog**:
+A child of the download supervisor that detects "connected but choking forever" (issue #23). Firing the watchdog triggers rest-for-one restart of the coordinator subtree.
 
 ## Peer exchange
 
