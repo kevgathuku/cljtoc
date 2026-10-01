@@ -12,6 +12,14 @@
    results a caller branches on)."
   (:require [clojure.spec.alpha :as s]))
 
+(s/fdef random-bytes
+  :args (s/cat :this any? :n pos-int?)
+  :ret bytes?)
+
+;; Excluded from stest/check on principle: an IRandomnessPort cannot be
+;; generated (the spec registry would never produce a record satisfying
+;; the protocol), so the check would die before reaching :ret.
+
 (defprotocol IRandomnessPort
   "Abstraction for randomness effects (peer-id generation, jitter input).
 
