@@ -13,9 +13,31 @@
    Zero port requires by design: pure domain + protocol only, so this
    namespace stays testable without test doubles."
   (:require [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
+            [clojure.test.check.generators :as gen2]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
+
+;; Field specs for ::active-peer-info. Both :peer-state and :assigned-piece
+;; need their own generators (peer-state because the inner `BitSet` field
+;; has no default gen; assigned-piece because `nat-int?` has no default
+;; gen). Defined here as alias-relative so `s/keys` can resolve them at
+;; load time. The `with-gen` runs only during generation; conformance is
+;; unchanged.
+(s/def ::peer-state
+  ;; Alias-relative re-def so the with-gen below survives the alias.
+  ;; `(s/def ::alias :other/ns/spec)` strips the source spec's gen (see
+  ;; mempalace lesson), so we copy the body here and add a fresh
+  ;; with-gen. The delegation is purely cosmetic — every (s/valid? ::peer-state …)
+  ;; call still runs the key-check on the underlying record.
+  (s/with-gen :dev.cljtoc.protocol.peer-state/peer-state
+    #(gen/fmap
+       (fn [total-pieces] (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+       (gen/choose 1 1024))))
+(s/def ::assigned-piece
+  (s/with-gen (s/nilable nat-int?)
+    #(gen/one-of [(gen/return nil) (gen/return 0)])))
 
 ;; ---------------------------------------------------------------------------
 ;; State and event shapes (the planning interface)
@@ -30,7 +52,35 @@
 ;; identically) and unreachable from initial-state,
 ;; which always builds full maps — but the specs must accept what the
 ;; implementation deterministically produces, not just the happy path.
-(s/def ::active-peers (s/nilable map?))
+(s/def ::active-peer-info
+  ;; `:active-peer-info` holds the per-peer state. Walk-into-path safety
+  ;; needs at minimum `:peer-state` (consumed by `peer-state/apply-message`
+  ;; whose `:pre` asserts spec compliance) and `:assigned-piece` (consumed
+  ;; by `requeue-assignment` and friends). `:peer-data` is anything — it
+  ;; is whatever the network port hands back, with no spec contract.
+  ;;
+  ;; `:opt-un` (not `:req-un`) because `requeue-assignment` calls
+  ;; `(assoc-in [:active-peers address :assigned-piece] nil)` on state
+  ;; that may not have an entry at `address` yet — `assoc-in` creates a
+  ;; partial map `{:assigned-piece nil}` at that path. Requiring `:peer-state`
+  ;; would make `requeue-assignment`'s `:ret` spec reject its own valid
+  ;; output. The gen still produces full maps via the custom `with-gen`
+  ;; below (so the spec's conformance is permissive but its generator is
+  ;; dense), which is what `on-message` needs for its `:pre` assert to
+  ;; hold. Bypassing `s/keys`'s generator is required because both
+  ;; `:req-un` and `:opt-un` gen paths in spec.alpha 0.5.238 and 0.6.249
+  ;; have a consumption bug: the second `gen/sample` call fires
+  ;; `gen/hash-map`'s `generator?` assert on a nil gen.
+  (s/with-gen
+    (s/keys :opt-un [::peer-state ::assigned-piece])
+    #(gen2/let [peer-state (gen/fmap (fn [total-pieces]
+                                      (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+                                    (gen/choose 1 1024))
+               assigned-piece (gen/one-of [(gen/return nil) (gen/return 0)])]
+       {:peer-state peer-state :assigned-piece assigned-piece})))
+
+(s/def ::active-peers
+  (s/nilable (s/map-of any? ::active-peer-info)))
 (s/def ::blocks-received (s/nilable map?))
 (s/def ::expected-blocks (s/nilable map?))
 (s/def ::pending-dials (s/coll-of any? :kind set?))
@@ -55,7 +105,23 @@
 (s/def ::address any?)
 
 (s/def ::addressed-event
-  (s/keys :req-un [::address]))
+  ;; The event carries `:peer-state` (a real `::peer-state` record built
+  ;; by the connect step) and `:peer-data` (whatever the network port
+  ;; handed back). `on-connected` writes both into `[:active-peers address]`
+  ;; — tightening here keeps the return spec honest. The `:peer-data` key
+  ;; is omitted because it has no spec contract (any value the network
+  ;; port gives is fine); only the shape `on-connected` actually uses
+  ;; is required. Custom `with-gen` for the same reason as
+  ;; `::active-peer-info`: bypass the `s/keys` gen-consumption bug by
+  ;; generating the required fields explicitly. The body stays `s/keys`
+  ;; so conformance semantics are unchanged.
+  (s/with-gen
+    (s/keys :req-un [::address ::peer-state])
+    #(gen2/let [address (gen/return "127.0.0.1:6881")
+               peer-state (gen/fmap (fn [total-pieces]
+                                      (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+                                    (gen/choose 1 1024))]
+       {:address address :peer-state peer-state})))
 
 (s/def ::effects (s/coll-of map? :kind vector?))
 (s/def ::no-effects (s/and ::effects empty?))
