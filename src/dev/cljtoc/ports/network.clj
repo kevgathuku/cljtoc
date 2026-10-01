@@ -1,6 +1,6 @@
 (ns dev.cljtoc.ports.network
   "Network port protocol for peer communication effects.
-  
+
    This protocol defines the contract for all network I/O operations
    needed by the download orchestration layer. Implementations can be
    swapped for testing (test doubles) or different network backends.
@@ -77,9 +77,10 @@
   "Validate adapter opts before any network I/O: present timeouts must be
    positive ints within the Java int range the socket APIs take (zero means
    infinite, so present-but-invalid values throw instead of falling back),
-   a present :udp-max-attempts must be a positive int, and a present
-   :log-fn must be a fn. Absent keys are fine (historical defaults apply
-   at use). Returns config unchanged."
+   a present :udp-max-attempts must be a positive int, a present :log-fn
+   must be a fn, and a present :randomness-port must satisfy IRandomnessPort.
+   Absent keys are fine (historical defaults apply at use). Returns config
+   unchanged."
   [config]
   (doseq [timeout-key timeout-opt-keys
           :when (contains? config timeout-key)
