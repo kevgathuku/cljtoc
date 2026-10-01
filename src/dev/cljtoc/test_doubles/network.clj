@@ -70,35 +70,36 @@
       (reset! capture {:torrent torrent-metadata :progress progress}))
     (if-let [announce-error (:announce-error config)]
       announce-error
-      ;; One request built upstream and forwarded per URL, mirroring the
-      ;; real port -- never reconstructed (or nil) at each call.
-      (let [request {:info-hash (:info-hash torrent-metadata)
-                     :peer-id (network/peer-id this)
-                     :port 6881
-                     :uploaded 0
-                     :downloaded (:downloaded progress)
-                     :left (:left progress)
-                     :event :started
-                     :compact true
-                     :num-want 200}
-            tracker-urls (tracker/pick-tracker-order torrent-metadata)]
+      ;; Guard order mirrors the real port: resolve tracker-urls and
+      ;; return :no-tracker before building the request, so the mock
+      ;; never consumes randomness (via peer-id) when no tracker exists.
+      (let [tracker-urls (tracker/pick-tracker-order torrent-metadata)]
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
-          ;; Success tracks separately from the peer count, mirroring
-          ;; the real port: empty answers are an empty swarm, not failure.
-          (loop [urls tracker-urls
-                 all-peers #{}
-                 succeeded? false
-                 last-error nil]
-            (if (empty? urls)
-              (if succeeded?
-                {:ok all-peers}
-                (or last-error
-                    {:error :all-trackers-failed :message "All trackers failed"}))
-              (let [result (network/announce-to-url this (first urls) request)]
-                (if (:ok result)
-                  (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) true last-error)
-                  (recur (rest urls) all-peers succeeded? result))))))))))
+          (let [request {:info-hash (:info-hash torrent-metadata)
+                         :peer-id (network/peer-id this)
+                         :port 6881
+                         :uploaded 0
+                         :downloaded (:downloaded progress)
+                         :left (:left progress)
+                         :event :started
+                         :compact true
+                         :num-want 200}]
+            ;; Success tracks separately from the peer count, mirroring
+            ;; the real port: empty answers are an empty swarm, not failure.
+            (loop [urls tracker-urls
+                   all-peers #{}
+                   succeeded? false
+                   last-error nil]
+              (if (empty? urls)
+                (if succeeded?
+                  {:ok all-peers}
+                  (or last-error
+                      {:error :all-trackers-failed :message "All trackers failed"}))
+                (let [result (network/announce-to-url this (first urls) request)]
+                  (if (:ok result)
+                    (recur (rest urls) (tracker/combine-peers all-peers (:ok result)) true last-error)
+                    (recur (rest urls) all-peers succeeded? result)))))))))))
 
 (defn create
   "Create a mock network port for testing.
