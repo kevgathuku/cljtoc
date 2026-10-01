@@ -44,7 +44,8 @@
      (let [a (apply-message state (peer/->Have 3))
            b (apply-message a    (peer/->Have 9))]
        (peer-has-piece? a 9))  ;; => false  (a is independent of b)"
-  (:require [clojure.spec.alpha :as s])
+  (:require [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen])
   (:import [java.util BitSet]))
 
 ;; Bitfields arrive as byte arrays here; fail the compile on reflective calls
@@ -68,10 +69,22 @@
 (s/def ::total-pieces pos-int?)
 
 ;; PeerState spec
+;; Generation: `:bitfield` is a `BitSet` which has no `s/gen`. Without a
+;; generator, `s/keys` cannot construct an instance, so any fdef that
+;; takes `::peer-state` dies in the generative check (stest/check never
+;; reaches the function body). We pin a constructor-backed gen here so
+;; the spec stays the contract for real callers while still being
+;; generatable for tests. Conformance is unchanged — `(s/conform
+;; ::peer-state …)` still runs the key-check below.
+(declare initial-peer-state)
+
 (s/def ::peer-state
-  (s/keys :req-un [::am-choking ::am-interested
-                   ::peer-choking ::peer-interested
-                   ::bitfield ::total-pieces]))
+  (s/with-gen (s/keys :req-un [::am-choking ::am-interested
+                               ::peer-choking ::peer-interested
+                               ::bitfield ::total-pieces])
+    #(gen/fmap
+      (fn [total-pieces] (initial-peer-state total-pieces))
+      (gen/choose 1 1024))))
 
 ;; Piece index
 (s/def ::piece-index nat-int?)

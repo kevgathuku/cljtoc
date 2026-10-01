@@ -3,7 +3,8 @@
   (:require [clojure.java.io :as io]
             [clojure.spec.test.alpha :as stest]
             [clojure.core.async.impl.protocols :as chan]
-            [dev.cljtoc.domain.torrent :as torrent]))
+            [dev.cljtoc.domain.torrent :as torrent]
+            [dev.cljtoc.test-doubles.randomness :as mock-randomness]))
 
 (defn temp-dir
   "A fresh directory under the system temp dir, returned as a path string.
@@ -32,6 +33,16 @@
   "Convert string to UTF-8 byte array."
   [^String s]
   (.getBytes s "UTF-8"))
+
+(defn scripted-randomness
+  "Build a `MockRandomness` whose next draw is `bytes-seqs`. Each draw
+   pulls one entry off the queue and returns it as a byte array of the
+   requested length; short scripts throw (see `MockRandomness`).
+
+   Shared across every randomness-port test instead of four private
+   defns in each namespace (ponytail: same logic, fewer lines)."
+  [bytes-seqs]
+  (mock-randomness/->MockRandomness (atom bytes-seqs)))
 
 (defn check-fdefs
   "Run stest/check over syms, each naming a var with an fdef.

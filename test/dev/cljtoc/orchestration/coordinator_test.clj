@@ -1,6 +1,7 @@
 (ns dev.cljtoc.orchestration.coordinator-test
   "Unit tests for the pure coordinator planning kernel (issue #42)."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.spec.alpha :as s]
+            [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
@@ -89,3 +90,15 @@
   (testing "messages from unknown peers plan no effects"
     (let [state (coordinator/initial-state {:piece-state (one-piece-state)} [])]
       (is (= [state []] (coordinator/on-message state {:address "ghost" :message {}} {}))))))
+
+(deftest no-test-check-require-test
+  (testing "coordinator never requires test.check (it is :dev-only and absent from the uberjar)"
+    (is (not (re-find #"test\.check" coordinator-source))
+        "coordinator.clj must not require clojure.test.check.generators")))
+
+(deftest disconnect-accepts-address-only-event-test
+  (testing "on-disconnected accepts events with only :address (refused dials carry no :peer-state)"
+    (is (s/valid?
+         :dev.cljtoc.orchestration.coordinator/addressed-event
+         {:address "1.2.3.4:6881"})
+        "address-only events must conform to ::addressed-event")))

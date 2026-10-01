@@ -1,0 +1,33 @@
+(ns dev.cljtoc.ports.randomness
+  "Randomness port protocol.
+
+   Per ADR-0011: the randomness port is primitive — only `random-bytes`.
+   Jitter math, exponential backoff, and `schedule` live in the pure
+   `dev.cljtoc.domain.backoff` module; the supervisor slices (#28's
+   peer-restart, #22's re-announce, #23's watchdog) consume that pure
+   module, passing the port's output to the jitter function.
+
+   Returns a byte array directly, not an envelope: byte arrays are not
+   untrusted input at this seam (per ADR-0007, envelopes are reserved for
+   results a caller branches on)."
+  (:require [clojure.spec.alpha :as s]))
+
+(s/fdef random-bytes
+  :args (s/cat :this any? :n pos-int?)
+  :ret bytes?)
+
+;; Excluded from stest/check on principle: an IRandomnessPort cannot be
+;; generated (the spec registry would never produce a record satisfying
+;; the protocol), so the check would die before reaching :ret.
+
+(defprotocol IRandomnessPort
+  "Abstraction for randomness effects (peer-id generation, jitter input).
+
+   Per ADR-0011, the surface is deliberately narrow: only `random-bytes`.
+   Backoff math lives in `dev.cljtoc.domain.backoff` and is shared across
+   every jitter consumer (peer-restart, re-announce, watchdog), so this
+   port does not need to know about time or scheduling."
+
+  (random-bytes [this n]
+    "Return a fresh byte array of exactly `n` bytes, filled from a
+    cryptographically strong random source."))

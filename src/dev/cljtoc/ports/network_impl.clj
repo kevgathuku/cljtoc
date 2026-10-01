@@ -6,19 +6,18 @@
             [clojure.spec.alpha :as s]
             [dev.cljtoc.domain.peer-address :as peer-address]
             [dev.cljtoc.ports.network :as network]
+            [dev.cljtoc.ports.randomness :as randomness]
+            [dev.cljtoc.ports.randomness-impl :as randomness-impl]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.tracker :as tracker]
             [dev.cljtoc.utils :as utils])
   (:import [java.net DatagramPacket DatagramSocket InetSocketAddress Socket
             HttpURLConnection SocketTimeoutException URI URL]
-           [java.io ByteArrayOutputStream InputStream]
-           [java.security SecureRandom]))
+           [java.io ByteArrayOutputStream InputStream]))
 
 ;; Byte arrays flow through socket reads and tracker datagrams here; fail the
 ;; compile on reflective calls so boxing never hides in the hot path.
 (set! *warn-on-reflection* true)
-
-(def ^:private ^java.security.SecureRandom random (SecureRandom.))
 
 (def ^:private default-timeouts
   "Historical socket timeout literals, now overridable via create opts:
@@ -66,12 +65,9 @@
   [port message]
   (network/log! port message))
 
-(defn- generate-peer-id
-  "Generate a random 20-byte peer ID for tracker announcements."
-  []
-  (let [bytes (byte-array 20)]
-    (.nextBytes random bytes)
-    bytes))
+;; The protocol method `peer-id` lives directly on the record below; the
+;; private `generate-peer-id` helper used in slice 3 was inlined now that
+;; the protocol exposes a peer-id method (PR #74 review).
 
 (defn- read-fully
   "Read exactly n bytes from an InputStream. Returns byte array or throws on EOF."
@@ -342,7 +338,7 @@
     (try-http-tracker network tracker-url request)))
 
 (defrecord NetworkPort
-           [config peer-connections]
+           [config peer-connections randomness-port]
 
   network/INetworkPort
   (connect-peer [network address]
@@ -421,6 +417,12 @@
       nil
       (catch Exception _ nil)))
 
+  (peer-id [network]
+    "Return a fresh 20-byte peer-id from the injected randomness port.
+     Implementations of INetworkPort can satisfy this via any source of
+     randomness; the real port delegates to its :randomness-port."
+    (randomness/random-bytes (:randomness-port network) 20))
+
   network/ITrackerPort
   (announce-to-url [network tracker-url request]
     "Announce to ONE tracker URL. The per-URL effect half of the fan-out
@@ -440,7 +442,7 @@
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
           (let [request {:info-hash (:info-hash torrent-metadata)
-                         :peer-id (generate-peer-id)
+                         :peer-id (network/peer-id network)
                          :port 6881
                          :uploaded 0
                          :downloaded (:downloaded progress)
@@ -478,8 +480,28 @@
 
 (defn create
   "Create a NetworkPort instance. Timeout opts are validated up front;
-   present-but-invalid values throw instead of reaching the socket APIs."
+   present-but-invalid values throw instead of reaching the socket APIs.
+
+   `:randomness-port` (an `IRandomnessPort`) is optional; absent means a
+   fresh `SecureRandomRandomness` is constructed and used. Per ADR-0011:
+   peer-id generation must go through an `IRandomnessPort`; the default
+   keeps production call sites untouched while tests inject their own
+   double via `:randomness-port`.
+
+   The randomness port is stored on the record (not in `:config`) so the
+   user-provided config stays exactly equal to the user's input, which
+   the existing 'opts pass through' assertions depend on."
   ([]
    (create {}))
   ([opts]
-   (->NetworkPort (network/check-adapter-config opts) (atom {}))))
+   (let [explicit-port (:randomness-port opts)
+         port (if (contains? opts :randomness-port)
+                (do (when-not (satisfies? randomness/IRandomnessPort explicit-port)
+                      (throw (ex-info (str "Invalid :randomness-port"
+                                           ": expected IRandomnessPort, got "
+                                           (pr-str explicit-port))
+                                      {:key :randomness-port :value explicit-port})))
+                    explicit-port)
+                (randomness-impl/create))
+         opts (dissoc opts :randomness-port)]
+     (->NetworkPort (network/check-adapter-config opts) (atom {}) port))))

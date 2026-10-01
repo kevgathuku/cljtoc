@@ -24,8 +24,7 @@
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.time :as time]
-            [dev.cljtoc.coordination.peer-worker :as peer-worker])
-  (:import [java.security SecureRandom]))
+            [dev.cljtoc.coordination.peer-worker :as peer-worker]))
 
 ;; Byte arrays flow through every piece write here; fail the compile on
 ;; reflective calls so boxing never hides in the hot path.
@@ -1204,9 +1203,7 @@
                 ;; The compiled layout already carries the content length:
                 ;; one derivation, no second walk of the declared files.
                  total-length (:total layout)
-                 peer-id (let [b (byte-array 20)]
-                           (.nextBytes (SecureRandom.) b)
-                           b)
+                 peer-id (network/peer-id network-port)
                  events-ch (async/chan 256)
                  total-attempted (count peer-addresses)
                  conn-stats (atom {:connected 0 :failed 0})]
