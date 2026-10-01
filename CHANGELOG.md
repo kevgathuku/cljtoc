@@ -6,6 +6,9 @@ Behavior changes under `src/` add an entry under `[Unreleased]`; internal refact
 
 ## [Unreleased]
 
+### Added
+- A new `IRandomnessPort` injection seam replaces the direct `java.security.SecureRandom` use that previously generated peer-ids in both tracker announces (`ports/network_impl.clj`) and handshake peer-ids (`orchestration/download.clj`). Real ports (`SecureRandomRandomness`) and test doubles (`MockRandomness`) are interchangeable via `network-impl/create`'s `:randomness-port` opt; absent means a fresh `SecureRandomRandomness` is constructed. A pure `dev.cljtoc.domain.backoff` module owns the jitter math (`exponential-backoff`, `with-jitter`, `schedule`) that the supervision layer (issue #28) and re-announce (#22) and watchdog (#23) will share. Per ADR-0011; closes #29.
+
 ### Fixed
 - UDP tracker responses are now checked against the live request: `parse-udp-connect-response` and `parse-udp-announce-response` take an optional `{:action :transaction-id}` expectation and refuse mismatches as `:action-mismatch` / `:txn-mismatch`, so a stray or duplicate datagram fails the announce attempt instead of connecting to a stranger’s connection id or returning a stranger’s peers. `try-udp-tracker` threads both expectations through and surfaces refused builds as typed step errors instead of an NPE-masked `:udp-failed`.
 - UDP tracker announces no longer fail when the request carries no event: the `::event` spec listed `nil` inside a set predicate, which never matches `nil`, so an event-less announce was rejected and surfaced as an inscrutable NPE-masked `:udp-failed` instead of announcing with event 0 (none) as the builder already encodes. A loopback integration test now drives connect plus announce through the real port code against a local double and asserts the returned peer.

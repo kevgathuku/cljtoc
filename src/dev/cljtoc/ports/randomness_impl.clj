@@ -5,8 +5,7 @@
    independent of every other call and a fresh `SecureRandom` per port
    instance still gives globally-distributed bytes. There is no shared
    mutable state across ports; each `create` returns its own."
-  (:require [dev.cljtoc.ports.randomness :as randomness]
-            [dev.cljtoc.utils :as utils])
+  (:require [dev.cljtoc.ports.randomness :as randomness])
   (:import [java.security SecureRandom]))
 
 ;; Fail the compile on reflective calls; the SecureRandom path is hot for

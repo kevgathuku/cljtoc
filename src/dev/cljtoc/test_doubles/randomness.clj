@@ -12,7 +12,7 @@
 (defrecord MockRandomness
            [scripted]
   randomness/IRandomnessPort
-  (random-bytes [this n]
+  (random-bytes [_ n]
     (let [head (first @scripted)]
       (if head
         (do

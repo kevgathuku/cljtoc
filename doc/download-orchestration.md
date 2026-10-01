@@ -47,7 +47,7 @@ Filesystem resolution follows the same once-per-download shape. `run-download` c
 
 ## Key decisions
 
-* **Three port protocols** (`INetworkPort`, `IDiskPort`, `ITimePort`) instead of direct I/O — the whole download runs against test doubles.
+* **Four port protocols** (`INetworkPort`, `IDiskPort`, `ITimePort`, `IRandomnessPort`) instead of direct I/O — the whole download runs against test doubles. `IRandomnessPort` is a primitive seam over peer-id generation; jitter math lives in a separate pure `dev.cljtoc.domain.backoff` module so the supervisor slices (issue #28) and re-announce (#22) and watchdog (#23) all share one backoff implementation. Per ADR-0011.
 * **Explicit state enumeration** over a boolean flag — pause and failure need names, not inferences.
 * **Write pieces as they verify** instead of buffering — bounded memory for arbitrarily large torrents.
 
