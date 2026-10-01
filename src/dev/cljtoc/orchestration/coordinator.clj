@@ -14,7 +14,6 @@
    namespace stays testable without test doubles."
   (:require [clojure.spec.alpha :as s]
             [clojure.spec.gen.alpha :as gen]
-            [clojure.test.check.generators :as gen2]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]))
@@ -73,11 +72,13 @@
   ;; `gen/hash-map`'s `generator?` assert on a nil gen.
   (s/with-gen
     (s/keys :opt-un [::peer-state ::assigned-piece])
-    #(gen2/let [peer-state (gen/fmap (fn [total-pieces]
-                                       (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
-                                     (gen/choose 1 1024))
-                assigned-piece (gen/one-of [(gen/return nil) (gen/return 0)])]
-       {:peer-state peer-state :assigned-piece assigned-piece})))
+    #(gen/fmap (fn [[peer-state assigned-piece]]
+                 {:peer-state peer-state :assigned-piece assigned-piece})
+               (gen/tuple
+                (gen/fmap (fn [total-pieces]
+                            (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+                          (gen/choose 1 1024))
+                (gen/one-of [(gen/return nil) (gen/return 0)])))))
 
 (s/def ::active-peers
   (s/nilable (s/map-of any? ::active-peer-info)))
@@ -105,6 +106,12 @@
 (s/def ::address any?)
 
 (s/def ::addressed-event
+  ;; Address-only event: `on-disconnected` accepts refused dials that
+  ;; carry no `:peer-state`. See ::connection-event for the strict shape
+  ;; `on-connected` needs.
+  (s/keys :req-un [::address]))
+
+(s/def ::connection-event
   ;; The event carries `:peer-state` (a real `::peer-state` record built
   ;; by the connect step) and `:peer-data` (whatever the network port
   ;; handed back). `on-connected` writes both into `[:active-peers address]`
@@ -117,11 +124,13 @@
   ;; so conformance semantics are unchanged.
   (s/with-gen
     (s/keys :req-un [::address ::peer-state])
-    #(gen2/let [address (gen/return "127.0.0.1:6881")
-                peer-state (gen/fmap (fn [total-pieces]
-                                       (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
-                                     (gen/choose 1 1024))]
-       {:address address :peer-state peer-state})))
+    #(gen/fmap (fn [[address peer-state]]
+                 {:address address :peer-state peer-state})
+               (gen/tuple
+                (gen/return "127.0.0.1:6881")
+                (gen/fmap (fn [total-pieces]
+                            (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+                          (gen/choose 1 1024))))))
 
 (s/def ::effects (s/coll-of map? :kind vector?))
 (s/def ::no-effects (s/and ::effects empty?))
@@ -196,7 +205,7 @@
      []]))
 
 (s/fdef on-connected
-  :args (s/cat :state ::coordinator-state :event ::addressed-event)
+  :args (s/cat :state ::coordinator-state :event ::connection-event)
   :ret (s/tuple ::coordinator-state ::no-effects)
   :fn #(let [address (-> % :args :event :address)
              [updated _] (:ret %)]
