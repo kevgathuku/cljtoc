@@ -1,5 +1,6 @@
 (ns dev.cljtoc.ports.network-peer-id-test
-  "Regression test for the protocol-level `peer-id` method.
+  "Regression test for the protocol-level `peer-id` method added in
+   response to PR #74 review.
 
    Before this slice, the call sites read `(:randomness-port network-port)`
    — a record-field access that breaks for any `reify` implementation of
@@ -11,12 +12,11 @@
    dispatches): the reify impl here is its own thing — neither real nor
    mock — and proves the protocol is the boundary."
   (:require [clojure.test :refer [deftest testing is]]
-            [dev.cljtoc.orchestration.download]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.ports.randomness :as randomness]
             [dev.cljtoc.test-doubles.network :as mock-network]
-            [dev.cljtoc.test-doubles.randomness :as mock-randomness]
+            [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.utils :as utils]))
 
 (defn- reify-randomness
@@ -40,23 +40,23 @@
 
 (deftest inetworkport-peer-id-contract-test
   (testing "real NetworkPort: peer-id comes from the injected randomness port"
-    (let [scripted (atom [[99 99 99 99 99 99 99 99 99 99
-                           99 99 99 99 99 99 99 99 99 99]])
-          port (network-impl/create {:randomness-port
-                                     (mock-randomness/->MockRandomness scripted)})
-          generated (network/peer-id port)]
-      (is (utils/bytes-equal? (byte-array (repeat 20 99)) generated))))
+    (let [port (network-impl/create
+                {:randomness-port
+                 (test-utils/scripted-randomness
+                  [[99 99 99 99 99 99 99 99 99 99
+                    99 99 99 99 99 99 99 99 99 99]])})]
+      (is (utils/bytes-equal? (byte-array (repeat 20 99))
+                              (network/peer-id port)))))
 
   (testing "mock NetworkPort: peer-id comes from the injected randomness port"
-    (let [scripted (atom [[11 22 33 44 55 66 77 88 99 0
-                           11 22 33 44 55 66 77 88 99 0]])
-          port (mock-network/create
+    (let [port (mock-network/create
                 {:randomness-port
-                 (mock-randomness/->MockRandomness scripted)})
-          generated (network/peer-id port)]
+                 (test-utils/scripted-randomness
+                  [[11 22 33 44 55 66 77 88 99 0
+                    11 22 33 44 55 66 77 88 99 0]])})]
       (is (utils/bytes-equal? (byte-array [11 22 33 44 55 66 77 88 99 0
                                            11 22 33 44 55 66 77 88 99 0])
-                              generated))))
+                              (network/peer-id port)))))
 
   (testing "a custom reify INetworkPort can satisfy peer-id without a :randomness-port field"
     ;; The whole point of the protocol method: a port implementation
@@ -70,13 +70,10 @@
       (is (utils/bytes-equal? (byte-array (repeat 20 42))
                               (network/peer-id custom-port))))))
 
-(deftest handshake-peer-id-routes-through-protocol-test
-  (testing "orchestration/download/handshake-peer-id uses the protocol method"
-    ;; This pins the wiring at the run-download call site: the helper
-    ;; reads through INetworkPort/peer-id, not a record field.
-    (let [scripted [42 42 42 42 42 42 42 42 42 42
-                    42 42 42 42 42 42 42 42 42 42]
-          custom-randomness (reify-randomness scripted)
-          custom-port (reify-network custom-randomness)
-          helper (#'dev.cljtoc.orchestration.download/handshake-peer-id custom-port)]
-      (is (utils/bytes-equal? (byte-array (repeat 20 42)) helper)))))
+(deftest network-impl-create-with-randomness-port-test
+  (testing "an absent :randomness-port defaults to a fresh SecureRandomRandomness"
+    (let [port (network-impl/create)]
+      (is (satisfies? randomness/IRandomnessPort (:randomness-port port)))))
+
+  (testing "a present :randomness-port must satisfy IRandomnessPort"
+    (is (thrown? Throwable (network-impl/create {:randomness-port "not a port"})))))

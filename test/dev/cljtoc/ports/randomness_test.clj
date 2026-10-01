@@ -7,12 +7,8 @@
   (:require [clojure.test :refer [deftest testing is]]
             [dev.cljtoc.ports.randomness :as randomness]
             [dev.cljtoc.ports.randomness-impl :as randomness-impl]
-            [dev.cljtoc.test-doubles.randomness :as mock-randomness]
+            [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.utils :as utils]))
-
-(defn- scripted-mock
-  [bytes-seqs]
-  (mock-randomness/->MockRandomness (atom bytes-seqs)))
 
 (deftest real-randomness-port-dispatches
   (testing "the real port satisfies IRandomnessPort"
@@ -39,11 +35,11 @@
 
 (deftest mock-randomness-port-dispatches
   (testing "the mock satisfies IRandomnessPort"
-    (let [port (scripted-mock [])]
+    (let [port (test-utils/scripted-randomness [])]
       (is (satisfies? randomness/IRandomnessPort port))))
 
   (testing "a scripted byte sequence is returned in order, exhausting when used up"
-    (let [port (scripted-mock [[1 2 3 4] [5 6 7 8]])]
+    (let [port (test-utils/scripted-randomness [[1 2 3 4] [5 6 7 8]])]
       (is (utils/bytes-equal? (byte-array [1 2 3 4]) (randomness/random-bytes port 4)))
       (is (utils/bytes-equal? (byte-array [5 6 7 8]) (randomness/random-bytes port 4)))))
 
@@ -51,13 +47,15 @@
     ;; This is the contract that lets tests pin peer-id values without
     ;; threading a randomness port through every helper. Without it, every
     ;; assertion that involves a peer-id needs to capture and replay.
-    (let [port-a (scripted-mock [[1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]])
-          port-b (scripted-mock [[1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]])]
+    (let [port-a (test-utils/scripted-randomness
+                  [[1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]])
+          port-b (test-utils/scripted-randomness
+                  [[1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20]])]
       (is (utils/bytes-equal? (randomness/random-bytes port-a 20)
                               (randomness/random-bytes port-b 20)))))
 
   (testing "exhausted script returns zeros (predictable failure beats mystery)"
-    (let [port (scripted-mock [[1 2 3 4]])]
+    (let [port (test-utils/scripted-randomness [[1 2 3 4]])]
       (randomness/random-bytes port 4)
       (is (utils/bytes-equal? (byte-array [0 0 0 0 0 0 0 0])
                               (randomness/random-bytes port 8)))))
@@ -67,7 +65,7 @@
     ;; promises exactly `n` bytes come out. Silently padding or returning
     ;; fewer bytes would let a peer-id test pass with the wrong length,
     ;; so the mock refuses the call instead.
-    (let [port (scripted-mock [[1 2 3]])
+    (let [port (test-utils/scripted-randomness [[1 2 3]])
           err (try (randomness/random-bytes port 4) nil
                    (catch clojure.lang.ExceptionInfo e e))]
       (is (some? err))

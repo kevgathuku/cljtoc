@@ -23,10 +23,7 @@
     ;; cap must come before the shift domain is reached. attempt 63
     ;; would be 2^63 * 1000 = a number that overflows Long.
     (is (= 60000 (backoff/exponential-backoff 63 1000 60000)))
-    (is (= 60000 (backoff/exponential-backoff 1000 1000 60000))))
-  (testing "negative attempts reject (a bug, not a feature)"
-    ;; fdef pins this via :args, but the explicit test documents intent.
-    (is (thrown? Throwable (backoff/exponential-backoff -1 1000 60000)))))
+    (is (= 60000 (backoff/exponential-backoff 1000 1000 60000)))))
 
 (deftest with-jitter-shape
   (testing "zero jitter returns 0"

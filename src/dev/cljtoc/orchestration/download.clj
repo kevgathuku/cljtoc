@@ -491,15 +491,6 @@
           piece-state
           (:in-flight piece-state)))
 
-(defn- handshake-peer-id
-  "Mint the 20-byte peer-id used for both the tracker announce and the
-   peer-to-peer handshake. Goes through `INetworkPort/peer-id` so the
-   abstraction is honored: any implementation (real, mock, or reify) that
-   satisfies the protocol can satisfy it. Split out so a unit test can
-   drive it directly without running the whole download."
-  [network-port]
-  (network/peer-id network-port))
-
 (declare materialize-verified-pieces)
 
 (defn- reconcile-verified-pieces
@@ -1212,7 +1203,7 @@
                 ;; The compiled layout already carries the content length:
                 ;; one derivation, no second walk of the declared files.
                  total-length (:total layout)
-                 peer-id (handshake-peer-id network-port)
+                 peer-id (network/peer-id network-port)
                  events-ch (async/chan 256)
                  total-attempted (count peer-addresses)
                  conn-stats (atom {:connected 0 :failed 0})]

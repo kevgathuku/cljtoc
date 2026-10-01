@@ -90,8 +90,7 @@
         network-port (network-impl/create {:randomness-port randomness-port})
         time-port (time-port/->RealTimePort)]
     {:manager (download/manager network-port disk-port time-port {})
-     :time-port time-port
-     :randomness-port randomness-port}))
+     :time-port time-port}))
 
 (defn- load-command-state
   "Load the record a command should act on: the named id, else the most
