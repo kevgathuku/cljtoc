@@ -33,8 +33,8 @@
   ;; call still runs the key-check on the underlying record.
   (s/with-gen :dev.cljtoc.protocol.peer-state/peer-state
     #(gen/fmap
-       (fn [total-pieces] (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
-       (gen/choose 1 1024))))
+      (fn [total-pieces] (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+      (gen/choose 1 1024))))
 (s/def ::assigned-piece
   (s/with-gen (s/nilable nat-int?)
     #(gen/one-of [(gen/return nil) (gen/return 0)])))
@@ -74,9 +74,9 @@
   (s/with-gen
     (s/keys :opt-un [::peer-state ::assigned-piece])
     #(gen2/let [peer-state (gen/fmap (fn [total-pieces]
-                                      (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
-                                    (gen/choose 1 1024))
-               assigned-piece (gen/one-of [(gen/return nil) (gen/return 0)])]
+                                       (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+                                     (gen/choose 1 1024))
+                assigned-piece (gen/one-of [(gen/return nil) (gen/return 0)])]
        {:peer-state peer-state :assigned-piece assigned-piece})))
 
 (s/def ::active-peers
@@ -118,9 +118,9 @@
   (s/with-gen
     (s/keys :req-un [::address ::peer-state])
     #(gen2/let [address (gen/return "127.0.0.1:6881")
-               peer-state (gen/fmap (fn [total-pieces]
-                                      (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
-                                    (gen/choose 1 1024))]
+                peer-state (gen/fmap (fn [total-pieces]
+                                       (dev.cljtoc.protocol.peer-state/initial-peer-state total-pieces))
+                                     (gen/choose 1 1024))]
        {:address address :peer-state peer-state})))
 
 (s/def ::effects (s/coll-of map? :kind vector?))

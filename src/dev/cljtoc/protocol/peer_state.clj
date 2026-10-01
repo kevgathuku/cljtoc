@@ -83,8 +83,8 @@
                                ::peer-choking ::peer-interested
                                ::bitfield ::total-pieces])
     #(gen/fmap
-       (fn [total-pieces] (initial-peer-state total-pieces))
-       (gen/choose 1 1024))))
+      (fn [total-pieces] (initial-peer-state total-pieces))
+      (gen/choose 1 1024))))
 
 ;; Piece index
 (s/def ::piece-index nat-int?)
