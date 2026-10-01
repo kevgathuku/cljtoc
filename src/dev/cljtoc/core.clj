@@ -5,6 +5,7 @@
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.network-impl :as network-impl]
+            [dev.cljtoc.ports.randomness-impl :as randomness-impl]
             [dev.cljtoc.ports.time :as time-port]
             [dev.cljtoc.cli.state :as cli-state]
             [clojure.java.io :as io]
@@ -76,14 +77,21 @@
    Both commands read the same state dir and the same piece cache: resume
    loads the record cmd-torrent-download saved and materializes the pieces
    its cache holds, so a drifting path here would resume against a cache
-   that is not the one the download wrote."
+   that is not the one the download wrote.
+
+   The randomness port is shared between the network port (peer-id for
+   tracker announce) and the download manager (peer-id for handshake);
+   per ADR-0011 every randomness effect sits behind one injected port,
+   constructed once and threaded where it is needed."
   []
   (let [disk-port (disk-impl/create {:state-dir cli-state/default-state-dir
                                      :piece-cache-dir "./torrent-cache"})
-        network-port (network-impl/create)
+        randomness-port (randomness-impl/create)
+        network-port (network-impl/create {:randomness-port randomness-port})
         time-port (time-port/->RealTimePort)]
     {:manager (download/manager network-port disk-port time-port {})
-     :time-port time-port}))
+     :time-port time-port
+     :randomness-port randomness-port}))
 
 (defn- load-command-state
   "Load the record a command should act on: the named id, else the most

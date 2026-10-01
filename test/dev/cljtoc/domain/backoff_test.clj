@@ -4,8 +4,7 @@
 
    These functions are pure, total, public — pinned by `stest/check`
    over their fdefs in `fdef-specs-hold-generatively-test` below."
-  (:require [clojure.test :refer [deftest testing is are]]
-            [clojure.test.check.generators :as gen]
+  (:require [clojure.test :refer [deftest testing is]]
             [dev.cljtoc.domain.backoff :as backoff]
             [dev.cljtoc.test-utils :as test-utils]))
 

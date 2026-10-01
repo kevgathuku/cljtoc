@@ -23,9 +23,9 @@
             [dev.cljtoc.orchestration.coordinator :as coordinator]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.disk :as disk]
+            [dev.cljtoc.ports.randomness :as randomness]
             [dev.cljtoc.ports.time :as time]
-            [dev.cljtoc.coordination.peer-worker :as peer-worker])
-  (:import [java.security SecureRandom]))
+            [dev.cljtoc.coordination.peer-worker :as peer-worker]))
 
 ;; Byte arrays flow through every piece write here; fail the compile on
 ;; reflective calls so boxing never hides in the hot path.
@@ -491,6 +491,15 @@
               (if (:ok requeued) (:ok requeued) state)))
           piece-state
           (:in-flight piece-state)))
+
+(defn- handshake-peer-id
+  "Mint the 20-byte peer-id used for both the tracker announce and the
+   peer-to-peer handshake. Per ADR-0011: peer-id generation goes through
+   the network port's injected randomness port; no `SecureRandom` here.
+   Split out of `run-download` so a unit test can drive it directly
+   without running the whole download."
+  [network-port]
+  (randomness/random-bytes (:randomness-port network-port) 20))
 
 (declare materialize-verified-pieces)
 
@@ -1204,9 +1213,7 @@
                 ;; The compiled layout already carries the content length:
                 ;; one derivation, no second walk of the declared files.
                  total-length (:total layout)
-                 peer-id (let [b (byte-array 20)]
-                           (.nextBytes (SecureRandom.) b)
-                           b)
+                 peer-id (handshake-peer-id network-port)
                  events-ch (async/chan 256)
                  total-attempted (count peer-addresses)
                  conn-stats (atom {:connected 0 :failed 0})]

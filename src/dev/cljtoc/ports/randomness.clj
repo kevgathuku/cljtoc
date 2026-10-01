@@ -9,28 +9,8 @@
 
    Returns a byte array directly, not an envelope: byte arrays are not
    untrusted input at this seam (per ADR-0007, envelopes are reserved for
-   results a caller branches on). The shape and length are spec'd."
+   results a caller branches on)."
   (:require [clojure.spec.alpha :as s]))
-
-(s/def ::byte-count nat-int?)
-
-(s/def ::byte-array-of-byte-count
-  (s/and bytes? (s/conformer seq)
-         (s/and (s/conformer seq #(let [v (seq %)] (count v))) nat-int?)))
-
-;; A byte array of exactly the requested length. Defined as a fn-driven
-  ;; spec because bytes? has no usable generator and the predicate closes
-  ;; over the call site count, which a bare (s/and bytes? pred) cannot.
-(defn byte-array-of-length?
-  "True when `bytes` is a Java byte array of exactly `length` elements."
-  [^bytes bytes length]
-  (and (bytes? bytes) (= length (count bytes))))
-
-(defn random-bytes-of-length?
-  "Spec predicate: byte array of the exact length the port was asked for."
-  [length]
-  (fn [bytes]
-    (byte-array-of-length? bytes length)))
 
 (defprotocol IRandomnessPort
   "Abstraction for randomness effects (peer-id generation, jitter input).

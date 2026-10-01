@@ -1,8 +1,10 @@
 (ns dev.cljtoc.test-doubles.network
   "Mock network port for testing download orchestration.
-   
+
    Provides predictable responses for testing without actual network I/O."
   (:require [dev.cljtoc.ports.network :as network]
+            [dev.cljtoc.ports.randomness :as randomness]
+            [dev.cljtoc.ports.randomness-impl :as randomness-impl]
             [dev.cljtoc.protocol.tracker :as tracker])
   (:import [java.util UUID]))
 
@@ -15,7 +17,8 @@
             peers
             connected-peers
             closed-peers
-            responses]
+            responses
+            randomness-port]
 
   network/INetworkPort
   (connect-peer [_ address]
@@ -67,7 +70,7 @@
       ;; One request built upstream and forwarded per URL, mirroring the
       ;; real port -- never reconstructed (or nil) at each call.
       (let [request {:info-hash (:info-hash torrent-metadata)
-                     :peer-id (byte-array 20)
+                     :peer-id (randomness/random-bytes (:randomness-port this) 20)
                      :port 6881
                      :uploaded 0
                      :downloaded (:downloaded progress)
@@ -121,8 +124,10 @@
    (create {}))
   ([config]
    (let [state (atom {:responses {}})
-         closed (atom #{})]
-     (->MockNetworkPort (network/check-adapter-config config) #{} state closed state))))
+         closed (atom #{})
+         randomness-port (get config :randomness-port (randomness-impl/create))
+         config (dissoc config :randomness-port)]
+     (->MockNetworkPort (network/check-adapter-config config) #{} state closed state randomness-port))))
 
 (defn add-peer-response [mock-network peer-id message-type response]
   (swap! (:responses mock-network) assoc-in [peer-id message-type] response))
