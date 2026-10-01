@@ -65,12 +65,9 @@
   [port message]
   (network/log! port message))
 
-(defn- generate-peer-id
-  "Generate a random 20-byte peer ID for tracker announcements using the
-   injected `randomness-port` (per ADR-0011: the randomness port is the
-   sole carrier of peer-id generation; no `SecureRandom` here)."
-  [randomness-port]
-  (randomness/random-bytes randomness-port 20))
+;; The protocol method `peer-id` lives directly on the record below; the
+;; private `generate-peer-id` helper used in slice 3 was inlined now that
+;; the protocol exposes a peer-id method (PR #74 review).
 
 (defn- read-fully
   "Read exactly n bytes from an InputStream. Returns byte array or throws on EOF."
@@ -420,6 +417,12 @@
       nil
       (catch Exception _ nil)))
 
+  (peer-id [network]
+    "Return a fresh 20-byte peer-id from the injected randomness port.
+     Implementations of INetworkPort can satisfy this via any source of
+     randomness; the real port delegates to its :randomness-port."
+    (randomness/random-bytes (:randomness-port network) 20))
+
   network/ITrackerPort
   (announce-to-url [network tracker-url request]
     "Announce to ONE tracker URL. The per-URL effect half of the fan-out
@@ -439,7 +442,7 @@
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
           (let [request {:info-hash (:info-hash torrent-metadata)
-                         :peer-id (generate-peer-id (:randomness-port network))
+                         :peer-id (network/peer-id network)
                          :port 6881
                          :uploaded 0
                          :downloaded (:downloaded progress)

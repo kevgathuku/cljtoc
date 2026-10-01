@@ -19,5 +19,13 @@
           ;; Atom swap so the next call sees the rest of the queue.
           ;; Mock instances are per-test, not shared across threads.
           (swap! scripted rest)
-          (byte-array (take n head)))
+          (if (< (count head) n)
+            ;; Short script: the contract says exactly n bytes come back.
+            ;; A test that scripts too few bytes has a bug; refusing
+            ;; loudly surfaces it rather than silently returning fewer bytes
+            ;; (which would let a peer-id test pass with the wrong length).
+            (throw (ex-info (str "MockRandomness script under-supplied: asked for "
+                                 n " bytes but next entry has " (count head))
+                            {:asked n :provided (count head)}))
+            (byte-array (take n head))))
         (byte-array n)))))

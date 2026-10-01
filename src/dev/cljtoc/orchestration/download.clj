@@ -23,7 +23,6 @@
             [dev.cljtoc.orchestration.coordinator :as coordinator]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.disk :as disk]
-            [dev.cljtoc.ports.randomness :as randomness]
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.coordination.peer-worker :as peer-worker]))
 
@@ -494,12 +493,12 @@
 
 (defn- handshake-peer-id
   "Mint the 20-byte peer-id used for both the tracker announce and the
-   peer-to-peer handshake. Per ADR-0011: peer-id generation goes through
-   the network port's injected randomness port; no `SecureRandom` here.
-   Split out of `run-download` so a unit test can drive it directly
-   without running the whole download."
+   peer-to-peer handshake. Goes through `INetworkPort/peer-id` so the
+   abstraction is honored: any implementation (real, mock, or reify) that
+   satisfies the protocol can satisfy it. Split out so a unit test can
+   drive it directly without running the whole download."
   [network-port]
-  (randomness/random-bytes (:randomness-port network-port) 20))
+  (network/peer-id network-port))
 
 (declare materialize-verified-pieces)
 

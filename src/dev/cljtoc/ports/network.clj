@@ -132,7 +132,15 @@
 
   (close-peer [this peer]
     "Close the connection to a peer gracefully.
-     Returns nil."))
+     Returns nil.")
+
+  (peer-id [this]
+    "Return a fresh 20-byte peer-id for tracker announces and the peer
+    handshake. Implementations may use any source of randomness; the
+    caller does not care, only that it is a 20-byte byte array. Per
+    ADR-0011 the randomness port is the underlying source for the real
+    impl; the protocol method here exists so callers do not have to
+    reach into the concrete record to find the port."))
 
 (defprotocol ITrackerPort
   "Abstraction for tracker communication operations."

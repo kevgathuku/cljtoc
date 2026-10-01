@@ -53,6 +53,9 @@
     (swap! closed-peers conj peer)
     nil)
 
+  (peer-id [_]
+    (randomness/random-bytes randomness-port 20))
+
   network/ITrackerPort
   (announce-to-url [_ tracker-url request]
     (when-let [capture (:announce-to-url-capture config)]
@@ -70,7 +73,7 @@
       ;; One request built upstream and forwarded per URL, mirroring the
       ;; real port -- never reconstructed (or nil) at each call.
       (let [request {:info-hash (:info-hash torrent-metadata)
-                     :peer-id (randomness/random-bytes (:randomness-port this) 20)
+                     :peer-id (network/peer-id this)
                      :port 6881
                      :uploaded 0
                      :downloaded (:downloaded progress)

@@ -31,8 +31,11 @@
           b (randomness/random-bytes port 20)]
       ;; Bytes come from java.security.SecureRandom; collision probability
       ;; for two 20-byte draws is 2^-160. A failure here means the
-      ;; implementation is not actually random.
-      (is (not= a b)))))
+      ;; implementation is not actually random. `not=` on byte arrays
+      ;; compares by Java identity — two freshly-allocated `(byte-array 20)`
+      ;; calls are different objects even when both hold zeros, so the
+      ;; test would pass vacuously. `not (bytes-equal?)` compares content.
+      (is (not (utils/bytes-equal? a b))))))
 
 (deftest mock-randomness-port-dispatches
   (testing "the mock satisfies IRandomnessPort"
@@ -57,4 +60,17 @@
     (let [port (scripted-mock [[1 2 3 4]])]
       (randomness/random-bytes port 4)
       (is (utils/bytes-equal? (byte-array [0 0 0 0 0 0 0 0])
-                              (randomness/random-bytes port 8))))))
+                              (randomness/random-bytes port 8)))))
+
+  (testing "a script shorter than the request throws (contract violation is loud)"
+    ;; A test that scripts too few bytes is itself buggy: the protocol
+    ;; promises exactly `n` bytes come out. Silently padding or returning
+    ;; fewer bytes would let a peer-id test pass with the wrong length,
+    ;; so the mock refuses the call instead.
+    (let [port (scripted-mock [[1 2 3]])
+          err (try (randomness/random-bytes port 4) nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+      (is (some? err))
+      (is (re-find #"under-supplied" (ex-message err)))
+      (is (= 4 (:asked (ex-data err))))
+      (is (= 3 (:provided (ex-data err)))))))
