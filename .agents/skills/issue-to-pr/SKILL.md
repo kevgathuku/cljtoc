@@ -8,7 +8,7 @@ Take a GitHub issue number through validation, TDD implementation, and an opened
 
 ## 1. Fetch and validate
 
-Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. Trace related code through the graft graph per the `AGENTS.md` Graft section; raw `grep -rn` is the fallback for unindexed files only. Check the palace before finalizing verdicts: `mempalace_search` (wing `torrent_client_clj`, room `decisions`) for prior verdicts on the touched files — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
+Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. Trace related code through the graft graph per the `AGENTS.md` Graft section; raw `grep -rn` is the fallback for unindexed files only. Check the palace before finalizing verdicts: `mempal search --wing torrent_client_clj "<area> decision"` for prior verdicts on the touched files (one room, `default`, in this store — qualify with keywords, not room filters) — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
 
 ## 2. Branch
 
@@ -16,12 +16,12 @@ Check `git status` is clean and `git branch --show-current` is `main`, then crea
 
 ## 3. Recall prior decisions
 
-Via the `mempalace-recall` skill, run four lookups on the issue's area and fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body:
+Via the `mempal` CLI (wing `torrent_client_clj`), run four lookups on the issue's area and fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body:
 
-- `mempalace_search` (wing `torrent_client_clj`, room `decisions`): prior approaches, reverted attempts, naming choices that constrain the plan (verdicts on the claims themselves were settled in step 1 — do not re-litigate them here).
-- `mempalace_search` (same wing, room `lessons`): recurring failure modes for this area — mock drift from real envelopes, guard-before-call-site, inferred-vs-observed termination.
-- `mempalace_kg_timeline` on the touched file / issue entity: what already fixes / causes what, in order.
-- `mempalace_diary_read` (last 3): unfinished work from recent sessions, plus any diagnosed-but-unfixed P0 gap the PR must not claim to close.
+- `mempal search --wing torrent_client_clj "<area> decision"`: prior approaches, reverted attempts, naming choices that constrain the plan (verdicts on the claims themselves were settled in step 1 — do not re-litigate them here).
+- `mempal search --wing torrent_client_clj "<area> lesson failure mode"`: recurring failure modes for this area — mock drift from real envelopes, guard-before-call-site, inferred-vs-observed termination.
+- `mempal kg timeline <entity>` on the touched file / issue entity: what already fixes / causes what, in order.
+- `mempal wake-up`: unfinished work from recent sessions, plus any diagnosed-but-unfixed P0 gap the PR must not claim to close.
 
 ## 4. Implement with /tdd
 
@@ -75,4 +75,4 @@ Two records, not one — the decision alone strands the discoveries that produce
 
 - Decision (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
 - Learnings (same wing, room `lessons`, one drawer per lesson): every new discovery from this implementation that a future session would otherwise re-derive the hard way — platform facts (generator magnitudes, predicate ranges), diagnostic methods that worked (per-sym REPL timing for a hung pin), gotchas actually hit (stale-session false reds, out-of-domain probes that instrument rejects). Rule of thumb: if the session paid for it in debugging time, file it; if it merely confirms existing docs, skip it.
-- Verify both landed: `mempalace_search` the issue entity and confirm the new drawers rank first.
+- Verify both landed: `mempal search --wing torrent_client_clj` the issue entity and confirm the new drawers rank first.
