@@ -143,7 +143,7 @@
 (s/def ::state-dir string?)
 (s/def ::piece-cache-dir string?)
 (s/def ::output-dir string?)
-(s/def ::peer-port (s/and pos-int? #(<= % 65535)))
+(s/def ::peer-port (s/int-in 1 65536))
 (s/def ::max-peers pos-int?)
 (s/def ::settings
   (s/keys :req-un [::state-dir ::piece-cache-dir ::output-dir
@@ -199,7 +199,7 @@
   {:state-dir absolute-path?
    :piece-cache-dir absolute-path?
    :output-dir absolute-path?
-   :peer-port #(and (pos-int? %) (<= % 65535))
+   :peer-port #(s/valid? ::peer-port %)
    :max-peers pos-int?})
 
 (defn- invalid-value-message
