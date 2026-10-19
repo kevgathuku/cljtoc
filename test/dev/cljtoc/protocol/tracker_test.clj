@@ -9,7 +9,6 @@
    [clojure.test.check.properties :as prop]
    [dev.cljtoc.domain.bencode :as bencode]
    [dev.cljtoc.protocol.tracker :as tracker]
-   [dev.cljtoc.protocol.tracker.spec :as spec]
    [dev.cljtoc.test-utils :refer [to-bytes]]))
 
 ;; ---------------------------------------------------------------------------
@@ -65,8 +64,8 @@
       (is (= [] (:ok result))))))
 
 (defspec parse-compact-peers-ipv4-generative-test 100
-  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::spec/ip-address)
-                                              (s/gen ::spec/port))
+  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::tracker/ip-address)
+                                              (s/gen ::tracker/port))
                                    1 10)]
     ;; Property: parse(build(peers)) = peers
                 (let [bytes (byte-array
@@ -87,24 +86,24 @@
 
 (defspec generated-peers-satisfy-spec 100
   (testing "All generated peers satisfy the peer spec"
-    (prop/for-all [peer (s/gen ::spec/peer)]
-                  (s/valid? ::spec/peer peer))))
+    (prop/for-all [peer (s/gen ::tracker/peer)]
+                  (s/valid? ::tracker/peer peer))))
 
 (defspec generated-peer-ids-are-valid 100
   (testing "All generated peer-ids are exactly 20 bytes"
-    (prop/for-all [peer-id (s/gen ::spec/peer-id)]
+    (prop/for-all [peer-id (s/gen ::tracker/peer-id)]
                   (and (bytes? peer-id)
                        (= 20 (alength peer-id))))))
 
 (defspec generated-info-hashes-are-valid 100
   (testing "All generated info-hashes are exactly 20 bytes"
-    (prop/for-all [info-hash (s/gen ::spec/info-hash)]
+    (prop/for-all [info-hash (s/gen ::tracker/info-hash)]
                   (and (bytes? info-hash)
                        (= 20 (alength info-hash))))))
 
 (defspec generated-ports-are-in-range 100
   (testing "All generated ports are in valid range and realistic"
-    (prop/for-all [port (s/gen ::spec/port)]
+    (prop/for-all [port (s/gen ::tracker/port)]
                   (and (int? port)
                        (<= 1 port 65535)
                        (>= port 1024)))))  ; Our generator uses 1024-65535
@@ -890,12 +889,12 @@
       (testing (str "error map has :error and :message: " err)
         (is (contains? err :error))
         (is (contains? err :message))
-        (is (s/valid? ::spec/tracker-error err))))))
+        (is (s/valid? ::tracker/tracker-error err))))))
 
 ;; T083: Verify :spec-explain is present in validate-input errors
 (deftest validate-input-spec-explain-test
   (testing "validate-input includes :spec-explain for registered spec failures"
-    (let [result (tracker/validate-input ::spec/info-hash (byte-array 10))]
+    (let [result (tracker/validate-input ::tracker/info-hash (byte-array 10))]
       (is (= :invalid-input (:error result)))
       (is (contains? result :spec-explain))
       (is (some? (:spec-explain result))))))
@@ -903,8 +902,8 @@
 ;; T083 generative: all validate-input error maps satisfy ::tracker-error
 (defspec error-maps-satisfy-spec 50
   (prop/for-all [bad-len (gen/choose 1 19)]
-                (let [result (tracker/validate-input ::spec/info-hash (byte-array bad-len))]
-                  (s/valid? ::spec/tracker-error result))))
+                (let [result (tracker/validate-input ::tracker/info-hash (byte-array bad-len))]
+                  (s/valid? ::tracker/tracker-error result))))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 9: US6 Re-Announce Timing (T090-T096)
@@ -974,7 +973,7 @@
 
 ;; Generative: failure always increments retry-attempt by 1
 (defspec update-schedule-failure-increments-attempt 50
-  (prop/for-all [schedule (s/gen ::spec/announce-schedule)]
+  (prop/for-all [schedule (s/gen ::tracker/announce-schedule)]
                 (let [result (tracker/update-schedule-failure schedule 0)]
                   (and (contains? result :ok)
                        (= (inc (:retry-attempt schedule))
@@ -1167,11 +1166,11 @@
 
 (deftest tracker-instrumentation-toggle-round-trips-test
   (testing "instrumenting rejects bad args; unstrumenting restores the plain call"
-    (spec/instrument-tracker!)
+    (tracker/instrument-tracker!)
     (try
       (is (thrown? clojure.lang.ExceptionInfo
                    (tracker/tracker-error "not-a-keyword" 42)))
       (finally
-        (spec/unstrument-tracker!)))
+        (tracker/unstrument-tracker!)))
     (is (= {:error "not-a-keyword" :message 42}
            (tracker/tracker-error "not-a-keyword" 42)))))

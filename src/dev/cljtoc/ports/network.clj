@@ -55,7 +55,7 @@
 (s/def ::udp-max-attempts pos-int?)
 ;; fn? has no generator, so the bare predicate would make the shape
 ;; un-generatable (s/gen fails at :log-fn); generate println instead,
-;; mirroring tracker/spec.clj's with-gen precedent.
+;; mirroring tracker.clj's with-gen precedent.
 (s/def ::log-fn (s/with-gen fn? #(gen/return println)))
 (s/def ::adapter-config
   (s/keys :opt-un [::connect-timeout-ms ::socket-timeout-ms
