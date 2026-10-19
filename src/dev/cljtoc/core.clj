@@ -134,6 +134,14 @@
         nil)
       (:ok result))))
 
+(defn- dangling-config-flag?
+  "True when --config survived splitting, meaning it had no value.
+   Reject it before loading settings or dispatching: otherwise
+   `torrent.stop existing-id --config` would silently load the default
+   config and could delete the wrong download's state."
+  [rest-args]
+  (boolean (some #{"--config"} rest-args)))
+
 (defn- torrent-path-arg?
   "True when a command argument looks like a torrent path rather than a
    bare download id: it carries a `.torrent` suffix or a path separator.
@@ -168,7 +176,10 @@
 
 (defn- cmd-torrent-download
   [settings args]
-  (if (empty? args)
+  ;; Exactly one argument: extra paths used to be silently ignored, so a
+  ;; mistyped second path downloaded to the configured dir instead of the
+  ;; intended one. Reject before touching the network or the disk.
+  (if (not= 1 (count args))
     (do
       (println "Usage: lein run torrent.download <path-to-torrent-file>")
       (System/exit 1))
@@ -403,17 +414,22 @@
     (do
       (print-usage)
       (System/exit 1))
-    (let [[config-path rest-args] (split-global-flags args)
-          settings (try-load-settings config-path)
-          cmd (first rest-args)
-          cmd-args (rest rest-args)
-          handler (get commands cmd)]
-      (if (nil? settings)
-        (System/exit 1)
-        (if handler
-          ((:fn handler) settings cmd-args)
-          (do
-            (println (str "Unknown command: " cmd))
-            (println)
-            (print-usage)
-            (System/exit 1)))))))
+    (let [[config-path rest-args] (split-global-flags args)]
+      (if (dangling-config-flag? rest-args)
+        (do
+          (println "Missing value for --config <path>.")
+          (print-usage)
+          (System/exit 1))
+        (let [settings (try-load-settings config-path)
+              cmd (first rest-args)
+              cmd-args (rest rest-args)
+              handler (get commands cmd)]
+          (if (nil? settings)
+            (System/exit 1)
+            (if handler
+              ((:fn handler) settings cmd-args)
+              (do
+                (println (str "Unknown command: " cmd))
+                (println)
+                (print-usage)
+                (System/exit 1)))))))))
