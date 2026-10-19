@@ -213,12 +213,30 @@ The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hash
 | Command | Description | Status |
 |---------|-------------|--------|
 | `torrent.parse <file>` | Parse and display torrent metadata | ✅ Implemented |
-| `torrent.download <file> [dir]` | Download files from a torrent | ✅ Implemented |
+| `torrent.download <file>` | Download files from a torrent | ✅ Implemented |
 | `torrent.pause [id]` | Pause an active download | ✅ Implemented |
 | `torrent.resume [id]` | Resume a paused download | ✅ Implemented |
 | `torrent.status [id]` | Show download status | ✅ Implemented |
 | `torrent.stop [id]` | Stop a download | ✅ Implemented |
 | `torrent.seed <file>` | Seed a torrent | 🚧 Not implemented |
+
+Download destinations and limits come from the settings file, never from
+command arguments: `~/.config/cljtoc/config.edn`, or the file named by
+`--config <path>` (accepted anywhere in the command line). With no file
+the client uses these Transmission-aligned defaults:
+
+| Key | Default |
+|-----|---------|
+| `:output-dir` | `~/Downloads` |
+| `:state-dir` | `<config home>/cljtoc/state` |
+| `:piece-cache-dir` | `<cache home>/cljtoc` |
+| `:peer-port` | `51413` |
+| `:max-peers` | `50` |
+
+A missing file means defaults. A file that fails to parse stops the
+command with the reader's reason rather than running on silent defaults,
+and unknown keys warn and are dropped so a file written for a newer
+client still loads.
 
 ## Contributing
 

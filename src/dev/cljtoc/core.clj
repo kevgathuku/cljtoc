@@ -133,13 +133,6 @@
         (System/exit 1))
       (:ok result))))
 
-(defn- output-dir-for
-  "The output dir a download writes into: the positional argument when the
-   user gave one, else the configured default. This is the whole of the
-   file-versus-CLI precedence, named so a test can pin it."
-  [settings args]
-  (or (second args) (:output-dir settings)))
-
 (defn- torrent-path-arg?
   "True when a command argument looks like a torrent path rather than a
    bare download id: it carries a `.torrent` suffix or a path separator.
@@ -176,10 +169,10 @@
   [settings args]
   (if (empty? args)
     (do
-      (println "Usage: lein run torrent.download <path-to-torrent-file> [output-dir]")
+      (println "Usage: lein run torrent.download <path-to-torrent-file>")
       (System/exit 1))
     (let [torrent-path (first args)
-          output-dir (output-dir-for settings args)
+          output-dir (:output-dir settings)
           bs (read-torrent-file torrent-path)]
       (if (nil? bs)
         (System/exit 1)
@@ -388,7 +381,7 @@
   (println "  --config <path>        Use this settings file instead of ~/.config/cljtoc/config.edn")
   (println "\nExamples:")
   (println "  lein run torrent.parse path/to/file.torrent")
-  (println "  lein run torrent.download path/to/file.torrent ./output")
+  (println "  lein run torrent.download path/to/file.torrent")
   (println "  lein run --config ./my.edn torrent.status"))
 
 (defn -main
