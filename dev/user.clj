@@ -6,7 +6,14 @@
   Requires nothing project-specific: pull in only the namespaces you
   need, with :reload so edits are picked up."
   (:require [clojure.repl :refer [doc find-doc source]]
-            [clojure.tools.namespace.repl :refer [refresh refresh-all]]))
+            [clojure.tools.namespace.repl :as repl]))
+
+;; Real vars (not :refer mappings) so both bare use in this namespace
+;; and qualified user/refresh use from anywhere else resolve.
+(def refresh repl/refresh)
+(def refresh-all repl/refresh-all)
+(def refresh-dirs repl/refresh-dirs)
+(def clear repl/clear)
 
 (defn welcome
   "Print the require cheat sheet for interactive probing."
