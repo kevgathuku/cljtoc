@@ -243,25 +243,25 @@
   (testing "a dangling --config keeps its token so -main rejects it before loading"
     (is (= [nil ["torrent.status" "--config"]]
            (#'core/split-global-flags ["torrent.status" "--config"])))
-    (is (#'core/dangling-config-flag? ["torrent.status" "--config"])))
+    (is (#'core/dangling-config-flag? ["torrent.status" "--config"]))))
 
-  (deftest try-load-settings-returns-nil-on-a-bad-file-test
-    (testing "a corrupt config yields nil after reporting, leaving exit to the caller"
-      (let [dir (test-utils/temp-dir "cfg-")
-            path (str dir "/bad.edn")]
-        (spit path "{:max-peers")
-        (is (nil? (#'core/try-load-settings path)))))
-    (testing "a missing file yields the defaults"
-      (let [settings (#'core/try-load-settings
-                      (str (test-utils/temp-dir "cfg-") "/absent.edn"))]
-        (is (= (:output-dir (config/default-settings nil)) (:output-dir settings)))))
-    (testing "a valid file yields its merged settings"
-      (let [dir (test-utils/temp-dir "cfg-")
-            path (str dir "/ok.edn")]
-        (spit path (str "{:max-peers 3 :output-dir \"" dir "/out\"}"))
-        (let [settings (#'core/try-load-settings path)]
-          (is (= 3 (:max-peers settings)))
-          (is (= (str dir "/out") (:output-dir settings)))))))
+(deftest try-load-settings-returns-nil-on-a-bad-file-test
+  (testing "a corrupt config yields nil after reporting, leaving exit to the caller"
+    (let [dir (test-utils/temp-dir "cfg-")
+          path (str dir "/bad.edn")]
+      (spit path "{:max-peers")
+      (is (nil? (#'core/try-load-settings path)))))
+  (testing "a missing file yields the defaults"
+    (let [settings (#'core/try-load-settings
+                    (str (test-utils/temp-dir "cfg-") "/absent.edn"))]
+      (is (= (:output-dir (config/default-settings nil)) (:output-dir settings)))))
+  (testing "a valid file yields its merged settings"
+    (let [dir (test-utils/temp-dir "cfg-")
+          path (str dir "/ok.edn")]
+      (spit path (str "{:max-peers 3 :output-dir \"" dir "/out\"}"))
+      (let [settings (#'core/try-load-settings path)]
+        (is (= 3 (:max-peers settings)))
+        (is (= (str dir "/out") (:output-dir settings)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Coverage residue for this namespace, recorded rather than papered over:
@@ -276,12 +276,20 @@
 ;; actually land.
 ;; ---------------------------------------------------------------------------
 
-  (deftest dangling-config-flag-is-detected-test
-    (testing "a --config with no value is flagged before anything loads or runs"
-      (is (#'core/dangling-config-flag? ["torrent.stop" "abc" "--config"]))
-      (is (not (#'core/dangling-config-flag? ["torrent.status"]))))
-    (testing "split-global-flags strips --config and its value, so the predicate sees the residue"
-      (let [[config-path rest-args] (#'core/split-global-flags
-                                     ["--config" "/tmp/c.edn" "torrent.status"])]
-        (is (= "/tmp/c.edn" config-path))
-        (is (not (#'core/dangling-config-flag? rest-args)))))))
+(deftest dangling-config-flag-is-detected-test
+  (testing "a --config with no value is flagged before anything loads or runs"
+    (is (#'core/dangling-config-flag? ["torrent.stop" "abc" "--config"]))
+    (is (not (#'core/dangling-config-flag? ["torrent.status"]))))
+  (testing "split-global-flags strips --config and its value, so the predicate sees the residue"
+    (let [[config-path rest-args] (#'core/split-global-flags
+                                   ["--config" "/tmp/c.edn" "torrent.status"])]
+      (is (= "/tmp/c.edn" config-path))
+      (is (not (#'core/dangling-config-flag? rest-args))))))
+
+;; ---------------------------------------------------------------------------
+;; Coverage residue for the `dangling-config-flag?` branch in -main:
+;; the lines printing usage and calling System/exit are untestable
+;; without with-redefs (repo forbids), so coverage of this branch is
+;; structurally partial. (See `coverage_diff.sh` for the script that
+;; surfaces them as uncovered lines in a diff run.)
+;; ---------------------------------------------------------------------------
