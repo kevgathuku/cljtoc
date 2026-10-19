@@ -115,14 +115,20 @@
                    ::tracker-announce-interval-ms
                    ::output-dir]))
 
-(s/def ::network-port any?)
+;; An INetworkPort implementation or nil. Nil is admitted for the same
+;; reason as ::disk-port: callers without a live port (bare
+;; resume-download, tests driving pure planning) pass nil through.
+(s/def ::network-port (s/nilable #(satisfies? network/INetworkPort %)))
 
 ;; An IDiskPort implementation or nil. Nil ports are a designed tolerance
 ;; (resume-download's bare arity, evict-completed-cache's nil skip), so the
 ;; spec admits nil rather than pretending every call carries a live port.
 (s/def ::disk-port (s/nilable #(satisfies? disk/IDiskPort %)))
 
-(s/def ::time-port any?)
+;; An ITimePort implementation or nil. Nil stands for "no clock":
+;; mark-suspended leaves the record untouched and resume falls back to
+;; the last verified byte, so the spec admits it.
+(s/def ::time-port (s/nilable #(satisfies? time/ITimePort %)))
 
 (s/def ::downloads map?)
 
