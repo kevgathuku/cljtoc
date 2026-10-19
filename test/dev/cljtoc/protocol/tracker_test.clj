@@ -72,6 +72,10 @@
   (prop/for-all [addr (s/gen ::tracker/ipv6-address)]
                 (= :v6 (first (s/conform ::tracker/ip-address addr)))))
 
+(defspec ip-address-generates-conforming-values 100
+     (prop/for-all [addr (s/gen ::tracker/ip-address)]
+       (not= :clojure.spec.alpha/invalid (s/conform ::tracker/ip-address addr))))
+
 (deftest ip-address-generates-both-families-test
   (testing "generated values cover v4 and v6"
     (let [addrs (gen/sample (s/gen ::tracker/ip-address) 200)]
