@@ -96,10 +96,17 @@
   "Load the record a command should act on: the named id, else the most
    recent. Returns the record or nil when nothing is there. A corrupt file
    reads as nil — the CLI's long-standing missing-state story (commands
-   print not-found); the port still reports :load-error in its own contract."
+   print not-found); the port still reports :load-error in its own contract.
+
+   A torrent path resolves too: download derives its id from the torrent
+   path, so users mirror `torrent.download <path>` when they resume. The
+   exact id is tried first — deriving unconditionally would mangle a bare
+   id that carries dots (`archive.v2` would re-derive as `archive`)."
   [disk-port state-dir args]
   (if (seq args)
-    (:ok (disk/load-state disk-port (first args)))
+    (let [arg (first args)]
+      (or (:ok (disk/load-state disk-port arg))
+          (:ok (disk/load-state disk-port (disk/id-from-path arg)))))
     (cli-state/load-most-recent disk-port state-dir)))
 
 (defn- cmd-torrent-download
