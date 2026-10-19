@@ -136,6 +136,13 @@ used instead of admired:
   regardless of tool (~0.1s). A wrong zipper query edits the wrong form
   confidently and quietly, where exact-match fails loudly — verification
   is not optional for either path.
+- `scripts/rename_symbol.clj` is the template for scripted edits: exact
+  symbol match on the syntax tree (keywords, strings, comments, and
+  qualified lookalikes untouched), dry-run unified diff with exit 1 on
+  change, `--write` to apply. Copy its shape — dry-run by default,
+  explicit flush before any `System/exit`, fixture with traps
+  (docstring, comment, string, keyword, prefix-collision, qualified
+  use) — rather than inventing new script scaffolding per edit.
 
 Two gotchas earned the hard way:
 

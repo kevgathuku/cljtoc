@@ -156,7 +156,7 @@
             wrote, so the construction lives in one place. The ports are
             real implementations; creating them touches nothing. Explicit
             settings flow through untouched, so tests never touch home dirs"
-    (let [settings (assoc config/default-settings
+    (let [settings (assoc (config/default-settings nil)
                           :state-dir (test-utils/temp-dir "cfg-state-")
                           :piece-cache-dir (test-utils/temp-dir "cfg-cache-")
                           :peer-port 9999
@@ -253,7 +253,7 @@
   (testing "a missing file yields the defaults"
     (let [settings (#'core/try-load-settings
                     (str (test-utils/temp-dir "cfg-") "/absent.edn"))]
-      (is (= (:output-dir config/default-settings) (:output-dir settings)))))
+      (is (= (:output-dir (config/default-settings nil)) (:output-dir settings)))))
   (testing "a valid file yields its merged settings"
     (let [dir (test-utils/temp-dir "cfg-")
           path (str dir "/ok.edn")]

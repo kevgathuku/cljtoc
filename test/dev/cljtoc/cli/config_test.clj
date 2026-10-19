@@ -8,40 +8,50 @@
 
 (deftest parse-settings-merges-over-defaults-test
   (testing "a partial file overrides only the keys it names"
-    (let [settings (:ok (config/parse-settings "{:max-peers 10}"))]
+    (let [settings (:ok (config/parse-settings "{:max-peers 10}" (config/default-settings nil)))]
       (is (= 10 (:max-peers settings)))
-      (is (= (:output-dir config/default-settings) (:output-dir settings)))
-      (is (= (:peer-port config/default-settings) (:peer-port settings)))))
+      (is (= (:output-dir (config/default-settings nil)) (:output-dir settings)))
+      (is (= (:peer-port (config/default-settings nil)) (:peer-port settings)))))
   (testing "an empty map means all defaults"
-    (is (= config/default-settings (:ok (config/parse-settings "{}"))))))
+    (is (= (config/default-settings nil) (:ok (config/parse-settings "{}" (config/default-settings nil)))))))
 
 (deftest parse-settings-rejects-test
   (testing "non-EDN text is an error, not silent defaults"
-    (let [result (config/parse-settings "{:max-peers")]
+    (let [result (config/parse-settings "{:max-peers" (config/default-settings nil))]
       (is (= :invalid-config (:error result)))
       (is (string? (:message result)))))
   (testing "a non-map document is an error"
-    (let [result (config/parse-settings "[1 2 3]")]
+    (let [result (config/parse-settings "[1 2 3]" (config/default-settings nil))]
       (is (= :invalid-config (:error result)))))
   (testing "a mistyped value is an error naming the key"
-    (let [result (config/parse-settings "{:max-peers \"lots\"}")]
+    (let [result (config/parse-settings "{:max-peers \"lots\"}" (config/default-settings nil))]
       (is (= :invalid-config (:error result)))
       (is (string? (:message result)))))
   (testing "an out-of-range peer port is an error"
-    (let [result (config/parse-settings "{:peer-port 99999}")]
+    (let [result (config/parse-settings "{:peer-port 99999}" (config/default-settings nil))]
       (is (= :invalid-config (:error result))))))
 
 (deftest parse-settings-ignores-unknown-keys-test
   (testing "future-slice keys pass through untouched for now"
-    (let [result (config/parse-settings "{:max-peers 10 :blocklist-path \"/x\"}")]
+    (let [result (config/parse-settings "{:max-peers 10 :blocklist-path \"/x\"}" (config/default-settings nil))]
       (is (= 10 (:max-peers (:ok result))))
-      (is (not (contains? (:ok result) :blocklist-path))))))
+      (is (not (contains? (:ok result) :blocklist-path)))))
+  (testing "non-comparable unknown keys warn instead of throwing on sort"
+    (let [result (config/parse-settings "{:max-peers 10 :future true \"legacy\" 1}" (config/default-settings nil))]
+      (is (= 10 (:max-peers (:ok result)))))))
 
 (deftest load-settings-reads-files-test
   (testing "a missing file means defaults, not an error"
-    (let [missing (str (test-utils/temp-dir "cfg-") "/absent.edn")]
-      (is (= {:ok config/default-settings}
-             (config/load-settings missing)))))
+    ;; Compares only the environment-stable keys: :output-dir comes from the
+    ;; real user-dirs.dirs on machines that have one, which the suite must
+    ;; not depend on.
+    (let [missing (str (test-utils/temp-dir "cfg-") "/absent.edn")
+          expected (config/default-settings nil)
+          actual (:ok (config/load-settings missing))]
+      (is (map? actual))
+      (doseq [key-name [:state-dir :piece-cache-dir :peer-port :max-peers]]
+        (is (= (get expected key-name) (get actual key-name))
+            (str "default for " key-name " differs")))))
   (testing "a present file merges over defaults"
     (let [dir (test-utils/temp-dir "cfg-")
           path (str dir "/settings.edn")]
@@ -49,7 +59,7 @@
       (let [result (config/load-settings path)]
         (is (= (str dir "/mine") (:output-dir (:ok result))))
         (is (= 7 (:max-peers (:ok result))))
-        (is (= (:state-dir config/default-settings)
+        (is (= (:state-dir (config/default-settings nil))
                (:state-dir (:ok result)))))))
   (testing "a corrupt file is an error"
     (let [dir (test-utils/temp-dir "cfg-")
@@ -59,33 +69,33 @@
         (is (= :invalid-config (:error result)))))))
 
 (deftest default-config-path-test
-  (testing "the default path lives under the user config dir"
-    (is (.endsWith ^String (config/default-config-path)
-                   ".config/cljtoc/config.edn"))))
+  (testing "the default path lives under the same config home everything else uses"
+    (is (.startsWith ^String (config/default-config-path) ^String config/config-home))
+    (is (.endsWith ^String (config/default-config-path) "cljtoc/config.edn"))))
 
 (deftest parse-settings-error-messages-name-the-fault-test
   (testing "a malformed document reports the reader's reason, not an internals dump"
-    (let [message (:message (config/parse-settings "{:max-peers"))]
+    (let [message (:message (config/parse-settings "{:max-peers" (config/default-settings nil)))]
       (is (re-find #"Could not parse config" message) message)
       (is (not (re-find #"Reduced" message)) message)))
   (testing "a non-map document names what it got"
     (is (re-find #"must be a map"
-                 (:message (config/parse-settings "[1 2 3]"))))))
+                 (:message (config/parse-settings "[1 2 3]" (config/default-settings nil)))))))
 
 (deftest parse-settings-tolerates-envelope-shaped-keys-test
   (testing "a document carrying :error is data, not a failed parse"
-    (let [result (config/parse-settings "{:error \"boom\"}")]
+    (let [result (config/parse-settings "{:error \"boom\"}" (config/default-settings nil))]
       (is (nil? (:message result)) "not mistaken for a refusal")
-      (is (= config/default-settings (:ok result)))
+      (is (= (config/default-settings nil) (:ok result)))
       (is (not (contains? (:ok result) :error)))))
   (testing "a document carrying :ok is data too"
-    (let [result (config/parse-settings "{:ok 1}")]
-      (is (= config/default-settings (:ok result)))
+    (let [result (config/parse-settings "{:ok 1}" (config/default-settings nil))]
+      (is (= (config/default-settings nil) (:ok result)))
       (is (not (contains? (:ok result) :ok))))))
 
 (deftest config-home-is-one-derivation-test
   (testing "the default config path lives under the same home the state dir uses"
-    (let [settings config/default-settings
+    (let [settings (config/default-settings nil)
           config-path (config/default-config-path)]
       (is (.startsWith ^String (:state-dir settings) ^String config/config-home))
       (is (.startsWith ^String config-path ^String config/config-home))
@@ -136,15 +146,16 @@
 (deftest piece-cache-lives-in-its-own-folder-test
   (testing "the cache is a named folder under the cljtoc cache root, not the root itself"
     (is (= (str config/cache-home "/cljtoc/pieces")
-           (:piece-cache-dir config/default-settings))))
+           (:piece-cache-dir (config/default-settings nil)))))
   (testing "state and cache are distinct directories even when both homes coincide"
-    (is (not= (:state-dir config/default-settings)
-              (:piece-cache-dir config/default-settings)))))
+    (is (not= (:state-dir (config/default-settings nil))
+              (:piece-cache-dir (config/default-settings nil))))))
 
 (deftest paths-pass-through-verbatim-test
   (testing "separator spelling is the filesystem's business, not the config's"
     (let [settings (:ok (config/parse-settings
-                         "{:output-dir \"/tmp//a/./b\"}"))]
+                         "{:output-dir \"/tmp//a/./b\"}"
+                         (config/default-settings nil)))]
       (is (= "/tmp//a/./b" (:output-dir settings))
           "no separator or segment rewriting happens here"))))
 
@@ -153,27 +164,27 @@
     ;; A relative dir means `lein run` and a jar invocation download to
     ;; different places, which is why the config rejects them instead.
     (doseq [value ["downloads" "./downloads" "../out" "~/Downloads" ""]]
-      (let [result (config/parse-settings (str "{:output-dir \"" value "\"}"))]
+      (let [result (config/parse-settings (str "{:output-dir \"" value "\"}") (config/default-settings nil))]
         (is (= :invalid-config (:error result))
             (str "accepted relative :output-dir " (pr-str value)))
         (is (re-find #":output-dir" (:message result))))))
   (testing "every directory key is checked, not just the output dir"
     (doseq [key-name [":state-dir" ":piece-cache-dir" ":output-dir"]]
       (is (= :invalid-config
-             (:error (config/parse-settings (str "{" key-name " \"relative/dir\"}"))))
+             (:error (config/parse-settings (str "{" key-name " \"relative/dir\"}") (config/default-settings nil))))
           (str "accepted a relative " key-name))))
   (testing "absolute paths with redundant separators still pass"
-    (is (some? (:ok (config/parse-settings "{:output-dir \"/tmp//a/./b\"}"))))))
+    (is (some? (:ok (config/parse-settings "{:output-dir \"/tmp//a/./b\"}" (config/default-settings nil)))))))
 
 (deftest refusal-messages-name-the-reason-test
   (testing "a tilde path is refused for the reason users get wrong"
-    (let [message (:message (config/parse-settings "{:output-dir \"~/Downloads\"}"))]
+    (let [message (:message (config/parse-settings "{:output-dir \"~/Downloads\"}" (config/default-settings nil)))]
       (is (re-find #"~ is not expanded" message) message)))
   (testing "a plain relative path is refused for its own reason"
-    (let [message (:message (config/parse-settings "{:state-dir \"./state\"}"))]
+    (let [message (:message (config/parse-settings "{:state-dir \"./state\"}" (config/default-settings nil)))]
       (is (re-find #"must be an absolute path" message) message)))
   (testing "non-directory keys keep the plain message"
-    (let [message (:message (config/parse-settings "{:max-peers \"lots\"}"))]
+    (let [message (:message (config/parse-settings "{:max-peers \"lots\"}" (config/default-settings nil)))]
       (is (not (re-find #"absolute path" message)) message)
       (is (re-find #":max-peers" message) message))))
 
@@ -203,12 +214,12 @@
 (deftest non-string-values-are-refused-test
   (testing "a non-string directory value is refused, not coerced"
     (doseq [value ["42" "nil" ":kw"]]
-      (let [result (config/parse-settings (str "{:output-dir " value "}"))]
+      (let [result (config/parse-settings (str "{:output-dir " value "}") (config/default-settings nil))]
         (is (= :invalid-config (:error result)) (str value " -> " (pr-str result))))))
   (testing "a non-integer peer port is refused"
-    (is (= :invalid-config (:error (config/parse-settings "{:peer-port \"6881\"}")))))
+    (is (= :invalid-config (:error (config/parse-settings "{:peer-port \"6881\"}" (config/default-settings nil))))))
   (testing "a non-integer peer cap is refused"
-    (is (= :invalid-config (:error (config/parse-settings "{:max-peers 1.5}"))))))
+    (is (= :invalid-config (:error (config/parse-settings "{:max-peers 1.5}" (config/default-settings nil)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Coverage residues (cloverage, scoped to this namespace: 100% lines,
@@ -223,3 +234,38 @@
 ;;   the suite depend on the machine it runs on. default-config-path is
 ;;   asserted directly instead.
 ;; ---------------------------------------------------------------------------
+
+(deftest absolute-path-rejects-unreadable-strings-test
+  (testing "a value Path/of cannot parse is refused, not thrown past validation"
+    ;; NUL bytes (and on Windows also <>:|?*) make java.nio.file.Path/of
+    ;; throw InvalidPathException instead of answering. The config must
+    ;; report them as invalid values, not crash the parse.
+    (let [nul (str "out" (char 0) "dir")
+          result (config/parse-settings (str "{:output-dir \"" nul "\"}")
+                                        (config/default-settings nil))]
+      (is (= :invalid-config (:error result)))
+      (is (re-find #":output-dir" (:message result))))))
+
+(deftest trailing-edn-is-refused-test
+  (testing "a second form after the map is trailing data, not a silent extra"
+    (let [result (config/parse-settings "{:max-peers 3} {:oops 1}"
+                                        (config/default-settings nil))]
+      (is (= :invalid-config (:error result)))
+      (is (re-find #"trailing data" (:message result)))))
+  (testing "a truncated second form is a parse failure, not a silent first map"
+    (let [result (config/parse-settings "{:max-peers 3} {"
+                                        (config/default-settings nil))]
+      (is (= :invalid-config (:error result)))))
+  (testing "trailing whitespace after the map still parses"
+    (let [result (config/parse-settings "{:max-peers 3}  \n"
+                                        (config/default-settings nil))]
+      (is (= 3 (:max-peers (:ok result)))))))
+
+(deftest home-subdir-policy-test
+  (testing "an unset or empty env value falls back to home-plus-subdir"
+    (is (= "/home/ana/.config" (#'config/home-subdir nil "/home/ana" "/.config")))
+    (is (= "/home/ana/.config" (#'config/home-subdir "" "/home/ana" "/.config"))))
+  (testing "a relative env value falls back instead of resolving against the cwd"
+    (is (= "/home/ana/.config" (#'config/home-subdir "rel/dir" "/home/ana" "/.config"))))
+  (testing "a nonempty absolute env value wins"
+    (is (= "/mnt/conf" (#'config/home-subdir "/mnt/conf" "/home/ana" "/.config")))))

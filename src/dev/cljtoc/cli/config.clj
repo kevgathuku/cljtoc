@@ -29,14 +29,25 @@
 (def ^:private file-separator
   (System/getProperty "file.separator"))
 
+(defn- home-subdir
+  "The env-or-home policy as a pure function: a nonempty absolute env value
+   wins, anything else (unset, empty, or relative — the XDG spec also treats
+   a relative XDG home as unset) falls back to home-plus-subdir. Pure so the
+   policy is testable; the JVM cannot set its own environment."
+  [env-value home-dir subdir]
+  (if (and (seq env-value)
+           (.isAbsolute ^java.io.File (io/file env-value)))
+    env-value
+    (str home-dir subdir)))
+
 (def config-home
   "Where cljtoc reads config from. One derivation, shared by the default
    config path and the state dir: two derivations disagreed under
    XDG_CONFIG_HOME, moving the state without moving the file."
-  (or (System/getenv "XDG_CONFIG_HOME") (str home-dir "/.config")))
+  (home-subdir (System/getenv "XDG_CONFIG_HOME") home-dir "/.config"))
 
 (def cache-home
-  (or (System/getenv "XDG_CACHE_HOME") (str home-dir "/.cache")))
+  (home-subdir (System/getenv "XDG_CACHE_HOME") home-dir "/.cache"))
 
 (defn- parse-xdg-download-dir
   "Extract XDG_DOWNLOAD_DIR from user-dirs.dirs content, expanding $HOME the
@@ -73,26 +84,28 @@
    path rather than reading config-home itself, so the unreadable branch is
    testable and default-download-dir stays pure."
   [path]
-  (let [file (io/file path)]
+  (let [^java.io.File file (io/file path)]
     (when (.exists file)
       (try (slurp file)
            (catch Exception _ nil)))))
 
-(def default-settings
-  "The knobs a user can actually change, with Transmission's values: port
-   51413 (TrDefaultPeerPort), 50 peers per torrent
+(defn default-settings
+  "Build the knobs a user can actually change, with Transmission's values:
+   port 51413 (TrDefaultPeerPort), 50 peers per torrent
    (TrDefaultPeerLimitTorrent), downloads in ~/Downloads
    (tr_getDefaultDownloadDir), resume state under the config home, the
-   piece cache under the cache home. Knobs the manager reserves but does
-   not enforce (:min-peers, :piece-timeout-ms, and friends) stay in
-   orchestration.download/default-config instead of being offered here
+   piece cache under the cache home. Pure: takes the user-dirs.dirs
+   content instead of reading it, so no file is touched at load time or
+   on require — the read happens once, in load-settings. Knobs the manager
+   reserves but does not enforce (:min-peers, :piece-timeout-ms, and friends)
+   stay in orchestration.download/default-config instead of being offered here
    as settings that do nothing."
+  [user-dirs-content]
   {:state-dir (str config-home "/cljtoc/state")
    :piece-cache-dir (str cache-home "/cljtoc/pieces")
    :output-dir (default-download-dir
                 {:home home-dir
-                 :user-dirs-content (user-dirs-content
-                                     (str config-home "/user-dirs.dirs"))
+                 :user-dirs-content user-dirs-content
                  :separator file-separator})
    :peer-port 51413
    :max-peers (:max-peers download/default-config)})
@@ -102,11 +115,15 @@
    are refused rather than resolved against the working directory: the same
    config would otherwise download somewhere different under `lein run` than
    under the jar, and `~/x` is relative to the JVM even though a shell would
-   expand it."
+   expand it. A malformed value (NUL bytes, and on Windows also <>:|?*)
+   makes Path/of throw instead of answering, so that refusal is caught here
+   and reported as not-absolute by the caller."
   [value]
   (and (string? value)
        (seq value)
-       (.isAbsolute (java.nio.file.Path/of value (into-array String [])))))
+       (try
+         (.isAbsolute ^java.nio.file.Path (java.nio.file.Path/of ^String value (into-array String [])))
+         (catch java.nio.file.InvalidPathException _ false))))
 
 (def ^:private dir-keys
   "Keys naming a directory, all of which must be absolute."
@@ -169,9 +186,16 @@
    The read result is wrapped in {:ok _} rather than inspected directly:
    a document carrying its own :error key must not be mistaken for a
    failed parse, which is what the unwrapped form did."
-  [text]
+  [text defaults]
   (let [read-result (try
-                      {:ok (edn/read-string text)}
+                      (let [reader (java.io.PushbackReader.
+                                    (java.io.StringReader. text))
+                            eof-marker (Object.)
+                            document (edn/read reader)
+                            trailing (edn/read {:eof eof-marker} reader)]
+                        (if (identical? trailing eof-marker)
+                          {:ok document}
+                          (config-error "Could not parse config: trailing data after the settings map")))
                       (catch Exception exception
                         (config-error (str "Could not parse config: "
                                            (.getMessage exception)))))]
@@ -185,12 +209,12 @@
                 unknown (apply dissoc document known-keys)]
             (when (seq unknown)
               (println (str "[config] WARNING: ignoring unknown keys: "
-                            (pr-str (sort (keys unknown))))))
+                            (pr-str (sort-by pr-str (keys unknown))))))
             (or (validate-known known)
-                {:ok (merge default-settings known)})))))))
+                {:ok (merge defaults known)})))))))
 
 (s/fdef parse-settings
-  :args (s/cat :text string?)
+  :args (s/cat :text string? :defaults map?)
   :ret ::settings-result)
 
 (defn default-config-path
@@ -208,11 +232,14 @@
    {:ok settings} or {:error :invalid-config :message msg}."
   ([path]
    (let [resolved (or path (default-config-path))
-         file (io/file resolved)]
+         ^java.io.File file (io/file resolved)]
      (if-not (.exists file)
-       {:ok default-settings}
+       {:ok (default-settings (user-dirs-content
+                               (str config-home "/user-dirs.dirs")))}
        (try
-         (parse-settings (slurp file))
+         (parse-settings (slurp file)
+                         (default-settings (user-dirs-content
+                                            (str config-home "/user-dirs.dirs"))))
          (catch Exception exception
            (config-error (str "Could not read config file " resolved
                               ": " (.getMessage exception)))))))))
