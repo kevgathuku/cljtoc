@@ -16,7 +16,7 @@ Check `git status` is clean and `git branch --show-current` is `main`, then crea
 
 ## 3. Recall prior decisions
 
-Via the `mempal` CLI (wing `torrent_client_clj`), run four lookups on the issue's area and fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body:
+Via the `mempal-recall` skill, run four lookups on the issue's area (project wing `torrent_client_clj`) and fold anything still binding into the plan (seams, option picks, things already tried); flag contradictions for the PR body:
 
 - `mempal search --wing torrent_client_clj "<area> decision"`: prior approaches, reverted attempts, naming choices that constrain the plan (verdicts on the claims themselves were settled in step 1 — do not re-litigate them here).
 - `mempal search --wing torrent_client_clj "<area> lesson failure mode"`: recurring failure modes for this area — mock drift from real envelopes, guard-before-call-site, inferred-vs-observed termination.

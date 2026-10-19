@@ -40,6 +40,6 @@ Record the outcome in the palace (wing `torrent_client_clj`, room `decisions`): 
 
 ## 7. File the diary entry
 
-Write session continuity to the palace diary (`mempalace_diary_write`, pi diary, AAAK-compressed): the review round addressed, the re-review state (requested, pending, or blocked), threads deferred to follow-up issues, and the next run's starting point. The per-thread verdicts already live in the step 6 decisions entry — the diary carries only what the next session needs to resume, never a second copy of the findings.
+Write session continuity to the palace diary (write a brief note file, then `mempal ingest --wing agent-diary --room <your-agent-name> <dir>`): the review round addressed, the re-review state (requested, pending, or blocked), threads deferred to follow-up issues, and the next run's starting point. The per-thread verdicts already live in the step 6 decisions entry — the diary carries only what the next session needs to resume, never a second copy of the findings.
 
 Done when a diary entry exists naming the round, the re-review state, and where the next run starts.

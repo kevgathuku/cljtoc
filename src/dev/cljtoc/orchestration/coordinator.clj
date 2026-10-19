@@ -27,7 +27,7 @@
 (s/def ::peer-state
   ;; Alias-relative re-def so the with-gen below survives the alias.
   ;; `(s/def ::alias :other/ns/spec)` strips the source spec's gen (see
-  ;; mempalace lesson), so we copy the body here and add a fresh
+  ;; mempal lesson), so we copy the body here and add a fresh
   ;; with-gen. The delegation is purely cosmetic — every (s/valid? ::peer-state …)
   ;; call still runs the key-check on the underlying record.
   (s/with-gen :dev.cljtoc.protocol.peer-state/peer-state
