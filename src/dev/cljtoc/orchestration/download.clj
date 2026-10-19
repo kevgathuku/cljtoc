@@ -117,7 +117,10 @@
 
 (s/def ::network-port any?)
 
-(s/def ::disk-port any?)
+;; An IDiskPort implementation or nil. Nil ports are a designed tolerance
+;; (resume-download's bare arity, evict-completed-cache's nil skip), so the
+;; spec admits nil rather than pretending every call carries a live port.
+(s/def ::disk-port (s/nilable #(satisfies? disk/IDiskPort %)))
 
 (s/def ::time-port any?)
 
@@ -367,9 +370,20 @@
       (println (str "[complete] WARNING: cache eviction failed: " (:message result))))
     download))
 
+(s/def ::info-hash bytes?)
+
+(s/def ::torrent (s/keys :opt-un [::info-hash]))
+
+;; A download record or the partial maps tests hand around: a :state key is
+;; always present, and :torrent (with its :info-hash) travels along only when
+;; there is one. The fn tolerates a missing info-hash by skipping eviction, so
+;; :torrent stays optional — requiring it would pin a shape the error paths
+;; never carry.
+(s/def ::download (s/keys :req-un [::state] :opt-un [::torrent]))
+
 (s/fdef evict-completed-cache
-  :args (s/cat :disk-port any? :download map?)
-  :ret map?)
+  :args (s/cat :disk-port ::disk-port :download ::download)
+  :ret ::download)
 
 (defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
