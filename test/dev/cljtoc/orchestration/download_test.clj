@@ -1730,8 +1730,8 @@
 ;; (check on calculate-rate dies in (time/now <generated-long>)):
 ;; calculate-rate, complete-download, accumulate-downtime,
 ;; update-stats-bytes, initial-stats, initial-download, progress (time
-;; port); start-download, run-event-loop, run-download
-;; (ports, channels, workers);
+;; port); start-download, run-event-loop, run-download,
+;; evict-completed-cache (ports, channels, workers);
 ;; watch-workers! (channels close on worker exit — no generated channel).
 ;; ---------------------------------------------------------------------------
 

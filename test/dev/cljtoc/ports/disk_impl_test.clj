@@ -1159,3 +1159,19 @@
     (let [port (disk-impl/create {:state-dir (test-utils/temp-dir "disk-state-")
                                   :piece-cache-dir (test-utils/temp-dir "piece-cache-")})]
       (is (= {:ok :evicted} (disk/evict-piece-cache port (byte-array 20)))))))
+
+(deftest evict-piece-cache-reports-undeletable-entries-test
+  (testing "entries that survive deletion surface as :evict-error, not :evicted"
+    (let [cache-dir (test-utils/temp-dir "piece-cache-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "disk-state-")
+                                  :piece-cache-dir cache-dir})
+          info-hash (byte-array 20)
+          scope-dir (io/file cache-dir (disk/cache-scope info-hash))]
+      (disk/write-piece port info-hash 0 (byte-array [1 2 3 4]))
+      (.setWritable scope-dir false false)
+      (try
+        (let [result (disk/evict-piece-cache port info-hash)]
+          (is (= :evict-error (:error result)))
+          (is (string? (:message result))))
+        (finally
+          (.setWritable scope-dir true false))))))

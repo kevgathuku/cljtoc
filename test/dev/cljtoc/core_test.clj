@@ -211,3 +211,11 @@
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
       (is (nil? (#'core/load-command-state port dir []))))))
+
+(deftest load-command-state-ignores-path-fallback-for-bare-ids-test
+  (testing "a missing dotted id does not resolve to another download's state"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "archive" :state :paused})
+      (is (nil? (#'core/load-command-state port dir ["archive.v2"]))
+          "archive.v2 is a bare id, not a torrent path — no fallback, no wrong download"))))

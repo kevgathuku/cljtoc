@@ -10,6 +10,8 @@ Beads is issue tracking that lives in your repo, making it perfect for AI coding
 
 ## Quick Start
 
+Cloning fetches code but not the Dolt issue database, so run `bd bootstrap` once after cloning (it wires the remote history without destroying anything). `bd init` below is only for starting a new project.
+
 ### Essential Commands
 
 ```bash
@@ -24,7 +26,7 @@ bd show <issue-id>
 
 # Update issue status
 bd update <issue-id> --claim
-bd update <issue-id> --status done
+bd close <issue-id>
 
 # Sync with Dolt remote
 bd dolt push
