@@ -43,8 +43,11 @@
   [ip-address]
   (when ip-address
     (let [parts (string/split ip-address #"\." -1)]
+      ;; \d{1,3} bounds length as well as charset: no valid octet
+        ;; exceeds 3 digits, so over-long runs are rejected here instead
+        ;; of overflowing parseInt below.
       (when (and (= 4 (count parts))
-                 (every? #(re-matches #"\d+" %) parts))
+                 (every? #(re-matches #"\d{1,3}" %) parts))
         (mapv #(Integer/parseInt %) parts)))))
 
 (defn- valid-ipv4?

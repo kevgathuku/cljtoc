@@ -83,7 +83,11 @@
       "1.2.3."
       "1.2.3.4.5"
       ""
-      nil)))
+      nil))
+  (testing "over-long digit runs are rejected before parsing, not overflowed"
+    (are [addr] (nil? (tracker/split-ipv4 addr))
+      "99999999999999999999.0.0.1"
+      "1000.0.0.1")))
 
 (deftest parse-compact-peers-ipv4-basic-test
   (testing "parses single IPv4 peer in compact format"
