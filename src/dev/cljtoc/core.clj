@@ -9,7 +9,8 @@
             [dev.cljtoc.ports.time :as time-port]
             [dev.cljtoc.cli.state :as cli-state]
             [clojure.java.io :as io]
-            [clojure.pprint :as pp])
+            [clojure.pprint :as pp]
+            [clojure.string :as str])
   (:gen-class))
 
 (defn- read-torrent-file [path]
@@ -92,14 +93,36 @@
     {:manager (download/manager network-port disk-port time-port {})
      :time-port time-port}))
 
+(defn- torrent-path-arg?
+  "True when a command argument looks like a torrent path rather than a
+   bare download id: it carries a `.torrent` suffix or a path separator.
+   A bare id never ends in `.torrent` (ids derive from torrent filenames
+   minus the extension) and never carries a separator, so gating the
+   `id-from-path` fallback on this keeps a missing dotted id from
+   resolving to another download's state."
+  [arg]
+  (or (str/ends-with? arg ".torrent")
+      (str/includes? arg "/")))
+
 (defn- load-command-state
   "Load the record a command should act on: the named id, else the most
    recent. Returns the record or nil when nothing is there. A corrupt file
    reads as nil — the CLI's long-standing missing-state story (commands
-   print not-found); the port still reports :load-error in its own contract."
+   print not-found); the port still reports :load-error in its own contract.
+
+   A torrent path resolves too: download derives its id from the torrent
+   path, so users mirror `torrent.download <path>` when they resume. The
+   exact id is tried first, and the path fallback runs only for arguments
+   that look like torrent paths (a `.torrent` suffix or a path separator)
+   — deriving unconditionally would mangle a bare id that carries dots
+   (`archive.v2` would re-derive as `archive` and return the wrong
+   download, so `torrent.stop archive.v2` could delete `archive`)."
   [disk-port state-dir args]
   (if (seq args)
-    (:ok (disk/load-state disk-port (first args)))
+    (let [arg (first args)]
+      (or (:ok (disk/load-state disk-port arg))
+          (when (torrent-path-arg? arg)
+            (:ok (disk/load-state disk-port (disk/id-from-path arg))))))
     (cli-state/load-most-recent disk-port state-dir)))
 
 (defn- cmd-torrent-download

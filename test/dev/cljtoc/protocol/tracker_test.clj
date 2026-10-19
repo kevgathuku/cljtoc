@@ -3,14 +3,13 @@
    [clojure.spec.alpha :as s]
    [clojure.spec.test.alpha :as stest]
    [clojure.string :as string]
-   [clojure.test :refer [deftest is testing]]
+   [clojure.test :refer [deftest is testing are]]
    [clojure.test.check.clojure-test :refer [defspec]]
    [clojure.test.check.generators :as gen]
    [clojure.test.check.properties :as prop]
    [dev.cljtoc.domain.bencode :as bencode]
    [dev.cljtoc.protocol.tracker :as tracker]
-   [dev.cljtoc.protocol.tracker.spec :as spec]
-   [dev.cljtoc.test-utils :refer [to-bytes]]))
+   [dev.cljtoc.test-utils :refer [to-bytes ip-string-to-parts]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test helpers
@@ -23,14 +22,84 @@
                       [(unchecked-byte (bit-shift-right port 8))
                        (unchecked-byte (bit-and port 0xFF))])))
 
-(defn- ip-string-to-parts
-  "Convert IP address string to byte parts"
-  [ip-str]
-  (mapv #(Integer/parseInt %) (string/split ip-str #"\.")))
-
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: Compact peer parsing (IPv4)
 ;; ---------------------------------------------------------------------------
+
+(deftest ipv4-address-spec-test
+  (testing "strict octets accept dotted quads"
+    (are [addr] (s/valid? ::tracker/ipv4-address addr)
+      "0.0.0.0"
+      "10.0.0.9"
+      "192.168.1.1"
+      "255.255.255.255"))
+  (testing "overflow octets and malformed shapes are rejected"
+    (are [addr] (not (s/valid? ::tracker/ipv4-address addr))
+      "999.999.999.999"
+      "256.0.0.1"
+      "1.2.3"
+      "1.2.3.4.5"
+      "abc"
+      ""
+      nil)))
+
+(deftest ipv6-address-spec-test
+  (testing "full 8-group form is accepted, any case"
+    (are [addr] (s/valid? ::tracker/ipv6-address addr)
+      "0:0:0:0:0:0:0:0"
+      "0:0:0:0:0:0:0:1"
+      "fe80:0000:0000:0000:0000:0000:0000:0001"
+      "FE80:0000:0000:0000:0000:0000:0000:0001"))
+  (testing "compressed form, wrong group counts, and non-hex are rejected"
+    (are [addr] (not (s/valid? ::tracker/ipv6-address addr))
+      "::1"
+      ":"
+      "12345"
+      "1:2:3:4:5:6:7"
+      "1:2:3:4:5:6:7:8:9"
+      "gggg:0000:0000:0000:0000:0000:0000:0001")))
+
+(deftest ip-address-spec-tags-family-test
+  (testing "conform tags which family matched"
+    (is (= [:v4 "10.0.0.9"] (s/conform ::tracker/ip-address "10.0.0.9")))
+    (is (= [:v6 "0:0:0:0:0:0:0:1"] (s/conform ::tracker/ip-address "0:0:0:0:0:0:0:1")))))
+
+(defspec ipv4-generator-round-trips 100
+  (prop/for-all [addr (s/gen ::tracker/ipv4-address)]
+                (= :v4 (first (s/conform ::tracker/ip-address addr)))))
+
+(defspec ipv6-generator-round-trips 100
+  (prop/for-all [addr (s/gen ::tracker/ipv6-address)]
+                (= :v6 (first (s/conform ::tracker/ip-address addr)))))
+
+(defspec ip-address-generates-conforming-values 100
+     (prop/for-all [addr (s/gen ::tracker/ip-address)]
+       (not= :clojure.spec.alpha/invalid (s/conform ::tracker/ip-address addr))))
+
+(deftest ip-address-generates-both-families-test
+  (testing "generated values cover v4 and v6"
+    (let [addrs (gen/sample (s/gen ::tracker/ip-address) 200)]
+      (is (some #(string/includes? % ".") addrs)) ; ipv4
+      (is (some #(string/includes? % ":") addrs))))) ; ipv6
+
+(deftest split-ipv4-returns-octets-or-nil-test
+  (testing "dotted quads split into four integers"
+    (is (= [10 0 0 9] (tracker/split-ipv4 "10.0.0.9")))
+    (is (= [0 0 0 0] (tracker/split-ipv4 "0.0.0.0"))))
+  (testing "out-of-range octets still split — range is the validator's job"
+    (is (= [999 0 0 1] (tracker/split-ipv4 "999.0.0.1"))))
+  (testing "structural failures return nil, never throw"
+    (are [addr] (nil? (tracker/split-ipv4 addr))
+      "abc"
+      "1.2.3"
+      "1.2.3."
+      "1.2.3.4.5"
+      ""
+      nil))
+  (testing "over-long digit runs are rejected before parsing, not overflowed"
+    (are [addr] (nil? (tracker/split-ipv4 addr))
+      "99999999999999999999.0.0.1"
+      "1000.0.0.1")))
 
 (deftest parse-compact-peers-ipv4-basic-test
   (testing "parses single IPv4 peer in compact format"
@@ -65,8 +134,10 @@
       (is (= [] (:ok result))))))
 
 (defspec parse-compact-peers-ipv4-generative-test 100
-  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::spec/ip-address)
-                                              (s/gen ::spec/port))
+  ;; Compact wire format is IPv4-only (6 bytes per peer), so generate
+  ;; ::ipv4-address even though ::ip-address now covers both families.
+  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::tracker/ipv4-address)
+                                              (s/gen ::tracker/port))
                                    1 10)]
     ;; Property: parse(build(peers)) = peers
                 (let [bytes (byte-array
@@ -87,24 +158,24 @@
 
 (defspec generated-peers-satisfy-spec 100
   (testing "All generated peers satisfy the peer spec"
-    (prop/for-all [peer (s/gen ::spec/peer)]
-                  (s/valid? ::spec/peer peer))))
+    (prop/for-all [peer (s/gen ::tracker/peer)]
+                  (s/valid? ::tracker/peer peer))))
 
 (defspec generated-peer-ids-are-valid 100
   (testing "All generated peer-ids are exactly 20 bytes"
-    (prop/for-all [peer-id (s/gen ::spec/peer-id)]
+    (prop/for-all [peer-id (s/gen ::tracker/peer-id)]
                   (and (bytes? peer-id)
                        (= 20 (alength peer-id))))))
 
 (defspec generated-info-hashes-are-valid 100
   (testing "All generated info-hashes are exactly 20 bytes"
-    (prop/for-all [info-hash (s/gen ::spec/info-hash)]
+    (prop/for-all [info-hash (s/gen ::tracker/info-hash)]
                   (and (bytes? info-hash)
                        (= 20 (alength info-hash))))))
 
 (defspec generated-ports-are-in-range 100
   (testing "All generated ports are in valid range and realistic"
-    (prop/for-all [port (s/gen ::spec/port)]
+    (prop/for-all [port (s/gen ::tracker/port)]
                   (and (int? port)
                        (<= 1 port 65535)
                        (>= port 1024)))))  ; Our generator uses 1024-65535
@@ -890,12 +961,12 @@
       (testing (str "error map has :error and :message: " err)
         (is (contains? err :error))
         (is (contains? err :message))
-        (is (s/valid? ::spec/tracker-error err))))))
+        (is (s/valid? ::tracker/tracker-error err))))))
 
 ;; T083: Verify :spec-explain is present in validate-input errors
 (deftest validate-input-spec-explain-test
   (testing "validate-input includes :spec-explain for registered spec failures"
-    (let [result (tracker/validate-input ::spec/info-hash (byte-array 10))]
+    (let [result (tracker/validate-input ::tracker/info-hash (byte-array 10))]
       (is (= :invalid-input (:error result)))
       (is (contains? result :spec-explain))
       (is (some? (:spec-explain result))))))
@@ -903,8 +974,8 @@
 ;; T083 generative: all validate-input error maps satisfy ::tracker-error
 (defspec error-maps-satisfy-spec 50
   (prop/for-all [bad-len (gen/choose 1 19)]
-                (let [result (tracker/validate-input ::spec/info-hash (byte-array bad-len))]
-                  (s/valid? ::spec/tracker-error result))))
+                (let [result (tracker/validate-input ::tracker/info-hash (byte-array bad-len))]
+                  (s/valid? ::tracker/tracker-error result))))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 9: US6 Re-Announce Timing (T090-T096)
@@ -974,7 +1045,7 @@
 
 ;; Generative: failure always increments retry-attempt by 1
 (defspec update-schedule-failure-increments-attempt 50
-  (prop/for-all [schedule (s/gen ::spec/announce-schedule)]
+  (prop/for-all [schedule (s/gen ::tracker/announce-schedule)]
                 (let [result (tracker/update-schedule-failure schedule 0)]
                   (and (contains? result :ok)
                        (= (inc (:retry-attempt schedule))
@@ -1164,3 +1235,14 @@
           result (tracker/parse-udp-announce-response bytes {:action :connect :transaction-id 42})]
       (is (= :action-mismatch (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
+
+(deftest tracker-instrumentation-toggle-round-trips-test
+  (testing "instrumenting rejects bad args; unstrumenting restores the plain call"
+    (tracker/instrument-tracker!)
+    (try
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (tracker/tracker-error "not-a-keyword" 42)))
+      (finally
+        (tracker/unstrument-tracker!)))
+    (is (= {:error "not-a-keyword" :message 42}
+           (tracker/tracker-error "not-a-keyword" 42)))))

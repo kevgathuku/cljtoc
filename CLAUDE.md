@@ -46,8 +46,10 @@ This protocol applies when ending a Beads implementation workflow. It is subordi
 
    # Team-maintainer opt-in only, unless current instructions forbid it:
    git pull --rebase
+   bd dolt push
    git push
    git status
+   # Report a Dolt sync failure separately from a Git push failure.
    ```
 5. **Hand off** - Summarize changes, validation, issue status, and any blocked sync/commit/push step
 

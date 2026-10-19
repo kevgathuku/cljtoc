@@ -1,6 +1,7 @@
 (ns dev.cljtoc.test-utils
   "Shared test utilities and helper functions."
   (:require [clojure.java.io :as io]
+            [clojure.string :as string]
             [clojure.spec.test.alpha :as stest]
             [clojure.core.async.impl.protocols :as chan]
             [dev.cljtoc.domain.torrent :as torrent]
@@ -81,3 +82,11 @@
   "Create a byte array from a sequence of byte values."
   [& vals]
   (byte-array (map unchecked-byte vals)))
+
+(defn ip-string-to-parts
+  "Convert an IP address string to byte parts for compact-peer fixtures.
+   Test-only: Integer/parseInt throws on non-numeric input, which is fine
+   for fixtures built from known-good strings but must never run on
+   hostile input — production parsing needs its own guarded version."
+  [ip-str]
+  (mapv #(Integer/parseInt %) (string/split ip-str #"\.")))

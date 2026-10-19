@@ -196,7 +196,26 @@
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= "new" (:id (#'core/load-command-state port dir []))))))
+  (testing "a torrent path resolves to the id the download was saved under"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "path" :state :paused})
+      (is (= "path" (:id (#'core/load-command-state port dir ["./tmp/path.torrent"]))))
+      (is (= "path" (:id (#'core/load-command-state port dir ["./tmp/path"]))))))
+  (testing "an exact id wins over path derivation, so dotted ids are not mangled"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "archive.v2" :state :paused})
+      (is (= "archive.v2" (:id (#'core/load-command-state port dir ["archive.v2"]))))))
   (testing "no id with an empty dir reads as nil"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
       (is (nil? (#'core/load-command-state port dir []))))))
+
+(deftest load-command-state-ignores-path-fallback-for-bare-ids-test
+  (testing "a missing dotted id does not resolve to another download's state"
+    (let [dir (test-utils/temp-dir "core-cmd-state-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "archive" :state :paused})
+      (is (nil? (#'core/load-command-state port dir ["archive.v2"]))
+          "archive.v2 is a bare id, not a torrent path — no fallback, no wrong download"))))

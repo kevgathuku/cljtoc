@@ -5,8 +5,9 @@
   (HTTP and UDP). All functions return {:ok value} or {:error ...} maps.
   Network I/O is handled by injectable ports (not part of this namespace)."
   (:require [dev.cljtoc.domain.bencode :as bencode]
-            [dev.cljtoc.protocol.tracker.spec :as spec]
             [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen]
+            [clojure.spec.test.alpha :as stest]
             [clojure.string :as string])
   (:import [java.nio ByteBuffer]
            [java.net InetAddress]))
@@ -14,6 +15,275 @@
 ;; Byte arrays flow through tracker message builders and parsers here; fail the
 ;; compile on reflective calls so boxing never hides in the hot path.
 (set! *warn-on-reflection* true)
+
+;; ---------------------------------------------------------------------------
+;; Custom generators for protocol-aware test data
+;; ---------------------------------------------------------------------------
+
+(defn- gen-bytes
+  "Generate byte array of exact length n"
+  [n]
+  (gen/fmap byte-array
+            (gen/vector (gen/choose -128 127) n)))
+
+(def gen-info-hash
+  "Generate exactly 20-byte array for info-hash"
+  (gen-bytes 20))
+
+(def gen-peer-id
+  "Generate exactly 20-byte array for peer-id"
+  (gen-bytes 20))
+
+(def gen-port
+  "Generate realistic port numbers (1024-65535)"
+  (gen/choose 1024 65535))
+
+(defn split-ipv4
+  "Split an IPv4 address string to constituent parts"
+  [ip-address]
+  (when ip-address
+    (let [parts (string/split ip-address #"\." -1)]
+      ;; \d{1,3} bounds length as well as charset: no valid octet
+        ;; exceeds 3 digits, so over-long runs are rejected here instead
+        ;; of overflowing parseInt below.
+      (when (and (= 4 (count parts))
+                 (every? #(re-matches #"\d{1,3}" %) parts))
+        (mapv #(Integer/parseInt %) parts)))))
+
+(defn- valid-ipv4?
+  "Return true if an IPv4 address string is valid, false otherwise"
+  [ip-address]
+  (if ip-address
+    (let [parts (split-ipv4 ip-address)]
+      (cond
+        (and (some? parts)
+             (every? #(<= 0 % 255) parts)) true
+        :else false)) false))
+
+(defn split-ipv6
+  "Split an IPv6 address string to constituent parts"
+  [ip-address]
+  (when ip-address
+    (let [parts (string/split ip-address #"\:" -1)]
+      (when (and (= 8 (count parts))
+                 (every? #(re-matches #"([0-9a-fA-F]{1,4})" %) parts))
+        (mapv #(Integer/parseInt % 16) parts)))))
+
+(defn- valid-ipv6?
+  "Return true if an IPv6 address string is valid, false otherwise
+  full form only, compressed to be done in .28"
+  [ip-address]
+  (if ip-address
+    (let [parts (split-ipv6 ip-address)]
+      (cond
+        (and (some? parts)
+             (every? #(<= 0 % 65535) parts)) true
+        :else false)) false))
+
+(def gen-ipv4-address
+  "Generate valid IPv4 address string"
+  (gen/fmap (fn [[a b c d]]
+              (str a "." b "." c "." d))
+            (gen/tuple (gen/choose 0 255)
+                       (gen/choose 0 255)
+                       (gen/choose 0 255)
+                       (gen/choose 0 255))))
+
+(def gen-ipv6-address
+  "Generate valid IPv6 address string"
+  (gen/fmap (fn [[a b c d e f g h]]
+              (str (format "%x" a) ":" (format "%x" b) ":" (format "%x" c) ":" (format "%x" d) ":" (format "%x" e) ":" (format "%x" f) ":" (format "%x" g) ":" (format "%x" h)))
+            (gen/tuple (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535))))
+
+;; ---------------------------------------------------------------------------
+;; Basic field specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::info-hash
+  (s/with-gen
+    (s/and bytes?
+           #(= 20 (alength ^bytes %)))
+    (constantly gen-info-hash)))
+
+(s/def ::peer-id
+  (s/with-gen
+    (s/and bytes?
+           #(= 20 (alength ^bytes %)))
+    (constantly gen-peer-id)))
+
+(s/def ::port
+  (s/with-gen
+    (s/int-in 1 65536)  ; 1-65535 inclusive
+    (constantly gen-port)))
+
+(s/def ::ipv4-address
+  (s/with-gen
+    (s/and string? #(valid-ipv4? %))
+    (constantly gen-ipv4-address)))
+
+(s/def ::ipv6-address
+  (s/with-gen
+    (s/and string? #(valid-ipv6? %))
+    (constantly gen-ipv6-address)))
+
+(s/def ::ip-address
+  (s/or :v4 ::ipv4-address
+        :v6 ::ipv6-address))
+
+(s/def ::event
+  ;; nil means none (BEP 15 event 0): a set would read as a predicate
+  ;; here, and a set containing nil never matches nil, so nilable it is.
+  (s/nilable #{:started :completed :stopped}))
+
+(s/def ::protocol
+  #{:http :udp})
+
+;; ---------------------------------------------------------------------------
+;; Entity specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::peer
+  (s/keys :req-un [::ip-address ::port]
+          :opt-un [::peer-id]))
+
+;; Tracker response fields
+(s/def ::success boolean?)
+(s/def ::interval pos-int?)
+(s/def ::min-interval pos-int?)
+(s/def ::complete nat-int?)
+(s/def ::incomplete nat-int?)
+(s/def ::tracker-id string?)
+(s/def ::failure-reason string?)
+(s/def ::warning-message string?)
+(s/def ::peers (s/coll-of ::peer))
+(s/def ::response-type #{:connect :announce :scrape})
+
+(s/def ::tracker-response
+  (s/keys :req-un [::success ::protocol ::response-type]
+          :opt-un [::peers ::interval ::min-interval ::complete ::incomplete
+                   ::tracker-id ::failure-reason ::warning-message]))
+
+;; ---------------------------------------------------------------------------
+;; Request parameter specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::uploaded nat-int?)
+(s/def ::downloaded nat-int?)
+(s/def ::left nat-int?)
+(s/def ::num-want pos-int?)
+(s/def ::compact boolean?)
+(s/def ::no-peer-id boolean?)
+(s/def ::tracker-url string?)
+
+(s/def ::tracker-request
+  (s/keys :req-un [::info-hash ::peer-id ::port
+                   ::uploaded ::downloaded ::left]
+          :opt-un [::event ::compact ::num-want
+                   ::no-peer-id ::tracker-id]))
+
+;; ---------------------------------------------------------------------------
+;; UDP tracker field specs (BEP 15)
+;; ---------------------------------------------------------------------------
+
+(s/def ::transaction-id int?)      ; 32-bit signed int (opaque, echoed by tracker)
+(s/def ::connection-id int?)       ; 64-bit signed long (opaque identifier from tracker)
+(s/def ::leechers nat-int?)
+(s/def ::seeders nat-int?)
+(s/def ::completed nat-int?)
+(s/def ::action #{:connect :announce :scrape :error})
+
+;; The request side a UDP response is checked against: the action and
+;; transaction-id the live request sent. Either key may be absent to skip
+;; that check; both present is the strict check.
+(s/def ::udp-response-expectation
+  (s/keys :opt-un [::action ::transaction-id]))
+
+;; Scrape entry per torrent
+(s/def ::scrape-stat
+  (s/keys :req-un [::seeders ::completed ::leechers]))
+(s/def ::torrents (s/coll-of ::scrape-stat))
+
+;; Per-response composite specs
+(s/def ::udp-connect-response
+  (s/keys :req-un [::action ::transaction-id ::connection-id]))
+(s/def ::udp-announce-response
+  (s/keys :req-un [::action ::transaction-id ::interval
+                   ::leechers ::seeders ::peers]))
+(s/def ::udp-error-response
+  (s/keys :req-un [::action ::transaction-id ::failure-reason ::success]))
+(s/def ::udp-scrape-response
+  (s/keys :req-un [::action ::transaction-id ::torrents]))
+
+;; Generators for UDP types
+(def gen-transaction-id gen/int)
+(def gen-connection-id gen/large-integer)
+
+;; ---------------------------------------------------------------------------
+;; UDP request composite specs (BEP 15)
+;; ---------------------------------------------------------------------------
+
+(s/def ::info-hashes
+  (s/with-gen
+    (s/coll-of ::info-hash :min-count 1)
+    #(gen/vector gen-info-hash 1 5)))
+
+(s/def ::udp-connect-request
+  (s/keys :req-un [::transaction-id]))
+
+(s/def ::udp-announce-request
+  (s/keys :req-un [::connection-id ::transaction-id ::info-hash ::peer-id
+                   ::downloaded ::left ::uploaded ::port]
+          :opt-un [::event ::num-want]))
+
+(s/def ::udp-scrape-request
+  (s/keys :req-un [::connection-id ::transaction-id ::info-hashes]))
+
+;; ---------------------------------------------------------------------------
+;; Result/return value specs
+;; ---------------------------------------------------------------------------
+
+(s/def ::ok any?)  ; Generic success value - type depends on function
+(s/def ::error keyword?)
+(s/def ::message string?)
+(s/def ::spec-explain (s/nilable map?))  ; clojure.spec explain-data
+
+(s/def ::error-result
+  (s/keys :req-un [::error ::message]
+          :opt-un [::spec-explain]))
+
+;; US5: TrackerError spec (T088)
+;; Documents the shape of all tracker error maps (consistent with tracker-error fn)
+(s/def ::tracker-error
+  (s/keys :req-un [::error ::message]
+          :opt-un [::spec-explain]))
+
+;; US6: AnnounceSchedule specs (T101)
+(s/def ::interval-seconds pos-int?)
+(s/def ::retry-attempt nat-int?)
+(s/def ::backoff-delay-ms nat-int?)
+(s/def ::next-announce-time nat-int?)  ; ms since epoch (0 = immediate)
+
+(s/def ::announce-schedule
+  (s/keys :req-un [::next-announce-time ::interval-seconds
+                   ::retry-attempt ::backoff-delay-ms]))
+
+;; T104: Spec instrumentation toggle (opt-in, FR-032)
+(defn instrument-tracker!
+  "Enable spec instrumentation for all tracker functions (development/test use)."
+  []
+  (stest/instrument (stest/enumerate-namespace 'dev.cljtoc.protocol.tracker)))
+
+(defn unstrument-tracker!
+  "Disable spec instrumentation for all tracker functions."
+  []
+  (stest/unstrument (stest/enumerate-namespace 'dev.cljtoc.protocol.tracker)))
 
 ;; ---------------------------------------------------------------------------
 ;; Error constructors
@@ -28,7 +298,7 @@
 
 (s/fdef tracker-error
   :args (s/cat :error-type keyword? :message string? :context (s/* any?))
-  :ret  (s/keys :req-un [::spec/error ::spec/message])
+  :ret  (s/keys :req-un [::error ::message])
   :fn   #(and (= (-> % :args :error-type) (-> % :ret :error))
               (= (-> % :args :message)    (-> % :ret :message))))
 
@@ -107,7 +377,7 @@
 
 (s/fdef validate-input
   :args (s/cat :spec-key any? :data any?)
-  :ret  (s/nilable (s/keys :req-un [::spec/error ::spec/message]))
+  :ret  (s/nilable (s/keys :req-un [::error ::message]))
   :fn   #(if (s/valid? (-> % :args :spec-key) (:data (:args %)))
            (nil? (:ret %))
            (some? (:ret %))))
@@ -149,8 +419,8 @@
 
 (s/fdef parse-compact-peers-ipv4
   :args (s/cat :peers-bytes bytes?)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
         ;; If successful, peer count should match input length / 6
        :success #(let [peers-bytes ^bytes (:peers-bytes (:args %))
@@ -193,8 +463,8 @@
 
 (s/fdef parse-compact-peers-ipv6
   :args (s/cat :peers-bytes bytes?)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
         ;; If successful, peer count should match input length / 18
        :success #(let [peers-bytes ^bytes (:peers-bytes (:args %))
@@ -249,8 +519,8 @@
 
 (s/fdef parse-dictionary-peers
   :args (s/cat :peers-list sequential?)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
         ;; If successful, peer list should match input list length
        :success #(let [input-count (count (-> % :args :peers-list))
@@ -333,9 +603,9 @@
 
 (s/fdef parse-http-tracker-response
   :args (s/cat :response-bytes bytes?)
-  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
-                             #(s/valid? ::spec/tracker-response (:ok %)))
-             :error ::spec/error-result)
+  :ret (s/or :success (s/and (s/keys :req-un [::ok])
+                             #(s/valid? ::tracker-response (:ok %)))
+             :error ::error-result)
   :fn (s/or
         ;; If successful, result should be a valid tracker response
        :success #(let [response (:ok (second (:ret %)))]
@@ -384,7 +654,7 @@
     {:ok url-string} or {:error ...}"
   [^String tracker-url request]
   ;; T050: Input validation
-  (if-let [validation-error (validate-input ::spec/tracker-request request)]
+  (if-let [validation-error (validate-input ::tracker-request request)]
     validation-error
     ;; T046: Build required parameters
     (let [{:keys [info-hash peer-id port uploaded downloaded left
@@ -428,10 +698,10 @@
 
 (s/fdef build-http-announce-url
   :args (s/cat :tracker-url string?
-               :request ::spec/tracker-request)
-  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
+               :request ::tracker-request)
+  :ret (s/or :success (s/and (s/keys :req-un [::ok])
                              #(string? (:ok %)))
-             :error ::spec/error-result)
+             :error ::error-result)
   :fn (s/or
         ;; If successful, URL should start with the tracker-url base
        :success #(let [tracker-url ^String (:tracker-url (:args %))
@@ -509,10 +779,10 @@
 (s/fdef parse-udp-connect-response
   :args (s/or :unary (s/cat :response-bytes bytes?)
               :binary (s/cat :response-bytes bytes?
-                             :expected ::spec/udp-response-expectation))
-  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
-                             #(s/valid? ::spec/udp-connect-response (:ok %)))
-             :error ::spec/error-result)
+                             :expected ::udp-response-expectation))
+  :ret (s/or :success (s/and (s/keys :req-un [::ok])
+                             #(s/valid? ::udp-connect-response (:ok %)))
+             :error ::error-result)
   :fn (s/or
        :success #(= :connect (-> % :ret second :ok :action))
        :error   #(= :error (first (:ret %)))))
@@ -574,10 +844,10 @@
 (s/fdef parse-udp-announce-response
   :args (s/or :unary (s/cat :response-bytes bytes?)
               :binary (s/cat :response-bytes bytes?
-                             :expected ::spec/udp-response-expectation))
-  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
-                             #(s/valid? ::spec/udp-announce-response (:ok %)))
-             :error ::spec/error-result)
+                             :expected ::udp-response-expectation))
+  :ret (s/or :success (s/and (s/keys :req-un [::ok])
+                             #(s/valid? ::udp-announce-response (:ok %)))
+             :error ::error-result)
   :fn (s/or
        :success #(= :announce (-> % :ret second :ok :action))
        :error   #(= :error (first (:ret %)))))
@@ -619,9 +889,9 @@
 
 (s/fdef parse-udp-error-response
   :args (s/cat :response-bytes bytes?)
-  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
-                             #(s/valid? ::spec/udp-error-response (:ok %)))
-             :error ::spec/error-result)
+  :ret (s/or :success (s/and (s/keys :req-un [::ok])
+                             #(s/valid? ::udp-error-response (:ok %)))
+             :error ::error-result)
   :fn (s/or
        :success #(= :error (-> % :ret second :ok :action))
        :error   #(= :error (first (:ret %)))))
@@ -669,9 +939,9 @@
 
 (s/fdef parse-udp-scrape-response
   :args (s/cat :response-bytes bytes?)
-  :ret (s/or :success (s/and (s/keys :req-un [::spec/ok])
-                             #(s/valid? ::spec/udp-scrape-response (:ok %)))
-             :error ::spec/error-result)
+  :ret (s/or :success (s/and (s/keys :req-un [::ok])
+                             #(s/valid? ::udp-scrape-response (:ok %)))
+             :error ::error-result)
   :fn (s/or
        :success #(= :scrape (-> % :ret second :ok :action))
        :error   #(= :error (first (:ret %)))))
@@ -699,7 +969,7 @@
   Returns:
     {:ok byte-array} or {:error ...}"
   [request]
-  (if-let [err (validate-input ::spec/udp-connect-request request)]
+  (if-let [err (validate-input ::udp-connect-request request)]
     err
     (let [{:keys [transaction-id]} request
           buf (ByteBuffer/allocate 16)]
@@ -709,9 +979,9 @@
       {:ok (.array buf)})))
 
 (s/fdef build-udp-connect-request
-  :args (s/cat :request ::spec/udp-connect-request)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :args (s/cat :request ::udp-connect-request)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
        :success #(= 16 (let [resp-bytes ^bytes (:ok (second (:ret %)))]
                          (alength resp-bytes)))
@@ -736,12 +1006,12 @@
     Offset 96: port (2 bytes)
 
   Parameters:
-    request - Map with required/optional keys per ::spec/udp-announce-request
+    request - Map with required/optional keys per ::udp-announce-request
 
   Returns:
     {:ok byte-array} or {:error ...}"
   [request]
-  (if-let [err (validate-input ::spec/udp-announce-request request)]
+  (if-let [err (validate-input ::udp-announce-request request)]
     err
     (let [{:keys [connection-id transaction-id info-hash peer-id
                   downloaded left uploaded port event num-want]} request
@@ -762,9 +1032,9 @@
       {:ok (.array buf)})))
 
 (s/fdef build-udp-announce-request
-  :args (s/cat :request ::spec/udp-announce-request)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :args (s/cat :request ::udp-announce-request)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
        :success #(= 98 (let [resp-bytes ^bytes (:ok (second (:ret %)))]
                          (alength resp-bytes)))
@@ -785,7 +1055,7 @@
   Returns:
     {:ok byte-array} or {:error ...}"
   [request]
-  (if-let [err (validate-input ::spec/udp-scrape-request request)]
+  (if-let [err (validate-input ::udp-scrape-request request)]
     err
     (let [{:keys [connection-id transaction-id info-hashes]} request
           n   (count info-hashes)
@@ -797,9 +1067,9 @@
       {:ok (.array buf)})))
 
 (s/fdef build-udp-scrape-request
-  :args (s/cat :request ::spec/udp-scrape-request)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :args (s/cat :request ::udp-scrape-request)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
        :success #(let [req (:request (:args %))
                        n   (count (:info-hashes req))
@@ -840,7 +1110,7 @@
   :args (s/cat :current-time-ms nat-int?
                :interval-seconds (s/nilable pos-int?)
                :min-interval-seconds (s/nilable pos-int?))
-  :ret (s/keys :req-un [::spec/ok])
+  :ret (s/keys :req-un [::ok])
   :fn #(> (-> % :ret :ok) (-> % :args :current-time-ms)))
 
 (defn calculate-exponential-backoff
@@ -859,7 +1129,7 @@
 
 (s/fdef calculate-exponential-backoff
   :args (s/cat :attempt pos-int?)
-  :ret (s/keys :req-un [::spec/ok])
+  :ret (s/keys :req-un [::ok])
   :fn #(<= (-> % :ret :ok) max-backoff-ms))
 
 (defn update-schedule-success
@@ -868,13 +1138,13 @@
   Resets retry state and schedules next announce at current-time + interval.
 
   Parameters:
-    schedule          - Current ::spec/announce-schedule map
+    schedule          - Current ::announce-schedule map
     interval-seconds  - Interval from tracker response
     current-time-ms   - Current timestamp in milliseconds
 
   Returns: {:ok updated-schedule} or {:error ...}"
   [schedule interval-seconds current-time-ms]
-  (if-let [err (validate-input ::spec/announce-schedule schedule)]
+  (if-let [err (validate-input ::announce-schedule schedule)]
     err
     {:ok (assoc schedule
                 :next-announce-time (+ current-time-ms (* interval-seconds 1000))
@@ -883,11 +1153,11 @@
                 :backoff-delay-ms 0)}))
 
 (s/fdef update-schedule-success
-  :args (s/cat :schedule ::spec/announce-schedule
+  :args (s/cat :schedule ::announce-schedule
                :interval-seconds pos-int?
                :current-time-ms nat-int?)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
        :success #(= 0 (-> % :ret second :ok :retry-attempt))
        :error   #(= :error (first (:ret %)))))
@@ -898,12 +1168,12 @@
   Increments retry-attempt and schedules next attempt using exponential backoff.
 
   Parameters:
-    schedule        - Current ::spec/announce-schedule map
+    schedule        - Current ::announce-schedule map
     current-time-ms - Current timestamp in milliseconds
 
   Returns: {:ok updated-schedule} or {:error ...}"
   [schedule current-time-ms]
-  (if-let [err (validate-input ::spec/announce-schedule schedule)]
+  (if-let [err (validate-input ::announce-schedule schedule)]
     err
     (let [attempt (inc (:retry-attempt schedule))
           backoff (:ok (calculate-exponential-backoff attempt))]
@@ -913,10 +1183,10 @@
                   :backoff-delay-ms backoff)})))
 
 (s/fdef update-schedule-failure
-  :args (s/cat :schedule ::spec/announce-schedule
+  :args (s/cat :schedule ::announce-schedule
                :current-time-ms nat-int?)
-  :ret (s/or :success (s/keys :req-un [::spec/ok])
-             :error ::spec/error-result)
+  :ret (s/or :success (s/keys :req-un [::ok])
+             :error ::error-result)
   :fn (s/or
        :success #(= (inc (-> % :args :schedule :retry-attempt))
                     (-> % :ret second :ok :retry-attempt))

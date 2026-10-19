@@ -649,7 +649,28 @@
           (.delete state-file))
         {:ok :deleted})
       (catch Exception e
-        {:error :delete-error :message (.getMessage e)}))))
+        {:error :delete-error :message (.getMessage e)})))
+
+  (evict-piece-cache [_ info-hash]
+    (if-let [scope (disk/cache-scope info-hash)]
+      (try
+        (let [scope-dir (io/file piece-cache-dir scope)
+              ;; Only the named download's own namespace: walking the cache
+              ;; root would delete other downloads' in-progress bytes.
+              ;; File/delete returns false instead of throwing, so every
+              ;; result is checked: a surviving entry keeps the download's
+              ;; bytes on disk, and reporting :evicted would hide that.
+              undeleted (when (.exists scope-dir)
+                          (seq (remove #(.delete ^File %)
+                                       (reverse (file-seq scope-dir)))))]
+          (if undeleted
+            {:error :evict-error
+             :message (str "Could not delete " (count undeleted)
+                           " cache entries under " scope-dir)}
+            {:ok :evicted}))
+        (catch Exception e
+          {:error :evict-error :message (.getMessage e)}))
+      disk/invalid-info-hash-error)))
 
 (defn create
   "Create a DiskPortImpl instance.

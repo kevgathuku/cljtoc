@@ -115,11 +115,20 @@
                    ::tracker-announce-interval-ms
                    ::output-dir]))
 
-(s/def ::network-port any?)
+;; An INetworkPort implementation or nil. Nil is admitted for the same
+;; reason as ::disk-port: callers without a live port (bare
+;; resume-download, tests driving pure planning) pass nil through.
+(s/def ::network-port (s/nilable #(satisfies? network/INetworkPort %)))
 
-(s/def ::disk-port any?)
+;; An IDiskPort implementation or nil. Nil ports are a designed tolerance
+;; (resume-download's bare arity, evict-completed-cache's nil skip), so the
+;; spec admits nil rather than pretending every call carries a live port.
+(s/def ::disk-port (s/nilable #(satisfies? disk/IDiskPort %)))
 
-(s/def ::time-port any?)
+;; An ITimePort implementation or nil. Nil stands for "no clock":
+;; mark-suspended leaves the record untouched and resume falls back to
+;; the last verified byte, so the spec admits it.
+(s/def ::time-port (s/nilable #(satisfies? time/ITimePort %)))
 
 (s/def ::downloads map?)
 
@@ -350,6 +359,37 @@
 (s/fdef complete-download
   :args (s/cat :time-port any? :download map?)
   :ret (s/keys :req-un [::state]))
+
+(defn evict-completed-cache
+  "Drop a completed download's cached pieces. The bytes now live in the
+   output layout, so the cache entries are dead weight — roughly one
+   torrent-size per finished download, unbounded across runs. Only this
+   download's own namespace is evicted; downloads that never complete
+   keep theirs. A failed eviction is logged and ignored: the download is
+   complete, and a leftover cache directory is not a reason to fail it.
+   Returns the download unchanged."
+  [disk-port download]
+  (let [info-hash (get-in download [:torrent :info-hash])
+        result (when (and disk-port info-hash)
+                 (disk/evict-piece-cache disk-port info-hash))]
+    (when (:error result)
+      (println (str "[complete] WARNING: cache eviction failed: " (:message result))))
+    download))
+
+(s/def ::info-hash bytes?)
+
+(s/def ::torrent (s/keys :opt-un [::info-hash]))
+
+;; A download record or the partial maps tests hand around: a :state key is
+;; always present, and :torrent (with its :info-hash) travels along only when
+;; there is one. The fn tolerates a missing info-hash by skipping eviction, so
+;; :torrent stays optional — requiring it would pin a shape the error paths
+;; never carry.
+(s/def ::download (s/keys :req-un [::state] :opt-un [::torrent]))
+
+(s/fdef evict-completed-cache
+  :args (s/cat :disk-port ::disk-port :download ::download)
+  :ret ::download)
 
 (defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
@@ -919,7 +959,8 @@
           (println "  Download complete!")
           (doseq [[_ peer-info] (:active-peers state)]
             (network/close-peer network-port (:peer-data peer-info)))
-          (complete-download time-port download))
+          (evict-completed-cache (:disk-port ports)
+                                 (complete-download time-port download)))
 
         (let [event (async/<!! events-ch)]
           (if (nil? event)
@@ -1183,7 +1224,7 @@
                       (:message materialized))
 
            (pieces/complete? (:piece-state revived))
-           (complete-download time-port revived)
+           (evict-completed-cache disk-port (complete-download time-port revived))
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.

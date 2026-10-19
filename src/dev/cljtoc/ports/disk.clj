@@ -115,7 +115,19 @@
     "Delete persisted download state.
      Returns {:ok :deleted} or {:error reason :message msg}.
      
-     Side effects: deletes file"))
+     Side effects: deletes file")
+
+  (evict-piece-cache [this info-hash]
+    "Remove one torrent's cached piece data: the whole content-scoped
+     directory (see cache-scope), never a sweep of the cache root. A
+     completed download's bytes live in the output layout, so its cache
+     entries are dead weight — roughly one torrent-size each, unbounded
+     across downloads. Only the named download's namespace is touched;
+     entries of downloads that never complete stay put. Evicting an
+     absent entry succeeds, so a retried eviction is not an error.
+     Returns {:ok :evicted} or {:error reason :message msg}.
+
+     Side effects: deletes files"))
 
 (defn valid-output-layout?
   "True when layout has the compiled shape the disk port methods take:
