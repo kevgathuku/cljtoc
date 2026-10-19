@@ -213,12 +213,40 @@ The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hash
 | Command | Description | Status |
 |---------|-------------|--------|
 | `torrent.parse <file>` | Parse and display torrent metadata | ✅ Implemented |
-| `torrent.download <file> [dir]` | Download files from a torrent | ✅ Implemented |
+| `torrent.download <file>` | Download files from a torrent | ✅ Implemented |
 | `torrent.pause [id]` | Pause an active download | ✅ Implemented |
 | `torrent.resume [id]` | Resume a paused download | ✅ Implemented |
 | `torrent.status [id]` | Show download status | ✅ Implemented |
 | `torrent.stop [id]` | Stop a download | ✅ Implemented |
 | `torrent.seed <file>` | Seed a torrent | 🚧 Not implemented |
+
+Download destinations and limits come from the settings file, never from
+command arguments: `~/.config/cljtoc/config.edn`, or the file named by
+`--config <path>` (accepted anywhere in the command line). With no file
+the client uses these Transmission-aligned defaults:
+
+| Key | Default |
+|-----|---------|
+| `:output-dir` | `XDG_DOWNLOAD_DIR`, else `~/Downloads` |
+| `:state-dir` | `<config home>/cljtoc/state` |
+| `:piece-cache-dir` | `<cache home>/cljtoc/pieces` |
+| `:peer-port` | `51413` |
+| `:max-peers` | `50` |
+
+The download directory honors an `XDG_DOWNLOAD_DIR` entry in
+`~/.config/user-dirs.dirs`, so a localized or relocated Downloads folder is
+used as-is; macOS and Windows without that file fall back to
+`<home>/Downloads`. Set `:output-dir` explicitly to override either way.
+
+Directory values must be absolute. A relative path is refused rather than
+resolved against the working directory, because the same config would
+otherwise download somewhere different under `lein run` than under the jar
+(and `~/x` is relative to the JVM even though a shell expands it).
+
+A missing file means defaults. A file that fails to parse stops the
+command with the reader's reason rather than running on silent defaults,
+and unknown keys warn and are dropped so a file written for a newer
+client still loads.
 
 ## Contributing
 

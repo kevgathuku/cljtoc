@@ -11,8 +11,6 @@
 ;; reflective calls so boxing never hides in the hot path.
 (set! *warn-on-reflection* true)
 
-(def default-state-dir "./torrent-state")
-
 ;; Encoding and ID scheme live in dev.cljtoc.ports.disk (the single
 ;; persistence seam); this namespace is a sync adapter over the same layout.
 

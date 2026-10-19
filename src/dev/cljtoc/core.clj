@@ -8,6 +8,7 @@
             [dev.cljtoc.ports.randomness-impl :as randomness-impl]
             [dev.cljtoc.ports.time :as time-port]
             [dev.cljtoc.cli.state :as cli-state]
+            [dev.cljtoc.cli.config :as cli-config]
             [clojure.java.io :as io]
             [clojure.pprint :as pp]
             [clojure.string :as str])
@@ -62,7 +63,7 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- cmd-torrent-parse
-  [args]
+  [_settings args]
   (if (empty? args)
     (do
       (println "Usage: lein run torrent.parse <path-to-torrent-file>")
@@ -71,6 +72,13 @@
           bs (read-torrent-file path)]
       (when bs
         (print-torrent (torrent/parse-torrent bs))))))
+
+(def ^:private manager-config-keys
+  "Settings keys forwarded to download/manager as config overrides. Only
+   :max-peers has an effect there; the manager's other knobs are reserved
+   and stay owned by download/default-config rather than being offered as
+   settings that do nothing."
+  [:max-peers])
 
 (defn- make-ports
   "Build the ports both torrent.download and torrent.resume run with.
@@ -84,14 +92,55 @@
    tracker announce) and the download manager (peer-id for handshake);
    per ADR-0011 every randomness effect sits behind one injected port,
    constructed once and threaded where it is needed."
-  []
-  (let [disk-port (disk-impl/create {:state-dir cli-state/default-state-dir
-                                     :piece-cache-dir "./torrent-cache"})
+  [settings]
+  (let [disk-port (disk-impl/create {:state-dir (:state-dir settings)
+                                     :piece-cache-dir (:piece-cache-dir settings)})
         randomness-port (randomness-impl/create)
-        network-port (network-impl/create {:randomness-port randomness-port})
+        network-port (network-impl/create {:randomness-port randomness-port
+                                           :peer-port (:peer-port settings)})
         time-port (time-port/->RealTimePort)]
-    {:manager (download/manager network-port disk-port time-port {})
+    {:manager (download/manager network-port disk-port time-port
+                                (select-keys settings manager-config-keys))
      :time-port time-port}))
+
+(defn- split-global-flags
+  "Pull --config <path> out of the raw CLI args. Returns
+   [config-path remaining-args]; a dangling --config with no value
+   passes through for the command to reject."
+  [args]
+  (loop [remaining args
+         config-path nil
+         kept []]
+    (cond
+      (empty? remaining)
+      [config-path kept]
+
+      (and (= "--config" (first remaining)) (second remaining))
+      (recur (drop 2 remaining) (second remaining) kept)
+
+      :else
+      (recur (rest remaining) config-path (conj kept (first remaining))))))
+
+(defn- try-load-settings
+  "Load settings from config-path (or the default location when nil).
+   A corrupt file, or an explicit path that does not exist, returns nil
+   after saying why, so the caller decides to stop — keeping System/exit in
+   one place is what makes this branch testable at all."
+  [config-path]
+  (let [result (cli-config/load-settings config-path)]
+    (if (:error result)
+      (do
+        (println (str "Failed to load config: " (:message result)))
+        nil)
+      (:ok result))))
+
+(defn- dangling-config-flag?
+  "True when --config survived splitting, meaning it had no value.
+   Reject it before loading settings or dispatching: otherwise
+   `torrent.stop existing-id --config` would silently load the default
+   config and could delete the wrong download's state."
+  [rest-args]
+  (boolean (some #{"--config"} rest-args)))
 
 (defn- torrent-path-arg?
   "True when a command argument looks like a torrent path rather than a
@@ -126,13 +175,16 @@
     (cli-state/load-most-recent disk-port state-dir)))
 
 (defn- cmd-torrent-download
-  [args]
-  (if (empty? args)
+  [settings args]
+  ;; Exactly one argument: extra paths used to be silently ignored, so a
+  ;; mistyped second path downloaded to the configured dir instead of the
+  ;; intended one. Reject before touching the network or the disk.
+  (if (not= 1 (count args))
     (do
-      (println "Usage: lein run torrent.download <path-to-torrent-file> [output-dir]")
+      (println "Usage: lein run torrent.download <path-to-torrent-file>")
       (System/exit 1))
     (let [torrent-path (first args)
-          output-dir (or (second args) "./downloads")
+          output-dir (:output-dir settings)
           bs (read-torrent-file torrent-path)]
       (if (nil? bs)
         (System/exit 1)
@@ -155,7 +207,7 @@
               (when (:error space-check)
                 (println "WARNING: " (:message space-check))
                 (println "Continuing anyway..."))
-              (let [{:keys [manager time-port]} (make-ports)
+              (let [{:keys [manager time-port]} (make-ports settings)
                     _ (println "Starting download to: " output-dir)
                     result (download/start-download manager torrent-path output-dir)]
                 (if (:error result)
@@ -190,10 +242,10 @@
                       (print-progress (download/progress time-port final-download)))))))))))))
 
 (defn- cmd-torrent-pause
-  [args]
-  (let [{:keys [manager]} (make-ports)
+  [settings args]
+  (let [{:keys [manager]} (make-ports settings)
         state (load-command-state (:disk-port manager)
-                                  cli-state/default-state-dir
+                                  (:state-dir settings)
                                   args)]
     (if (nil? state)
       (do
@@ -250,10 +302,10 @@
   (boolean (and (:error result) (nil? (:state result)))))
 
 (defn- cmd-torrent-resume
-  [args]
-  (let [{:keys [manager time-port]} (make-ports)
+  [settings args]
+  (let [{:keys [manager time-port]} (make-ports settings)
         state (load-command-state (:disk-port manager)
-                                  cli-state/default-state-dir
+                                  (:state-dir settings)
                                   args)]
     (if (nil? state)
       (do
@@ -275,10 +327,10 @@
             (print-progress (download/progress time-port result))))))))
 
 (defn- cmd-torrent-status
-  [args]
-  (let [{:keys [manager]} (make-ports)
+  [settings args]
+  (let [{:keys [manager]} (make-ports settings)
         state (load-command-state (:disk-port manager)
-                                  cli-state/default-state-dir
+                                  (:state-dir settings)
                                   args)]
     (if (nil? state)
       (do
@@ -291,10 +343,10 @@
         (print-progress (download/progress (time-port/->RealTimePort) state))))))
 
 (defn- cmd-torrent-stop
-  [args]
-  (let [{:keys [manager]} (make-ports)
+  [settings args]
+  (let [{:keys [manager]} (make-ports settings)
         state (load-command-state (:disk-port manager)
-                                  cli-state/default-state-dir
+                                  (:state-dir settings)
                                   args)]
     (if (nil? state)
       (do
@@ -310,7 +362,7 @@
         (print-progress (download/progress (time-port/->RealTimePort) stopped))))))
 
 (defn- cmd-torrent-seed
-  [_args]
+  [_settings _args]
   (println "torrent.seed - Not yet implemented")
   (println "Seeding will be available in a future version.")
   (System/exit 1))
@@ -337,10 +389,12 @@
   (println "\nAvailable commands:")
   (doseq [[cmd {:keys [desc]}] (sort-by key commands)]
     (println (format "  %-20s %s" cmd desc)))
+  (println "\nGlobal flags (any position):")
+  (println "  --config <path>        Use this settings file instead of ~/.config/cljtoc/config.edn")
   (println "\nExamples:")
   (println "  lein run torrent.parse path/to/file.torrent")
-  (println "  lein run torrent.download path/to/file.torrent ./output")
-  (println "  lein run torrent.status"))
+  (println "  lein run torrent.download path/to/file.torrent")
+  (println "  lein run --config ./my.edn torrent.status"))
 
 (defn -main
   "BitTorrent client command-line interface.
@@ -360,13 +414,22 @@
     (do
       (print-usage)
       (System/exit 1))
-    (let [cmd (first args)
-          cmd-args (rest args)
-          handler (get commands cmd)]
-      (if handler
-        ((:fn handler) cmd-args)
+    (let [[config-path rest-args] (split-global-flags args)]
+      (if (dangling-config-flag? rest-args)
         (do
-          (println (str "Unknown command: " cmd))
-          (println)
+          (println "Missing value for --config <path>.")
           (print-usage)
-          (System/exit 1))))))
+          (System/exit 1))
+        (let [settings (try-load-settings config-path)
+              cmd (first rest-args)
+              cmd-args (rest rest-args)
+              handler (get commands cmd)]
+          (if (nil? settings)
+            (System/exit 1)
+            (if handler
+              ((:fn handler) settings cmd-args)
+              (do
+                (println (str "Unknown command: " cmd))
+                (println)
+                (print-usage)
+                (System/exit 1)))))))))

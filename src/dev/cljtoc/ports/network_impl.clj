@@ -337,6 +337,28 @@
     (try-udp-tracker network tracker-url request)
     (try-http-tracker network tracker-url request)))
 
+(defn- peer-port
+  "The port this client advertises to trackers: the configured
+   :peer-port, else the historical 6881. Checked at creation, so by
+   here the value is always a valid TCP port."
+  [network]
+  (get (:config network) :peer-port 6881))
+
+(defn- announce-request
+  "Build the tracker request map for one download. Pure given the
+   port: peer-id mints from the injected randomness port, so tests
+   assert on :port and ignore the id."
+  [network torrent-metadata progress]
+  {:info-hash (:info-hash torrent-metadata)
+   :peer-id (network/peer-id network)
+   :port (peer-port network)
+   :uploaded 0
+   :downloaded (:downloaded progress)
+   :left (:left progress)
+   :event :started
+   :compact true
+   :num-want 200})
+
 (defrecord NetworkPort
            [config peer-connections randomness-port]
 
@@ -441,15 +463,7 @@
       (let [tracker-urls (tracker/pick-tracker-order torrent-metadata)]
         (if (empty? tracker-urls)
           {:error :no-tracker :message "No tracker URL available"}
-          (let [request {:info-hash (:info-hash torrent-metadata)
-                         :peer-id (network/peer-id network)
-                         :port 6881
-                         :uploaded 0
-                         :downloaded (:downloaded progress)
-                         :left (:left progress)
-                         :event :started
-                         :compact true
-                         :num-want 200}]
+          (let [request (announce-request network torrent-metadata progress)]
             ;; Query all trackers and combine peers. Success tracks
             ;; separately from the peer count: an announce that answers
             ;; with zero peers is a genuinely empty swarm, not an outage.

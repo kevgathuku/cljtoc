@@ -41,12 +41,35 @@ Re-run each gate after its fixes until clean.
 
 ## 6. Coverage gate
 
-Before self-review, prove the new code is exercised — green tests alone hide untested branches. Run `lein cloverage` scoped to the touched namespaces, then intersect uncovered/partial lines with the PR's added lines (`git diff main...HEAD`):
+Before self-review, prove the new code is exercised — green tests alone hide untested branches, and whole-file percentages hide which lines actually lack coverage. The default path is `scripts/coverage_diff.sh --base <ref>`, which gives you the intersection you actually need:
 
-- Fully-uncovered added lines are missing tests: add them, then re-run the gates in step 5.
-- Every new public function is covered in both directions: at least one test driving its success path and at least one driving each failure envelope it documents. A function whose tests only pass valid inputs has an unproven contract on exactly the paths callers branch on.
-- Partial branch lines need judgement, not reflex fixes: fail-closed branches on hostile input (guards, validators, error envelopes) get **mutation-based generative specs** — generate a valid input, break one field per mutation, assert rejection — plus one positive invariant (valid input always accepted). Prefer these over envelope-only example doseqs: examples cover shapes, mutations cover branch combinations. But keep the mutation vocabulary as shape-diverse as the examples it replaces (an empty string exercises a different subform than an empty vector); verify by re-running coverage.
-- Acceptable residues, documented in the PR body rather than fixed: loop/recur macro internals (both semantic branches covered), fdef `:fn` false-branches (fail-only-on-bug by design), single short-circuit subforms where every semantic direction has a test.
+```bash
+scripts/coverage_diff.sh --base main        # default; current branch against main
+scripts/coverage_diff.sh --base origin/main  # against the remote's main specifically
+scripts/coverage_diff.sh --base HEAD~3       # the last 3 commits only
+scripts/coverage_diff.sh --base 248e114      # since a specific commit
+```
+
+The script runs `lein cloverage --text` scoped to the diff's namespaces, then reads cloverage's text report directly (no HTML scraping) and prints only the per-line rows that sit in the diff's added set, with the cover marker (✔/✘/~/?). Exit codes are `0 = no uncovered added lines / 1 = uncovered found / 2 = usage error`. The cloverage summary table lands under `target/coverage-diff/coverage.txt`; the human-navigable HTML at `target/coverage-diff/index.html` for the local review (target/ is gitignored, so the HTML is local-only).
+
+Interpret the output as a gate, not a decoration:
+
+- **Every ✘ row must be either a real test or a documented residue.** A ✘ row is a real failure if it sits on a function's public contract path that callers branch on; add a test. A ✘ row is acceptable if it sits on a path the codebase cannot test (e.g. `System/exit` in a CLI command body, with-redefs-forbidden by AGENTS.md), and you have a residue comment in the test site explaining why. The script's exit code only catches ✘ — `?` and `~` rows are informational and don't fail the gate.
+- **Every new public function is covered in both directions:** at least one test driving its success path and at least one driving each failure envelope it documents. A function whose tests only pass valid inputs has an unproven contract on exactly the paths callers branch on.
+- **Partial branch lines need judgement, not reflex fixes.** Fail-closed branches on hostile input (guards, validators, error envelopes) get **mutation-based generative specs** — generate a valid input, break one field per mutation, assert rejection — plus one positive invariant (valid input always accepted). Prefer these over envelope-only example doseqs: examples cover shapes, mutations cover branch combinations. Keep the mutation vocabulary as shape-diverse as the examples it replaces (an empty string exercises a different subform than an empty vector); verify by re-running the script after each fix.
+- **Acceptable residues go in the test site, not in the PR body.** Every documented residue has the format `;; (foo) — <why we don't cover this>`. The script's run then shows only "I didn't fix this because..." rows, not actual gaps. A row the script flags that has no comment in the test site is a real failure by default.
+
+When the script's output is harder to read than needed (3-byte UTF-8 markers rendering as separate glyphs in some terminals), widen the namespace filter rather than dropping the gate:
+
+```
+scripts/coverage_diff.sh --ns 'dev.cljtoc.cli.*' --ns 'dev.cljtoc.core'
+```
+
+`--ns REGEX` is forwarded to `lein cloverage -n` and can be repeated; it speeds cloverage and narrows the test surface for this run.
+
+**Use `lein cloverage` directly** only when the script's output isn't enough — you want the full per-form/per-line summary, the historical cloverage report, or the EMMA XML for tooling. The script does the diff intersection; raw `lein cloverage` gives you the per-namespace totals. Both write to `target/`, so they share state cleanly.
+
+**Use `git diff main...HEAD` directly** only when the script's diff intersection is too narrow — you want every changed line, not just added lines. Coverage per changed line is the script's job; coverage of the branch as a whole is `lein cloverage`'s.
 
 ## 7. Self-review with /code-review
 
