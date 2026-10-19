@@ -17,6 +17,8 @@
 ;; Run: bb scripts/rename_symbol.clj <old> <new> [--write] <files...>
 ;;   Default is dry-run: prints a unified diff per changed file and exits 1.
 ;;   --write applies the changes in place and exits 0.
+;; Every file is read and transformed before any is written, so an
+;; unreadable or unparseable later file cannot leave earlier ones rewritten.
 ;; (rewrite-clj is built into babashka and a :dev dep for clojure.main,
 ;; so this never touches prod deps.)
 
@@ -34,6 +36,20 @@
        (let [v (try (z/sexpr loc) (catch Exception _ ::unreadable))]
          (and (symbol? v)
               (= (str v) old-name)))))
+
+(defn- valid-new-symbol?
+  "True when text parses as exactly one symbol whose printed spelling is
+   text. Anything else (a keyword, a string, two forms, a space) would be
+   spliced into every file as an unreadable token, so it is refused up
+   front."
+  [text]
+  (try
+    (let [loc (z/of-string text)]
+      (and (= :token (z/tag loc))
+           (symbol? (z/sexpr loc))
+           (= text (z/string loc))
+           (z/end? (z/next loc))))
+    (catch Exception _ false)))
 
 (defn- rename-in-source
   "Rewrite every occurrence of old-sym to new-sym in source text.
@@ -59,18 +75,23 @@
       (binding [*out* *err*]
         (println "usage: bb scripts/rename_symbol.clj <old> <new> [--write] <files...>"))
       (System/exit 2))
-    (let [changed (atom [])]
-      (doseq [f files]
-        (let [source (slurp (io/file f))
-              [touched? out] (rename-in-source source old-sym new-sym)]
-          (when touched?
-            (swap! changed conj f)
-            (if write?
-              (spit (io/file f) out)
-              (let [{:keys [out err]} (shell/sh "diff" "-u" f "-"
-                                                :in out :dir ".")]
-                (print (or out err))
-                (flush))))))
-      (System/exit (if (and (seq @changed) (not write?)) 1 0)))))
+    (when-not (valid-new-symbol? new-sym)
+      (binding [*out* *err*]
+        (println (str "new name is not a single symbol: " (pr-str new-sym))))
+      (System/exit 2))
+    (let [results (into []
+                        (keep (fn [f]
+                                (let [source (slurp (io/file f))
+                                      [touched? out] (rename-in-source source old-sym new-sym)]
+                                  (when touched? [f out]))))
+                        files)]
+      (doseq [[f out] results]
+        (if write?
+          (spit (io/file f) out)
+          (let [{diff-out :out diff-err :err} (shell/sh "diff" "-u" f "-"
+                                                        :in out :dir ".")]
+            (print (or diff-out diff-err))
+            (flush))))
+      (System/exit (if (and (seq results) (not write?)) 1 0)))))
 
 (apply -main *command-line-args*)
