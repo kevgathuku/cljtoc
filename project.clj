@@ -10,7 +10,8 @@
   :target-path "target/%s"
   :plugins [[lein-cloverage "1.2.4"]]
   :profiles {:dev {:source-paths ["src" "dev"]
-                   :repl-options {:init (do (require 'user) (user/welcome))}
+                   :repl-options {:init-ns user
+                                  :init (do (require 'user) (user/welcome))}
                    :dependencies [[org.clojure/test.check "1.1.3"]
                                   [rewrite-clj/rewrite-clj "1.2.50"]
                                   [org.clojure/tools.namespace "1.5.1"]]}
