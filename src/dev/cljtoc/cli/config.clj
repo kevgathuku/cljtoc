@@ -2,10 +2,10 @@
   "Client settings file: Transmission settings.json equivalent, EDN edition.
 
    Every path and limit the client runs with lives here as data. The file
-   carries only keys with live consumers today (dirs, manager knobs, the
-   announce port); future slices add their own keys rather than this
-   namespace guessing at them. Unknown keys warn and are dropped, so a
-   file written for a newer client still loads.
+   carries only keys with live consumers today (dirs, the announce port,
+   the per-torrent peer cap); future slices add their own keys rather than
+   this namespace guessing at them. Unknown keys warn and are dropped, so
+   a file written for a newer client still loads.
 
    Precedence, weakest first: built-in defaults, the settings file, then
    the CLI invocation (positional args like output-dir). A missing file
@@ -13,36 +13,35 @@
    silent defaults over a typo'd file."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
-            [clojure.spec.alpha :as s]))
+            [clojure.spec.alpha :as s]
+            [dev.cljtoc.orchestration.download :as download]))
 
-(set! *warn-on-reflection* true)
-
-(defn- home-dir []
+(def ^:private home-dir
   (System/getProperty "user.home"))
 
-(defn- config-home []
-  (or (System/getenv "XDG_CONFIG_HOME") (str (home-dir) "/.config")))
+(def config-home
+  "Where cljtoc reads config from. One derivation, shared by the default
+   config path and the state dir: two derivations disagreed under
+   XDG_CONFIG_HOME, moving the state without moving the file."
+  (or (System/getenv "XDG_CONFIG_HOME") (str home-dir "/.config")))
 
-(defn- cache-home []
-  (or (System/getenv "XDG_CACHE_HOME") (str (home-dir) "/.cache")))
+(def cache-home
+  (or (System/getenv "XDG_CACHE_HOME") (str home-dir "/.cache")))
 
 (def default-settings
-  "Every knob the client reads. Dirs follow the Transmission layout:
-   downloads land in ~/Downloads, resume state lives under the config
-   home, the piece cache under the cache home. The peer port (51413)
-   and per-torrent peer cap (50) are Transmission's tried-and-tested
-   defaults (TrDefaultPeerPort, TrDefaultPeerLimitTorrent). Manager
-   knobs mirror orchestration.download/default-config; the CLI hands
-   them to the manager as overrides."
-  {:state-dir (str (config-home) "/cljtoc/state")
-   :piece-cache-dir (str (cache-home) "/cljtoc")
-   :output-dir (str (home-dir) "/Downloads")
+  "The knobs a user can actually change, with Transmission's values: port
+   51413 (TrDefaultPeerPort), 50 peers per torrent
+   (TrDefaultPeerLimitTorrent), downloads in ~/Downloads
+   (tr_getDefaultDownloadDir), resume state under the config home, the
+   piece cache under the cache home. Knobs the manager reserves but does
+   not enforce (:min-peers, :piece-timeout-ms, and friends) stay in
+   orchestration.download/default-config instead of being offered here
+   as settings that do nothing."
+  {:state-dir (str config-home "/cljtoc/state")
+   :piece-cache-dir (str cache-home "/cljtoc")
+   :output-dir (str home-dir "/Downloads")
    :peer-port 51413
-   :max-peers 50
-   :min-peers 5
-   :request-queue-size 16
-   :piece-timeout-ms 30000
-   :tracker-announce-interval-ms 1800000})
+   :max-peers (:max-peers download/default-config)})
 
 (def ^:private key-preds
   "Validation per known key. Unknown keys never reach here: parse
@@ -51,18 +50,21 @@
    :piece-cache-dir string?
    :output-dir string?
    :peer-port #(and (pos-int? %) (<= % 65535))
-   :max-peers pos-int?
-   :min-peers nat-int?
-   :request-queue-size nat-int?
-   :piece-timeout-ms nat-int?
-   :tracker-announce-interval-ms nat-int?})
+   :max-peers pos-int?})
 
 (defn- config-error [message]
   {:error :invalid-config :message message})
 
+(s/def ::config-refusal
+  (s/and map? #(= :invalid-config (:error %)) #(string? (:message %))))
+
+(s/def ::settings-result
+  (s/or :ok (s/and map? #(map? (:ok %)))
+        :error ::config-refusal))
+
 (defn- validate-known
-  "Check every supplied known key against its predicate. Returns nil
-   when clean, else the refusal envelope naming the first bad key."
+  "Check every supplied known key against its predicate. Returns nil when
+   clean, else the refusal envelope naming the first bad key."
   [known]
   (reduce-kv (fn [_ key-name value]
                (let [pred (get key-preds key-name)]
@@ -74,39 +76,41 @@
              known))
 
 (defn parse-settings
-  "Parse EDN text into a settings map over the defaults. Unknown keys
-   warn on stdout and are dropped. Returns {:ok settings} or
-   {:error :invalid-config :message msg}."
+  "Parse EDN text into a settings map over the defaults. Unknown keys warn
+   on stdout and are dropped. Returns {:ok settings} or
+   {:error :invalid-config :message msg}.
+
+   The read result is wrapped in {:ok _} rather than inspected directly:
+   a document carrying its own :error key must not be mistaken for a
+   failed parse, which is what the unwrapped form did."
   [text]
-  (let [parsed (try
-                 (edn/read-string text)
-                 (catch Exception exception
-                   (reduced (config-error
-                             (str "Could not parse config: "
-                                  (.getMessage exception))))))]
-    (if (:error parsed)
-      parsed
-      (if-not (map? parsed)
-        (config-error (str "Config must be a map, got: " (pr-str parsed)))
-        (let [unknown (apply dissoc parsed (keys key-preds))]
-          (when (seq unknown)
-            (println (str "[config] WARNING: ignoring unknown keys: "
-                          (pr-str (sort (keys unknown))))))
-          (if-let [refusal (validate-known (select-keys parsed (keys key-preds)))]
-            refusal
-            {:ok (merge default-settings (select-keys parsed (keys key-preds)))}))))))
+  (let [read-result (try
+                      {:ok (edn/read-string text)}
+                      (catch Exception exception
+                        (config-error (str "Could not parse config: "
+                                           (.getMessage exception)))))]
+    (if (:error read-result)
+      read-result
+      (let [document (:ok read-result)
+            known-keys (keys key-preds)]
+        (if-not (map? document)
+          (config-error (str "Config must be a map, got: " (pr-str document)))
+          (let [known (select-keys document known-keys)
+                unknown (apply dissoc document known-keys)]
+            (when (seq unknown)
+              (println (str "[config] WARNING: ignoring unknown keys: "
+                            (pr-str (sort (keys unknown))))))
+            (or (validate-known known)
+                {:ok (merge default-settings known)})))))))
 
 (s/fdef parse-settings
   :args (s/cat :text string?)
-  :ret map?)
-
-(defn- home-config-path []
-  (str (System/getProperty "user.home") "/.config/cljtoc/config.edn"))
+  :ret ::settings-result)
 
 (defn default-config-path
-  "Where load-settings looks when no path is given: ~/.config/cljtoc/config.edn."
+  "Where load-settings looks when no path is given: <config home>/cljtoc/config.edn."
   []
-  (home-config-path))
+  (str config-home "/cljtoc/config.edn"))
 
 (s/fdef default-config-path
   :args (s/cat)
@@ -131,4 +135,4 @@
 
 (s/fdef load-settings
   :args (s/alt :bare (s/cat) :with-path (s/cat :path (s/nilable string?)))
-  :ret map?)
+  :ret ::settings-result)

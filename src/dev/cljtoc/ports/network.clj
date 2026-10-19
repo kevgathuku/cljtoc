@@ -53,12 +53,12 @@
 ;; Attempt counts never reach a Java API, so any positive int retries;
 ;; only non-positive/non-int is refused.
 (s/def ::udp-max-attempts pos-int?)
-
-(s/def ::peer-port (s/int-in 1 65536))
 ;; fn? has no generator, so the bare predicate would make the shape
 ;; un-generatable (s/gen fails at :log-fn); generate println instead,
 ;; mirroring tracker.clj's with-gen precedent.
 (s/def ::log-fn (s/with-gen fn? #(gen/return println)))
+
+(s/def ::peer-port (s/int-in 1 65536))
 (s/def ::adapter-config
   (s/keys :opt-un [::connect-timeout-ms ::socket-timeout-ms
                    ::udp-timeout-ms ::http-timeout-ms ::log-fn

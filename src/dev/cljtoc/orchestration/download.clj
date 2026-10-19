@@ -72,8 +72,6 @@
 
 (s/def ::state keyword?)
 
-(s/def ::output-dir string?)
-
 (s/def ::bytes-downloaded nat-int?)
 
 (s/def ::pieces-complete nat-int?)
@@ -112,8 +110,7 @@
                    ::min-peers
                    ::request-queue-size
                    ::piece-timeout-ms
-                   ::tracker-announce-interval-ms
-                   ::output-dir]))
+                   ::tracker-announce-interval-ms]))
 
 ;; An INetworkPort implementation or nil. Nil is admitted for the same
 ;; reason as ::disk-port: callers without a live port (bare
@@ -139,13 +136,16 @@
 
 (def default-config
   "Default limits for downloads. Only :max-peers is currently enforced
-   (see capped-peer-addresses); the rest are reserved for future use."
+   (see capped-peer-addresses); the rest are reserved for future use.
+   :max-peers is the one source of truth the settings file reads, so the
+   user-facing default and the manager fallback cannot drift. No
+   :output-dir here: the record's own :output-dir is what piece writes
+   use, and a manager-level copy was never read."
   {:max-peers 50
    :min-peers 5
    :request-queue-size 16
    :piece-timeout-ms 30000
-   :tracker-announce-interval-ms 1800000
-   :output-dir "./downloads"})
+   :tracker-announce-interval-ms 1800000})
 
 ;; ============================================================================
 ;; Download Manager

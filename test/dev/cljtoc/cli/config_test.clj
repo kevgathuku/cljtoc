@@ -3,7 +3,6 @@
    Seam: default-settings merged with an EDN file; missing file means
    defaults, corrupt file means an error envelope, never silent defaults."
   (:require [clojure.test :refer [deftest is testing]]
-            [clojure.java.io :as io]
             [dev.cljtoc.cli.config :as config]
             [dev.cljtoc.test-utils :as test-utils]))
 
@@ -63,3 +62,39 @@
   (testing "the default path lives under the user config dir"
     (is (.endsWith ^String (config/default-config-path)
                    ".config/cljtoc/config.edn"))))
+
+(deftest parse-settings-error-messages-name-the-fault-test
+  (testing "a malformed document reports the reader's reason, not an internals dump"
+    (let [message (:message (config/parse-settings "{:max-peers"))]
+      (is (re-find #"Could not parse config" message) message)
+      (is (not (re-find #"Reduced" message)) message)))
+  (testing "a non-map document names what it got"
+    (is (re-find #"must be a map"
+                 (:message (config/parse-settings "[1 2 3]"))))))
+
+(deftest parse-settings-tolerates-envelope-shaped-keys-test
+  (testing "a document carrying :error is data, not a failed parse"
+    (let [result (config/parse-settings "{:error \"boom\"}")]
+      (is (nil? (:message result)) "not mistaken for a refusal")
+      (is (= config/default-settings (:ok result)))
+      (is (not (contains? (:ok result) :error)))))
+  (testing "a document carrying :ok is data too"
+    (let [result (config/parse-settings "{:ok 1}")]
+      (is (= config/default-settings (:ok result)))
+      (is (not (contains? (:ok result) :ok))))))
+
+(deftest config-home-is-one-derivation-test
+  (testing "the default config path lives under the same home the state dir uses"
+    (let [settings config/default-settings
+          config-path (config/default-config-path)]
+      (is (.startsWith ^String (:state-dir settings) ^String config/config-home))
+      (is (.startsWith ^String config-path ^String config/config-home))
+      (is (.endsWith ^String config-path "cljtoc/config.edn")))))
+
+(deftest fdef-specs-hold-generatively-test
+  (testing "parse-settings is pure and total, so its fdef is check-grade"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.cli.config/parse-settings
+                      dev.cljtoc.cli.config/default-config-path]
+                    50)]
+      (is (empty? failures) (str "fdef check failures: " (pr-str failures))))))

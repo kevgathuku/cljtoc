@@ -73,10 +73,12 @@
       (when bs
         (print-torrent (torrent/parse-torrent bs))))))
 
-(def manager-config-keys
-  "Settings keys forwarded to download/manager as config overrides."
-  [:max-peers :min-peers :request-queue-size :piece-timeout-ms
-   :tracker-announce-interval-ms :output-dir])
+(def ^:private manager-config-keys
+  "Settings keys forwarded to download/manager as config overrides. Only
+   :max-peers has an effect there; the manager's other knobs are reserved
+   and stay owned by download/default-config rather than being offered as
+   settings that do nothing."
+  [:max-peers])
 
 (defn- make-ports
   "Build the ports both torrent.download and torrent.resume run with.
@@ -131,6 +133,13 @@
         (System/exit 1))
       (:ok result))))
 
+(defn- output-dir-for
+  "The output dir a download writes into: the positional argument when the
+   user gave one, else the configured default. This is the whole of the
+   file-versus-CLI precedence, named so a test can pin it."
+  [settings args]
+  (or (second args) (:output-dir settings)))
+
 (defn- torrent-path-arg?
   "True when a command argument looks like a torrent path rather than a
    bare download id: it carries a `.torrent` suffix or a path separator.
@@ -170,7 +179,7 @@
       (println "Usage: lein run torrent.download <path-to-torrent-file> [output-dir]")
       (System/exit 1))
     (let [torrent-path (first args)
-          output-dir (or (second args) (:output-dir settings))
+          output-dir (output-dir-for settings args)
           bs (read-torrent-file torrent-path)]
       (if (nil? bs)
         (System/exit 1)

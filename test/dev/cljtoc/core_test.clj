@@ -243,3 +243,12 @@
   (testing "a dangling --config passes through for the command to reject"
     (is (= [nil ["torrent.status" "--config"]]
            (#'core/split-global-flags ["torrent.status" "--config"])))))
+
+(deftest output-dir-for-prefers-the-cli-argument-test
+  (testing "a positional output dir beats the configured default"
+    (is (= "./elsewhere"
+           (#'core/output-dir-for {:output-dir "/cfg/Downloads"}
+                                  ["f.torrent" "./elsewhere"]))))
+  (testing "without a positional argument the configured default applies"
+    (is (= "/cfg/Downloads"
+           (#'core/output-dir-for {:output-dir "/cfg/Downloads"} ["f.torrent"])))))
