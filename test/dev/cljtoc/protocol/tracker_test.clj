@@ -118,7 +118,9 @@
       (is (= [] (:ok result))))))
 
 (defspec parse-compact-peers-ipv4-generative-test 100
-  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::tracker/ip-address)
+  ;; Compact wire format is IPv4-only (6 bytes per peer), so generate
+  ;; ::ipv4-address even though ::ip-address now covers both families.
+  (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::tracker/ipv4-address)
                                               (s/gen ::tracker/port))
                                    1 10)]
     ;; Property: parse(build(peers)) = peers

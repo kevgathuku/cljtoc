@@ -57,6 +57,25 @@
              (every? #(<= 0 % 255) parts)) true
         :else false)) false))
 
+(defn split-ipv6
+  "Split an IPv6 address string to constituent parts"
+  [ip-address]
+  (when ip-address
+    (let [parts (string/split ip-address #"\:" -1)]
+      (when (and (= 8 (count parts))
+                 (every? #(re-matches #"([0-9a-fA-F]{1,4})" %) parts))
+        (mapv #(Integer/parseInt % 16) parts)))))
+
+(defn- valid-ipv6?
+  "Return true if an IPv6 address string is valid, false otherwise"
+  [ip-address]
+  (if ip-address
+    (let [parts (split-ipv6 ip-address)]
+      (cond
+        (and (some? parts)
+             (every? #(<= 0 % 65535) parts)) true
+        :else false)) false))
+
 (def gen-ipv4-address
   "Generate valid IPv4 address string"
   (gen/fmap (fn [[a b c d]]
@@ -65,6 +84,19 @@
                        (gen/choose 0 255)
                        (gen/choose 0 255)
                        (gen/choose 0 255))))
+
+(def gen-ipv6-address
+  "Generate valid IPv6 address string"
+  (gen/fmap (fn [[a b c d e f g h]]
+              (str (format "%x" a) ":" (format "%x" b) ":" (format "%x" c) ":" (format "%x" d) ":" (format "%x" e) ":" (format "%x" f) ":" (format "%x" g) ":" (format "%x" h)))
+            (gen/tuple (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535)
+                       (gen/choose 0 65535))))
 
 ;; ---------------------------------------------------------------------------
 ;; Basic field specs
@@ -91,6 +123,11 @@
   (s/with-gen
     (s/and string? #(valid-ipv4? %))
     (constantly gen-ipv4-address)))
+
+(s/def ::ipv6-address
+  (s/with-gen
+    (s/and string? #(valid-ipv6? %))
+    (constantly gen-ipv6-address)))
 
 (s/def ::ip-address
   (s/or :v4 ::ipv4-address
