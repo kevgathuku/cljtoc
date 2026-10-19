@@ -100,3 +100,7 @@ One single-torrent download job: torrent description, piece state, peer connecti
 
 **Download progress**:
 A point-in-time snapshot of a download's completion, transfer totals, rate, and connected-peer count.
+
+**Session**:
+One run of the client that owns several downloads: it starts every requested torrent together, runs each on its own thread, and keeps a failed start or a crashed run from taking the others down. In the blocking CLI the session lives for a single command; a long-lived, queryable session is the daemon's job.
+_Avoid_: using "session" for a single `Download` (a `Download` is one torrent's job; a `Session` is the set of them).

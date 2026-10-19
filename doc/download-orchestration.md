@@ -23,6 +23,14 @@ A download moves through explicit states: `:idle → :starting → :downloading`
 
 Corrupt pieces requeue automatically onto a different peer. Dead peers trigger reconnects to alternatives. When nothing can proceed — no peers, poisoned data, full disk — the download reports an error instead of hanging.
 
+## Sessions and multiple torrents
+
+A **session** (`dev.cljtoc.orchestration.session`) owns several downloads in one process. `torrent.download` takes one or more torrent paths, starts them together through `start-torrents`, and drives them to a terminal state with `run-downloads`. `torrent.status` with no id lists every saved download, most recent first; a named id lists that one.
+
+A path that refuses to start lands in the session's failures and the rest still run, so one bad path never strands the others. Two paths whose torrents share a basename derive the same id — the map entry and on-disk state file key — so the later one is reported as a `:duplicate-id` failure instead of silently replacing the first. `run-downloads` gives each download its own thread and folds an ordinary exception in one into a `:failed` record, so one torrent's crash leaves its siblings' final records intact; JVM errors such as `OutOfMemoryError` are left to propagate.
+
+The session lives for a single blocking command. Querying a running session, pausing it, and removing the blocking CLI are the daemon's job (`torrent-client-clj-0c9.12`).
+
 ## Concurrency and supervision
 
 The supervision layer lives in `dev.cljtoc.supervision.*` and sits above the coordination layer in the four-layer architecture. See [ADR-0011](../adr/0011-supervision-layer.md) for the design rationale.
