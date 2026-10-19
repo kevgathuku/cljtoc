@@ -47,7 +47,7 @@
                  (every? #(re-matches #"\d+" %) parts))
         (mapv #(Integer/parseInt %) parts)))))
 
-(defn valid-ipv4?
+(defn- valid-ipv4?
   "Return true if an IPv4 address string is valid, false otherwise"
   [ip-address]
   (if ip-address
