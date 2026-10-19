@@ -1083,6 +1083,24 @@
       (is (seq (mock-disk/get-output-piece disk 0))
           "the output layout keeps the bytes"))))
 
+(deftest evict-completed-cache-returns-download-unchanged-on-error-test
+  (testing "a failed eviction logs a warning and returns the download unchanged"
+    (let [disk (mock-disk/create)
+          download {:torrent {:info-hash "not-a-valid-hash"}
+                    :state :completed}
+          result (download/evict-completed-cache disk download)]
+      (is (= download result))))
+  (testing "a nil disk-port skips eviction and returns the download unchanged"
+    (let [download {:torrent {:info-hash (byte-array 20)}
+                    :state :completed}]
+      (is (= download (download/evict-completed-cache nil download)))))
+  (testing "a missing info-hash skips eviction and returns the download unchanged"
+    (let [disk (mock-disk/create)
+          download {:torrent {}
+                    :state :completed}
+          result (download/evict-completed-cache disk download)]
+      (is (= download result)))))
+
 (deftest run-download-fails-on-output-layout-error-test
   (testing "a failed layout init fails the download instead of reporting completion"
     (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
