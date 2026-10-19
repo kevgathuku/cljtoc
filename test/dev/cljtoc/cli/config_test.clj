@@ -140,3 +140,12 @@
   (testing "state and cache are distinct directories even when both homes coincide"
     (is (not= (:state-dir config/default-settings)
               (:piece-cache-dir config/default-settings)))))
+
+(deftest paths-pass-through-verbatim-test
+  (testing "separator spelling is the filesystem's business, not the config's"
+    (let [settings (:ok (config/parse-settings
+                         "{:output-dir \"/tmp//a/./b\"\n :piece-cache-dir \"C:\\\\Users\\\\ana\\\\Downloads\"}"))]
+      (is (= "/tmp//a/./b" (:output-dir settings))
+          "no separator rewriting happens here")
+      (is (= "C:\\Users\\ana\\Downloads" (:piece-cache-dir settings))
+          "Windows-style paths survive untouched"))))

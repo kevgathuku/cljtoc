@@ -7,10 +7,16 @@
    this namespace guessing at them. Unknown keys warn and are dropped, so
    a file written for a newer client still loads.
 
-   Precedence, weakest first: built-in defaults, the settings file, then
-   the CLI invocation (positional args like output-dir). A missing file
-   means defaults; a present-but-unreadable file is an error, never
-   silent defaults over a typo'd file."
+   The file is the only source for these values; the command line selects
+   the file (--config) and the command to run, and sets nothing itself. A
+   missing file means defaults; a present-but-unreadable file is an error,
+   never silent defaults over a typo'd file.
+
+   Path values are passed through untouched: java.io.File interprets them,
+   so either separator spelling works, including Windows `\\` or `/` in
+   the same value. Nothing here does string path math — containment and
+   canonicalization belong to the disk port, which appends File/separator
+   rather than a literal `/` for exactly this reason."
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
