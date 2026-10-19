@@ -75,8 +75,8 @@
 (deftest ip-address-generates-both-families-test
   (testing "generated values cover v4 and v6"
     (let [addrs (gen/sample (s/gen ::tracker/ip-address) 200)]
-      (is (some #(not (string/includes? % ":")) addrs))
-      (is (some #(string/includes? % ":") addrs)))))
+      (is (some #(string/includes? % ".") addrs)) ; ipv4
+      (is (some #(string/includes? % ":") addrs))))) ; ipv6
 
 (deftest split-ipv4-returns-octets-or-nil-test
   (testing "dotted quads split into four integers"
