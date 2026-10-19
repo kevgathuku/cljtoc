@@ -178,7 +178,16 @@
 
   (delete-state [_ id]
     (swap! state-files dissoc id)
-    {:ok :deleted}))
+    {:ok :deleted})
+
+  (evict-piece-cache [_ info-hash]
+    (if-let [scope (disk/cache-scope info-hash)]
+      (do
+        (swap! piece-cache
+               (fn [stored]
+                 (into {} (remove (fn [[[entry-scope _] _]] (= entry-scope scope)) stored))))
+        {:ok :evicted})
+      disk/invalid-info-hash-error)))
 
 (defn create
   "Create a mock disk port for testing.

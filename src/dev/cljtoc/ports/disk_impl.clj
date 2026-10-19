@@ -649,7 +649,21 @@
           (.delete state-file))
         {:ok :deleted})
       (catch Exception e
-        {:error :delete-error :message (.getMessage e)}))))
+        {:error :delete-error :message (.getMessage e)})))
+
+  (evict-piece-cache [_ info-hash]
+    (if-let [scope (disk/cache-scope info-hash)]
+      (try
+        (let [scope-dir (io/file piece-cache-dir scope)]
+          ;; Only the named download's own namespace: walking the cache
+          ;; root would delete other downloads' in-progress bytes.
+          (when (.exists scope-dir)
+            (doseq [^File entry (reverse (file-seq scope-dir))]
+              (.delete entry)))
+          {:ok :evicted})
+        (catch Exception e
+          {:error :evict-error :message (.getMessage e)}))
+      disk/invalid-info-hash-error)))
 
 (defn create
   "Create a DiskPortImpl instance.

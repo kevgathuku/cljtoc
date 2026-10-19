@@ -351,6 +351,26 @@
   :args (s/cat :time-port any? :download map?)
   :ret (s/keys :req-un [::state]))
 
+(defn evict-completed-cache
+  "Drop a completed download's cached pieces. The bytes now live in the
+   output layout, so the cache entries are dead weight — roughly one
+   torrent-size per finished download, unbounded across runs. Only this
+   download's own namespace is evicted; downloads that never complete
+   keep theirs. A failed eviction is logged and ignored: the download is
+   complete, and a leftover cache directory is not a reason to fail it.
+   Returns the download unchanged."
+  [disk-port download]
+  (let [info-hash (get-in download [:torrent :info-hash])
+        result (when (and disk-port info-hash)
+                 (disk/evict-piece-cache disk-port info-hash))]
+    (when (:error result)
+      (println (str "[complete] WARNING: cache eviction failed: " (:message result))))
+    download))
+
+(s/fdef evict-completed-cache
+  :args (s/cat :disk-port any? :download map?)
+  :ret map?)
+
 (defn initial-download [time-port torrent output-dir download-id]
   (let [info (:info torrent)
         total-pieces (count (:pieces info))
@@ -919,7 +939,8 @@
           (println "  Download complete!")
           (doseq [[_ peer-info] (:active-peers state)]
             (network/close-peer network-port (:peer-data peer-info)))
-          (complete-download time-port download))
+          (evict-completed-cache (:disk-port ports)
+                                 (complete-download time-port download)))
 
         (let [event (async/<!! events-ch)]
           (if (nil? event)
@@ -1183,7 +1204,7 @@
                       (:message materialized))
 
            (pieces/complete? (:piece-state revived))
-           (complete-download time-port revived)
+           (evict-completed-cache disk-port (complete-download time-port revived))
 
     ;; No dial candidates: no workers would spawn and the coordinator
     ;; would block on the event channel forever.

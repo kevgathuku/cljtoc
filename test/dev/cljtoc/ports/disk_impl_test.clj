@@ -50,7 +50,8 @@
                  :ensure-directory #(disk/ensure-directory % output-dir)
                  :save-state #(disk/save-state % {:id "contract"})
                  :load-state #(disk/load-state % "contract")
-                 :delete-state #(disk/delete-state % "contract")}
+                 :delete-state #(disk/delete-state % "contract")
+                 :evict-piece-cache #(disk/evict-piece-cache % (byte-array 20))}
           ports {:real (make-port (test-utils/temp-dir "disk-state-"))
                  :mock (mock-disk/create {})}]
       (doseq [[port-name port] ports
@@ -1127,3 +1128,34 @@
                                          piece-length % total)
                         (range piece-count)))
           (assembled-content-matches? output-dir source-bytes layout)))))
+
+(deftest evict-piece-cache-removes-only-that-download-test
+  (testing "eviction removes the named download's cache entries"
+    (let [cache-dir (test-utils/temp-dir "piece-cache-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "disk-state-")
+                                  :piece-cache-dir cache-dir})
+          info-hash (byte-array 20)
+          scope (disk/cache-scope info-hash)
+          entry (io/file cache-dir scope "piece-0.dat")]
+      (disk/write-piece port info-hash 0 (byte-array [1 2 3 4]))
+      (is (.exists entry) "precondition: the write landed in the cache")
+      (is (= {:ok :evicted} (disk/evict-piece-cache port info-hash)))
+      (is (not (.exists entry)) "the cache entry is gone")
+      (is (= {:ok nil} (disk/read-piece port info-hash 0))
+          "reads report not-cached after eviction")))
+  (testing "eviction leaves a different download's cache untouched"
+    (let [cache-dir (test-utils/temp-dir "piece-cache-")
+          port (disk-impl/create {:state-dir (test-utils/temp-dir "disk-state-")
+                                  :piece-cache-dir cache-dir})
+          kept-hash (byte-array 20)
+          evicted-hash (byte-array (map (fn [_] (byte 9)) (range 20)))
+          kept-entry (io/file cache-dir (disk/cache-scope kept-hash) "piece-0.dat")]
+      (disk/write-piece port kept-hash 0 (byte-array [1 2 3 4]))
+      (disk/write-piece port evicted-hash 0 (byte-array [5 6 7 8]))
+      (disk/evict-piece-cache port evicted-hash)
+      (is (.exists kept-entry) "the other download's cache entry survives")
+      (is (= [1 2 3 4] (vec (:ok (disk/read-piece port kept-hash 0)))))))
+  (testing "evicting an absent cache entry succeeds without throwing"
+    (let [port (disk-impl/create {:state-dir (test-utils/temp-dir "disk-state-")
+                                  :piece-cache-dir (test-utils/temp-dir "piece-cache-")})]
+      (is (= {:ok :evicted} (disk/evict-piece-cache port (byte-array 20)))))))

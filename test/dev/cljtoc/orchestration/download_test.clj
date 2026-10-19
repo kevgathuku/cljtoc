@@ -1041,8 +1041,47 @@
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
-      (is (= (seq piece-0-bytes) (seq (mock-disk/get-piece disk (:info-hash torrent) 0))))
-      (is (= (seq piece-1-bytes) (seq (mock-disk/get-piece disk (:info-hash torrent) 1)))))))
+      ;; The output layout carries the finished bytes; the piece cache is
+      ;; evicted on completion (torrent-client-clj-0c9.23).
+      (is (= (seq piece-0-bytes) (seq (mock-disk/get-output-piece disk 0))))
+      (is (= (seq piece-1-bytes) (seq (mock-disk/get-output-piece disk 1))))
+      (is (nil? (mock-disk/get-piece disk (:info-hash torrent) 0))))))
+
+(deftest run-download-evicts-piece-cache-on-completion-test
+  (testing "a completed download drops its own cache entries and leaves the output alone"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          piece-1-bytes (test-utils/to-bytes "efgh")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "evict-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)
+                                   (bencode/sha1-hash piece-1-bytes)]
+                          :piece-length 4
+                          :name "evict.bin"
+                          :length 8}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "evict")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0xC0)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}
+                                          {:ok (peer/->Piece 1 0 piece-1-bytes)}])})
+          disk (mock-disk/create)
+          result (deref (future (download/run-download {:network-port net
+                                                        :disk-port disk
+                                                        :time-port (mock-time/create)
+                                                        :config {}}
+                                                       started))
+                        15000 :timed-out)]
+      (is (= :completed (:state result)))
+      (is (nil? (mock-disk/get-piece disk info-hash 0))
+          "the completed download's cache entries are evicted")
+      (is (nil? (mock-disk/get-piece disk info-hash 1)))
+      (is (seq (mock-disk/get-output-piece disk 0))
+          "the output layout keeps the bytes"))))
 
 (deftest run-download-fails-on-output-layout-error-test
   (testing "a failed layout init fails the download instead of reporting completion"
@@ -1253,8 +1292,9 @@
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
-      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-piece disk (:info-hash (:torrent (loop-download))) 0))))
-      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-piece disk (:info-hash (:torrent (loop-download))) 1)))))))
+      (is (= (seq (test-utils/to-bytes "abcd")) (seq (mock-disk/get-output-piece disk 0))))
+      (is (= (seq (test-utils/to-bytes "efgh")) (seq (mock-disk/get-output-piece disk 1))))
+      (is (nil? (mock-disk/get-piece disk (:info-hash (:torrent (loop-download))) 0))))))
 
 (deftest run-event-loop-completion-closes-peers-test
   (testing "a completed download closes every active connection"
