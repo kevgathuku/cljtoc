@@ -38,6 +38,25 @@
   "Generate realistic port numbers (1024-65535)"
   (gen/choose 1024 65535))
 
+(defn split-ipv4
+  "Split an IPv4 address string to constituent parts"
+  [ip-address]
+  (when ip-address
+    (let [parts (string/split ip-address #"\." -1)]
+      (when (and (= 4 (count parts))
+                 (every? #(re-matches #"\d+" %) parts))
+        (mapv #(Integer/parseInt %) parts)))))
+
+(defn valid-ipv4?
+  "Return true if an IPv4 address string is valid, false otherwise"
+  [ip-address]
+  (if ip-address
+    (let [parts (split-ipv4 ip-address)]
+      (cond
+        (and (some? parts)
+             (every? #(<= 0 % 255) parts)) true
+        :else false)) false))
+
 (def gen-ipv4-address
   "Generate valid IPv4 address string"
   (gen/fmap (fn [[a b c d]]
@@ -68,12 +87,14 @@
     (s/int-in 1 65536)  ; 1-65535 inclusive
     (constantly gen-port)))
 
-(s/def ::ip-address
+(s/def ::ipv4-address
   (s/with-gen
-    (s/and string?
-           #(or (re-matches #"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$" %)
-                (re-matches #"^[0-9a-fA-F:]+$" %)))  ; Simple IPv4/IPv6 validation
+    (s/and string? #(valid-ipv4? %))
     (constantly gen-ipv4-address)))
+
+(s/def ::ip-address
+  (s/or :v4 ::ipv4-address
+        :v6 ::ipv6-address))
 
 (s/def ::event
   ;; nil means none (BEP 15 event 0): a set would read as a predicate

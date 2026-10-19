@@ -3,13 +3,13 @@
    [clojure.spec.alpha :as s]
    [clojure.spec.test.alpha :as stest]
    [clojure.string :as string]
-   [clojure.test :refer [deftest is testing]]
+   [clojure.test :refer [deftest is testing are]]
    [clojure.test.check.clojure-test :refer [defspec]]
    [clojure.test.check.generators :as gen]
    [clojure.test.check.properties :as prop]
    [dev.cljtoc.domain.bencode :as bencode]
    [dev.cljtoc.protocol.tracker :as tracker]
-   [dev.cljtoc.test-utils :refer [to-bytes]]))
+   [dev.cljtoc.test-utils :refer [to-bytes ip-string-to-parts]]))
 
 ;; ---------------------------------------------------------------------------
 ;; Test helpers
@@ -22,14 +22,68 @@
                       [(unchecked-byte (bit-shift-right port 8))
                        (unchecked-byte (bit-and port 0xFF))])))
 
-(defn- ip-string-to-parts
-  "Convert IP address string to byte parts"
-  [ip-str]
-  (mapv #(Integer/parseInt %) (string/split ip-str #"\.")))
-
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: Compact peer parsing (IPv4)
 ;; ---------------------------------------------------------------------------
+
+(deftest ipv4-address-spec-test
+  (testing "strict octets accept dotted quads"
+    (are [addr] (s/valid? ::tracker/ipv4-address addr)
+      "0.0.0.0"
+      "10.0.0.9"
+      "192.168.1.1"
+      "255.255.255.255"))
+  (testing "overflow octets and malformed shapes are rejected"
+    (are [addr] (not (s/valid? ::tracker/ipv4-address addr))
+      "999.999.999.999"
+      "256.0.0.1"
+      "1.2.3"
+      "1.2.3.4.5"
+      "abc"
+      ""
+      nil)))
+
+(deftest ipv6-address-spec-test
+  (testing "full 8-group form is accepted, any case"
+    (are [addr] (s/valid? ::tracker/ipv6-address addr)
+      "0:0:0:0:0:0:0:0"
+      "0:0:0:0:0:0:0:1"
+      "fe80:0000:0000:0000:0000:0000:0000:0001"
+      "FE80:0000:0000:0000:0000:0000:0000:0001"))
+  (testing "compressed form, wrong group counts, and non-hex are rejected"
+    (are [addr] (not (s/valid? ::tracker/ipv6-address addr))
+      "::1"
+      ":"
+      "12345"
+      "1:2:3:4:5:6:7"
+      "1:2:3:4:5:6:7:8:9"
+      "gggg:0000:0000:0000:0000:0000:0000:0001")))
+
+(deftest ip-address-spec-tags-family-test
+  (testing "conform tags which family matched"
+    (is (= [:v4 "10.0.0.9"] (s/conform ::tracker/ip-address "10.0.0.9")))
+    (is (= [:v6 "0:0:0:0:0:0:0:1"] (s/conform ::tracker/ip-address "0:0:0:0:0:0:0:1")))))
+
+(deftest ip-address-generates-both-families-test
+  (testing "generated values cover v4 and v6 (YOUR exercise: presence is weak — strengthen this)"
+    (let [addrs (gen/sample (s/gen ::tracker/ip-address) 200)]
+      (is (some #(not (string/includes? % ":")) addrs))
+      (is (some #(string/includes? % ":") addrs)))))
+
+(deftest split-ipv4-returns-octets-or-nil-test
+  (testing "dotted quads split into four integers"
+    (is (= [10 0 0 9] (tracker/split-ipv4 "10.0.0.9")))
+    (is (= [0 0 0 0] (tracker/split-ipv4 "0.0.0.0"))))
+  (testing "out-of-range octets still split — range is the validator's job"
+    (is (= [999 0 0 1] (tracker/split-ipv4 "999.0.0.1"))))
+  (testing "structural failures return nil, never throw"
+    (are [addr] (nil? (tracker/split-ipv4 addr))
+      "abc"
+      "1.2.3"
+      "1.2.3."
+      "1.2.3.4.5"
+      ""
+      nil)))
 
 (deftest parse-compact-peers-ipv4-basic-test
   (testing "parses single IPv4 peer in compact format"
