@@ -6,6 +6,7 @@
    functions are all correct while the command quietly does nothing."
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.core :as core]
+            [dev.cljtoc.cli.config :as config]
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.orchestration.download :as download]
@@ -153,16 +154,26 @@
 (deftest make-ports-builds-one-manager-from-the-shared-dirs-test
   (testing "both commands resume against the same piece cache the download
             wrote, so the construction lives in one place. The ports are
-            real implementations; creating them touches nothing"
-    (let [{:keys [manager time-port]} (#'core/make-ports)]
+            real implementations; creating them touches nothing. Explicit
+            settings flow through untouched, so tests never touch home dirs"
+    (let [settings (assoc config/default-settings
+                          :state-dir (test-utils/temp-dir "cfg-state-")
+                          :piece-cache-dir (test-utils/temp-dir "cfg-cache-")
+                          :peer-port 9999
+                          :max-peers 7)
+          {:keys [manager time-port]} (#'core/make-ports settings)]
       (is (some? (:network-port manager)))
       (is (some? (:disk-port manager)))
       (is (some? (:time-port manager)))
       (is (some? time-port))
-      (is (= "./torrent-state" (str (:state-dir (:disk-port manager))))
+      (is (= (:state-dir settings) (str (:state-dir (:disk-port manager))))
           "the state resume loads is the state download saved")
-      (is (= "./torrent-cache" (str (:piece-cache-dir (:disk-port manager))))
-          "the cache resume materializes from is the cache download wrote"))))
+      (is (= (:piece-cache-dir settings) (str (:piece-cache-dir (:disk-port manager))))
+          "the cache resume materializes from is the cache download wrote")
+      (is (= 9999 (get-in manager [:network-port :config :peer-port]))
+          "the configured announce port reaches the network port")
+      (is (= 7 (get-in manager [:config :max-peers]))
+          "manager knobs travel from settings to config"))))
 
 (defn- temp-disk-port
   "A real disk port over a fresh temp state dir (plus a throwaway cache dir
@@ -219,3 +230,16 @@
       (disk/save-state port {:id "archive" :state :paused})
       (is (nil? (#'core/load-command-state port dir ["archive.v2"]))
           "archive.v2 is a bare id, not a torrent path — no fallback, no wrong download"))))
+
+(deftest split-global-flags-test
+  (testing "--config <path> is pulled out wherever it sits"
+    (is (= ["/tmp/c.edn" ["torrent.status"]]
+           (#'core/split-global-flags ["--config" "/tmp/c.edn" "torrent.status"])))
+    (is (= ["/tmp/c.edn" ["torrent.download" "f.torrent"]]
+           (#'core/split-global-flags ["torrent.download" "f.torrent" "--config" "/tmp/c.edn"]))))
+  (testing "no flag means nil config and untouched args"
+    (is (= [nil ["torrent.status" "x"]]
+           (#'core/split-global-flags ["torrent.status" "x"]))))
+  (testing "a dangling --config passes through for the command to reject"
+    (is (= [nil ["torrent.status" "--config"]]
+           (#'core/split-global-flags ["torrent.status" "--config"])))))

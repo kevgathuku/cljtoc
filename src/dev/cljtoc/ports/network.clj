@@ -53,6 +53,8 @@
 ;; Attempt counts never reach a Java API, so any positive int retries;
 ;; only non-positive/non-int is refused.
 (s/def ::udp-max-attempts pos-int?)
+
+(s/def ::peer-port (s/int-in 1 65536))
 ;; fn? has no generator, so the bare predicate would make the shape
 ;; un-generatable (s/gen fails at :log-fn); generate println instead,
 ;; mirroring tracker.clj's with-gen precedent.
@@ -61,7 +63,7 @@
   (s/keys :opt-un [::connect-timeout-ms ::socket-timeout-ms
                    ::udp-timeout-ms ::http-timeout-ms ::log-fn
                    ::udp-retry-base-delay-ms ::udp-max-attempts
-                   ::udp-tracker-budget-ms]))
+                   ::udp-tracker-budget-ms ::peer-port]))
 
 (def retry-count-opt-keys
   "Adapter config keys holding retry attempt counts (plain positive ints)."
@@ -105,6 +107,13 @@
                              ": expected a fn of one message string, got "
                              (pr-str log-fn-value))
                         {:key :log-fn :value log-fn-value})))))
+  (when (contains? config :peer-port)
+    (let [value (:peer-port config)]
+      (when-not (and (pos-int? value) (<= value 65535))
+        (throw (ex-info (str "Invalid network adapter opt :peer-port"
+                             ": expected TCP port 1-65535, got "
+                             (pr-str value))
+                        {:key :peer-port :value value})))))
   config)
 
 (s/fdef check-adapter-config

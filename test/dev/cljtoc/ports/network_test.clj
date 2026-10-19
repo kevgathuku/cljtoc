@@ -1027,3 +1027,29 @@
       (is (= 1 received-count) (str "the refused build sent nothing further; got " received-count))
       (is (= :udp-announce-failed (:error result)) (pr-str result))
       (is (re-find #"validation" (:message result)) (pr-str result)))))
+
+(deftest announce-advertises-configured-peer-port-test
+  (testing "the announce request carries :peer-port from adapter config"
+    ;; Whole-list announce always fans out to the public fallback
+    ;; trackers, so a loopback test would burn each dead tracker's UDP
+    ;; budget in timeouts. The request map is built by one pure-enough
+    ;; helper, tested directly instead.
+    (let [torrent {:info-hash (byte-array 20)}
+          progress {:downloaded 0 :left 100}]
+      (is (= 9999 (:port (#'network-impl/announce-request
+                          (network-impl/create {:peer-port 9999})
+                          torrent progress))))))
+  (testing "absent :peer-port keeps the historical 6881"
+    (let [torrent {:info-hash (byte-array 20)}
+          progress {:downloaded 0 :left 100}]
+      (is (= 6881 (:port (#'network-impl/announce-request
+                          (network-impl/create)
+                          torrent progress))))))
+  (testing "present-but-invalid :peer-port is refused at creation"
+    (doseq [bad [0 -1 "9999" 65536 nil]
+            make [network-impl/create mock-network/create]]
+      (let [err (try (make {:peer-port bad}) nil
+                     (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? err) (str "accepted :peer-port=" (pr-str bad)))
+        (when (some? err)
+          (is (re-find #"Invalid network adapter opt" (ex-message err))))))))
