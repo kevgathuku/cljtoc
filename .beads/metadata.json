@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "torrent_client_clj",
+  "project_id": "0c5bd618-34ba-4be9-bec6-29692621d4c7"
+}
