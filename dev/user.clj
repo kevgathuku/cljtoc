@@ -43,6 +43,8 @@
   (println "  Spec probes (fully-qualified — this ns has no aliases):")
   (println "    (s/valid? :dev.cljtoc.protocol.tracker/port 70000)")
   (println "    (stest/instrument `dev.cljtoc.protocol.tracker/tracker-error)")
+  (println "  Private fns (specs are the interface; helpers stay defn-):")
+  (println "    (@#'tracker/valid-ipv4? \"10.0.0.9\") ; deref the var, then call")
   (println "  Stale session? :reload refreshes only named namespaces —")
   (println "  if a var vanishes that rg proves exists, restart the REPL.")
   (println))
