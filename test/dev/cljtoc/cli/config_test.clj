@@ -119,6 +119,33 @@
     (is (= "/mnt/store/dl"
            (#'config/parse-xdg-download-dir
             "XDG_DOWNLOAD_DIR=\"/mnt/store/dl\"\n" "/home/ana"))))
+  (testing "escaped dollars and quotes survive without shell evaluation"
+    (is (= "/home/ana/Price$Lists"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"$HOME/Price\\$Lists\"\n" "/home/ana")))
+    (is (= "/home/ana/my \"dirs\""
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"$HOME/my \\\"dirs\\\"\"\n" "/home/ana")))
+    (is (= "/mnt/store/$(id)"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"/mnt/store/$(id)\"\n" "/home/ana"))))
+  (testing "backslash escapes are resolved and an escaped $HOME is not expanded"
+    (is (= "/home/ana/C:\\Temp"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"$HOME/C:\\\\Temp\"\n" "/home/ana")))
+    (is (= "$HOME/not-expanded"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"\\$HOME/not-expanded\"\n" "/home/ana")))
+    (is (= "/mnt/$HOME/x"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"/mnt/$HOME/x\"\n" "/home/ana")))
+    (is (= "/mnt/a\\b"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"/mnt/a\\\\b\"\n" "/home/ana"))))
+  (testing "an unquoted value is read like a quoted one"
+    (is (= "/mnt/store/dl"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=/mnt/store/dl\n" "/home/ana"))))
   (testing "a missing key yields nil so the caller falls back"
     (is (nil? (#'config/parse-xdg-download-dir
                "XDG_DESKTOP_DIR=\"$HOME/Escritorio\"\n" "/home/ana"))))

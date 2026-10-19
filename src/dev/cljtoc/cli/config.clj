@@ -49,21 +49,61 @@
 (def cache-home
   (home-subdir (System/getenv "XDG_CACHE_HOME") home-dir "/.cache"))
 
+(def ^:private user-dir-escapes
+  "Characters a backslash escapes inside a double-quoted shell word: the
+   quote, the backslash, and the dollar. Every other backslash stays literal,
+   which is how the shell reads double quotes."
+  #{\" \\ \$})
+
+(defn- parse-user-dir-word
+  "Read the user-dirs.dirs value without running it: remove the outer double
+   quotes, resolve \\\", \\\\, and \\$ escapes, and leave every other character
+   literal. Never evaluates shell syntax, so a directory named \"\\$(id)\" stays
+   that name. Returns [value home-prefix?] where home-prefix? says the word
+   began with an unescaped $HOME, or nil for an empty word."
+  [raw]
+  (let [quoted? (str/starts-with? raw "\"")
+        start (if quoted? 1 0)
+        length (count raw)
+        home-prefix? (and (<= (+ start (count "$HOME")) length)
+                          (= "$HOME" (subs raw start (+ start (count "$HOME")))))]
+    (loop [index start
+           out []]
+      (if (>= index length)
+        (let [value (apply str out)]
+          (when (seq value)
+            [value home-prefix?]))
+        (let [character (.charAt ^String raw index)
+              escaped (when (< (inc index) length)
+                        (.charAt ^String raw (inc index)))]
+          (cond
+            (and quoted? (= character \"))
+            (let [value (apply str out)]
+              (when (seq value)
+                [value home-prefix?]))
+
+            (and (= character \\) (contains? user-dir-escapes escaped))
+            (recur (+ index 2) (conj out escaped))
+
+            :else
+            (recur (inc index) (conj out character))))))))
+
 (defn- parse-xdg-download-dir
-  "Extract XDG_DOWNLOAD_DIR from user-dirs.dirs content, expanding $HOME the
-   way the file itself allows. Returns nil when the key is absent or empty,
-   so the caller falls back instead of guessing a blank directory.
-   Mirrors transmission's getXdgEntryFromUserDirs: a localized or relocated
-   Downloads folder (~/Descargas, /mnt/store/dl) is the user's real one."
+  "Extract XDG_DOWNLOAD_DIR from user-dirs.dirs content, expanding only a
+   leading unescaped $HOME the way the file itself allows. Returns nil when
+   the key is absent or empty, so the caller falls back instead of guessing a
+   blank directory. Mirrors transmission's getXdgEntryFromUserDirs: a
+   localized or relocated Downloads folder (~/Descargas, /mnt/store/dl) is
+   the user's real one."
   [content home]
   (when content
     (when-let [line (some #(when (str/starts-with? % "XDG_DOWNLOAD_DIR=") %)
                           (str/split-lines content))]
-      (let [raw (-> line
-                    (subs (count "XDG_DOWNLOAD_DIR="))
-                    (str/replace "\"" ""))]
-        (when (seq raw)
-          (str/replace raw "$HOME" home))))))
+      (when-let [[value home-prefix?] (parse-user-dir-word
+                                       (subs line (count "XDG_DOWNLOAD_DIR=")))]
+        (if home-prefix?
+          (str home (subs value (count "$HOME")))
+          value)))))
 
 (defn default-download-dir
   "The directory downloads land in. Honors an XDG_DOWNLOAD_DIR entry from
