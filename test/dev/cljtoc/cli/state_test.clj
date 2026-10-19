@@ -38,3 +38,28 @@
           port (temp-disk-port dir)]
       (is (nil? (state/load-most-recent port dir))))))
 
+;; load-all carries an fdef but is excluded from the generative check on
+;; principle: it reads through the injected disk port, so the generator
+;; cannot conjure the port it runs against.
+(deftest load-all-test
+  (testing "returns every record, most recently modified first"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "old" :state :paused})
+      (disk/save-state port {:id "new" :state :downloading})
+      (.setLastModified (io/file dir "old.edn") 1000)
+      (.setLastModified (io/file dir "new.edn") 2000)
+      (is (= ["new" "old"] (map :id (state/load-all port dir))))))
+  (testing "a corrupt record is skipped, not fatal: the rest stay listed"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (disk/save-state port {:id "ok" :state :paused})
+      (spit (io/file dir "broken.edn") "{broken edn")
+      (.setLastModified (io/file dir "broken.edn") 2000)
+      (.setLastModified (io/file dir "ok.edn") 1000)
+      (is (= ["ok"] (map :id (state/load-all port dir))))))
+  (testing "a missing dir reads as empty"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (is (= [] (state/load-all port (str dir "/absent")))))))
+

@@ -4,6 +4,7 @@
    Manages persistence of download state between CLI invocations.
    Uses human-readable filenames as download IDs."
   (:require [clojure.java.io :as io]
+            [clojure.spec.alpha :as s]
             [clojure.string :as str]
             [dev.cljtoc.ports.disk :as disk]))
 
@@ -31,6 +32,25 @@
        (let [files (sort-by #(.lastModified ^java.io.File %) > (.listFiles dir))]
          (when (seq files)
            (:ok (disk/load-state disk-port (state-id (first files))))))))))
+
+(defn load-all
+  "Load every saved download record, most recently modified first.
+   Dir-scanning lives here (the port has no listing); the bytes move
+   through the port. A corrupt record is skipped, not fatal: one broken
+   file must not hide the rest from a status listing."
+  [disk-port state-dir]
+  (let [dir (io/file state-dir)]
+    (if-not (.exists dir)
+      []
+      (let [files (sort-by (fn [^java.io.File file]
+                             [(.lastModified file) (.getName file)])
+                           (fn [left right] (compare right left))
+                           (.listFiles dir))]
+        (into [] (keep #(:ok (disk/load-state disk-port (state-id %)))) files)))))
+
+(s/fdef load-all
+  :args (s/cat :disk-port any? :state-dir string?)
+  :ret vector?)
 
 
 
