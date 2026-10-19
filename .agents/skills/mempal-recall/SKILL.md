@@ -24,7 +24,7 @@ Do **not** search on greenfield work with no memory relevance (rename a variable
 
 ## Commands
 
-This store keeps one room (`default`) per project wing, so qualify with keywords instead of room filters. Omit `--wing` for a global search when the wing is unknown; `mempal projects` lists exact wing names when scope is unclear.
+You can use keyword queries instead of room filters because this store keeps one `default` room per project wing. Omit `--wing` for a global search when you do not know the wing; run `mempal projects` to list exact wing names when you need to clarify scope.
 
 | You need | Command |
 |---|---|
@@ -35,7 +35,7 @@ This store keeps one room (`default`) per project wing, so qualify with keywords
 | Recent session continuity | `mempal wake-up`; diary wings (`pi-diary`, `agent-diary`) are searchable with `mempal search --wing <diary-wing>` |
 | Record this session | Write a note file, then `mempal ingest --wing <wing> --room <room> <dir>` |
 
-For this repo the project wing is `torrent_client_clj`; personal material lives in `pi-diary` (room `diary`).
+Use `torrent_client_clj` as this repo's project wing. Store personal material in `pi-diary` (room `diary`).
 
 ## Protocol
 
