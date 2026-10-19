@@ -64,8 +64,16 @@
     (is (= [:v4 "10.0.0.9"] (s/conform ::tracker/ip-address "10.0.0.9")))
     (is (= [:v6 "0:0:0:0:0:0:0:1"] (s/conform ::tracker/ip-address "0:0:0:0:0:0:0:1")))))
 
+(defspec ipv4-generator-round-trips 100
+  (prop/for-all [addr (s/gen ::tracker/ipv4-address)]
+                (= :v4 (first (s/conform ::tracker/ip-address addr)))))
+
+(defspec ipv6-generator-round-trips 100
+  (prop/for-all [addr (s/gen ::tracker/ipv6-address)]
+                (= :v6 (first (s/conform ::tracker/ip-address addr)))))
+
 (deftest ip-address-generates-both-families-test
-  (testing "generated values cover v4 and v6 (YOUR exercise: presence is weak — strengthen this)"
+  (testing "generated values cover v4 and v6"
     (let [addrs (gen/sample (s/gen ::tracker/ip-address) 200)]
       (is (some #(not (string/includes? % ":")) addrs))
       (is (some #(string/includes? % ":") addrs)))))

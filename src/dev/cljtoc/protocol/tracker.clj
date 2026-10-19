@@ -70,7 +70,8 @@
         (mapv #(Integer/parseInt % 16) parts)))))
 
 (defn- valid-ipv6?
-  "Return true if an IPv6 address string is valid, false otherwise"
+  "Return true if an IPv6 address string is valid, false otherwise
+  full form only, compressed to be done in .28"
   [ip-address]
   (if ip-address
     (let [parts (split-ipv6 ip-address)]
