@@ -1164,3 +1164,14 @@
           result (tracker/parse-udp-announce-response bytes {:action :connect :transaction-id 42})]
       (is (= :action-mismatch (:error result)) (pr-str result))
       (is (nil? (:ok result)) (pr-str result)))))
+
+(deftest tracker-instrumentation-toggle-round-trips-test
+  (testing "instrumenting rejects bad args; unstrumenting restores the plain call"
+    (spec/instrument-tracker!)
+    (try
+      (is (thrown? clojure.lang.ExceptionInfo
+                   (tracker/tracker-error "not-a-keyword" 42)))
+      (finally
+        (spec/unstrument-tracker!)))
+    (is (= {:error "not-a-keyword" :message 42}
+           (tracker/tracker-error "not-a-keyword" 42)))))
