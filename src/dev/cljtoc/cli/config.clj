@@ -14,10 +14,14 @@
   (:require [clojure.edn :as edn]
             [clojure.java.io :as io]
             [clojure.spec.alpha :as s]
+            [clojure.string :as str]
             [dev.cljtoc.orchestration.download :as download]))
 
 (def ^:private home-dir
   (System/getProperty "user.home"))
+
+(def ^:private file-separator
+  (System/getProperty "file.separator"))
 
 (def config-home
   "Where cljtoc reads config from. One derivation, shared by the default
@@ -27,6 +31,45 @@
 
 (def cache-home
   (or (System/getenv "XDG_CACHE_HOME") (str home-dir "/.cache")))
+
+(defn- parse-xdg-download-dir
+  "Extract XDG_DOWNLOAD_DIR from user-dirs.dirs content, expanding $HOME the
+   way the file itself allows. Returns nil when the key is absent or empty,
+   so the caller falls back instead of guessing a blank directory.
+   Mirrors transmission's getXdgEntryFromUserDirs: a localized or relocated
+   Downloads folder (~/Descargas, /mnt/store/dl) is the user's real one."
+  [content home]
+  (when content
+    (when-let [line (some #(when (str/starts-with? % "XDG_DOWNLOAD_DIR=") %)
+                          (str/split-lines content))]
+      (let [raw (-> line
+                    (subs (count "XDG_DOWNLOAD_DIR="))
+                    (str/replace "\"" ""))]
+        (when (seq raw)
+          (str/replace raw "$HOME" home))))))
+
+(defn default-download-dir
+  "The directory downloads land in. Honors an XDG_DOWNLOAD_DIR entry from
+   user-dirs.dirs (the Linux convention, and the one Transmission reads),
+   else <home>/Downloads — which is also correct on macOS and on Windows,
+   where user.home is the user's profile directory. Windows relocations through
+   FOLDERID_Downloads are not detected: set :output-dir in the settings file
+   to override. Pure: reads nothing, the caller gathers the inputs, and
+   :separator (the platform's file separator) keeps Windows paths from
+   mixing separators."
+  [{:keys [home user-dirs-content separator]
+    :or {separator "/"}}]
+  (or (parse-xdg-download-dir user-dirs-content home)
+      (str home separator "Downloads")))
+
+(defn- user-dirs-content
+  "Contents of <config home>/user-dirs.dirs, or nil when absent or
+   unreadable. Side-effecting, so default-download-dir stays pure."
+  []
+  (let [file (io/file config-home "user-dirs.dirs")]
+    (when (.exists file)
+      (try (slurp file)
+           (catch Exception _ nil)))))
 
 (def default-settings
   "The knobs a user can actually change, with Transmission's values: port
@@ -38,8 +81,11 @@
    orchestration.download/default-config instead of being offered here
    as settings that do nothing."
   {:state-dir (str config-home "/cljtoc/state")
-   :piece-cache-dir (str cache-home "/cljtoc")
-   :output-dir (str home-dir "/Downloads")
+   :piece-cache-dir (str cache-home "/cljtoc/pieces")
+   :output-dir (default-download-dir
+                {:home home-dir
+                 :user-dirs-content (user-dirs-content)
+                 :separator file-separator})
    :peer-port 51413
    :max-peers (:max-peers download/default-config)})
 

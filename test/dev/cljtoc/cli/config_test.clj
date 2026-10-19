@@ -98,3 +98,45 @@
                       dev.cljtoc.cli.config/default-config-path]
                     50)]
       (is (empty? failures) (str "fdef check failures: " (pr-str failures))))))
+
+(deftest xdg-download-dir-parse-test
+  (testing "XDG_DOWNLOAD_DIR is read from user-dirs.dirs with $HOME expanded"
+    (is (= "/home/ana/Descargas"
+           (#'config/parse-xdg-download-dir
+            "XDG_DESKTOP_DIR=\"$HOME/Escritorio\"\nXDG_DOWNLOAD_DIR=\"$HOME/Descargas\"\n"
+            "/home/ana"))))
+  (testing "an absolute path is used as written"
+    (is (= "/mnt/store/dl"
+           (#'config/parse-xdg-download-dir
+            "XDG_DOWNLOAD_DIR=\"/mnt/store/dl\"\n" "/home/ana"))))
+  (testing "a missing key yields nil so the caller falls back"
+    (is (nil? (#'config/parse-xdg-download-dir
+               "XDG_DESKTOP_DIR=\"$HOME/Escritorio\"\n" "/home/ana"))))
+  (testing "absent or empty content yields nil"
+    (is (nil? (#'config/parse-xdg-download-dir nil "/home/ana")))
+    (is (nil? (#'config/parse-xdg-download-dir "" "/home/ana"))))
+  (testing "an empty value yields nil rather than the home dir"
+    (is (nil? (#'config/parse-xdg-download-dir "XDG_DOWNLOAD_DIR=\"\"\n" "/home/ana")))))
+
+(deftest default-download-dir-test
+  (testing "the XDG entry wins when the user redefined their downloads folder"
+    (is (= "/home/ana/Descargas"
+           (config/default-download-dir
+            {:home "/home/ana"
+             :user-dirs-content "XDG_DOWNLOAD_DIR=\"$HOME/Descargas\"\n"}))))
+  (testing "without an XDG entry every platform falls back to <home>/Downloads"
+    (is (= "/home/ana/Downloads"
+           (config/default-download-dir {:home "/home/ana"})))
+    (is (= "C:\\Users\\ana\\Downloads"
+           (config/default-download-dir {:home "C:\\Users\\ana"
+                                         :separator "\\"})))
+    (is (= "/Users/ana/Downloads"
+           (config/default-download-dir {:home "/Users/ana"})))))
+
+(deftest piece-cache-lives-in-its-own-folder-test
+  (testing "the cache is a named folder under the cljtoc cache root, not the root itself"
+    (is (= (str config/cache-home "/cljtoc/pieces")
+           (:piece-cache-dir config/default-settings))))
+  (testing "state and cache are distinct directories even when both homes coincide"
+    (is (not= (:state-dir config/default-settings)
+              (:piece-cache-dir config/default-settings)))))

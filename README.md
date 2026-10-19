@@ -227,11 +227,16 @@ the client uses these Transmission-aligned defaults:
 
 | Key | Default |
 |-----|---------|
-| `:output-dir` | `~/Downloads` |
+| `:output-dir` | `XDG_DOWNLOAD_DIR`, else `~/Downloads` |
 | `:state-dir` | `<config home>/cljtoc/state` |
-| `:piece-cache-dir` | `<cache home>/cljtoc` |
+| `:piece-cache-dir` | `<cache home>/cljtoc/pieces` |
 | `:peer-port` | `51413` |
 | `:max-peers` | `50` |
+
+The download directory honors an `XDG_DOWNLOAD_DIR` entry in
+`~/.config/user-dirs.dirs`, so a localized or relocated Downloads folder is
+used as-is; macOS and Windows without that file fall back to
+`<home>/Downloads`. Set `:output-dir` explicitly to override either way.
 
 A missing file means defaults. A file that fails to parse stops the
 command with the reader's reason rather than running on silent defaults,
