@@ -25,6 +25,9 @@ entities.json
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
 
+# Temp folder for unrelated assets
+scratch
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
