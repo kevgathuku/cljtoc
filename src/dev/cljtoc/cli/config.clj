@@ -69,10 +69,11 @@
       (str home separator "Downloads")))
 
 (defn- user-dirs-content
-  "Contents of <config home>/user-dirs.dirs, or nil when absent or
-   unreadable. Side-effecting, so default-download-dir stays pure."
-  []
-  (let [file (io/file config-home "user-dirs.dirs")]
+  "Contents of path, or nil when it is absent or unreadable. Takes the
+   path rather than reading config-home itself, so the unreadable branch is
+   testable and default-download-dir stays pure."
+  [path]
+  (let [file (io/file path)]
     (when (.exists file)
       (try (slurp file)
            (catch Exception _ nil)))))
@@ -90,7 +91,8 @@
    :piece-cache-dir (str cache-home "/cljtoc/pieces")
    :output-dir (default-download-dir
                 {:home home-dir
-                 :user-dirs-content (user-dirs-content)
+                 :user-dirs-content (user-dirs-content
+                                     (str config-home "/user-dirs.dirs"))
                  :separator file-separator})
    :peer-port 51413
    :max-peers (:max-peers download/default-config)})
@@ -204,8 +206,6 @@
   "Load settings from path (or the default location when nil). A missing
    file means defaults; a present file parses strictly. Returns
    {:ok settings} or {:error :invalid-config :message msg}."
-  ([]
-   (load-settings nil))
   ([path]
    (let [resolved (or path (default-config-path))
          file (io/file resolved)]
@@ -218,5 +218,5 @@
                               ": " (.getMessage exception)))))))))
 
 (s/fdef load-settings
-  :args (s/alt :bare (s/cat) :with-path (s/cat :path (s/nilable string?)))
+  :args (s/cat :path (s/nilable string?))
   :ret ::settings-result)

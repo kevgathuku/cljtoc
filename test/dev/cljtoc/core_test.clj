@@ -243,3 +243,34 @@
   (testing "a dangling --config passes through for the command to reject"
     (is (= [nil ["torrent.status" "--config"]]
            (#'core/split-global-flags ["torrent.status" "--config"])))))
+
+(deftest try-load-settings-returns-nil-on-a-bad-file-test
+  (testing "a corrupt config yields nil after reporting, leaving exit to the caller"
+    (let [dir (test-utils/temp-dir "cfg-")
+          path (str dir "/bad.edn")]
+      (spit path "{:max-peers")
+      (is (nil? (#'core/try-load-settings path)))))
+  (testing "a missing file yields the defaults"
+    (let [settings (#'core/try-load-settings
+                    (str (test-utils/temp-dir "cfg-") "/absent.edn"))]
+      (is (= (:output-dir config/default-settings) (:output-dir settings)))))
+  (testing "a valid file yields its merged settings"
+    (let [dir (test-utils/temp-dir "cfg-")
+          path (str dir "/ok.edn")]
+      (spit path (str "{:max-peers 3 :output-dir \"" dir "/out\"}"))
+      (let [settings (#'core/try-load-settings path)]
+        (is (= 3 (:max-peers settings)))
+        (is (= (str dir "/out") (:output-dir settings)))))))
+
+;; ---------------------------------------------------------------------------
+;; Coverage residue for this namespace, recorded rather than papered over:
+;; the command bodies (cmd-torrent-download/pause/resume/status/stop),
+;; print-usage, and -main's dispatch are not covered, before or after the
+;; settings work. Each calls System/exit on its failure path, and the repo
+;; forbids with-redefs, so driving one from a test would kill the test JVM
+;; when the wiring regressed — a failure mode worse than no test. The wiring
+;; they call is covered at its own seam instead: make-ports (settings reach
+;; the ports and the manager), state-dir (load-command-state), and
+;; try-load-settings (config errors), which is where a regression would
+;; actually land.
+;; ---------------------------------------------------------------------------

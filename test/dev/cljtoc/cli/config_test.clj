@@ -176,3 +176,50 @@
     (let [message (:message (config/parse-settings "{:max-peers \"lots\"}"))]
       (is (not (re-find #"absolute path" message)) message)
       (is (re-find #":max-peers" message) message))))
+
+(deftest load-settings-read-failure-is-an-error-test
+  (testing "a path that exists but cannot be read is an error naming the file"
+    ;; A directory passes .exists but throws on slurp: the read-failure path.
+    (let [dir (test-utils/temp-dir "cfg-dir-")
+          result (config/load-settings dir)]
+      (is (= :invalid-config (:error result)))
+      (is (re-find #"Could not read config file" (:message result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote dir))
+                   (:message result))))))
+
+(deftest user-dirs-content-tolerates-unreadable-files-test
+  (testing "an absent file yields nil"
+    (is (nil? (#'config/user-dirs-content
+               (str (test-utils/temp-dir "ud-") "/nope")))))
+  (testing "a readable file yields its contents"
+    (let [dir (test-utils/temp-dir "ud-")
+          path (str dir "/user-dirs.dirs")]
+      (spit path "XDG_DOWNLOAD_DIR=\"$HOME/dl\"\n")
+      (is (= "XDG_DOWNLOAD_DIR=\"$HOME/dl\"\n" (#'config/user-dirs-content path)))))
+  (testing "an unreadable path (a directory) yields nil instead of throwing"
+    (let [dir (test-utils/temp-dir "ud-")]
+      (is (nil? (#'config/user-dirs-content dir))))))
+
+(deftest non-string-values-are-refused-test
+  (testing "a non-string directory value is refused, not coerced"
+    (doseq [value ["42" "nil" ":kw"]]
+      (let [result (config/parse-settings (str "{:output-dir " value "}"))]
+        (is (= :invalid-config (:error result)) (str value " -> " (pr-str result))))))
+  (testing "a non-integer peer port is refused"
+    (is (= :invalid-config (:error (config/parse-settings "{:peer-port \"6881\"}")))))
+  (testing "a non-integer peer cap is refused"
+    (is (= :invalid-config (:error (config/parse-settings "{:max-peers 1.5}"))))))
+
+;; ---------------------------------------------------------------------------
+;; Coverage residues (cloverage, scoped to this namespace: 100% lines,
+;; 99.21% forms). Each remainder is excluded deliberately:
+;;
+;; - config-home / cache-home `or` branch with the XDG variable set. The JVM
+;;   cannot set environment variables from inside a process, so only the
+;;   fallback branch is reachable here; the variable branch is exercised by
+;;   any real XDG setup and is a straight `or`, not logic worth a fixture.
+;; - load-settings' `(or path (default-config-path))` nil branch: reaching it
+;;   reads the developer's own ~/.config/cljtoc/config.edn, which would make
+;;   the suite depend on the machine it runs on. default-config-path is
+;;   asserted directly instead.
+;; ---------------------------------------------------------------------------

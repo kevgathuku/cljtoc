@@ -121,16 +121,17 @@
       :else
       (recur (rest remaining) config-path (conj kept (first remaining))))))
 
-(defn- load-settings-or-exit
+(defn- try-load-settings
   "Load settings from config-path (or the default location when nil).
-   A missing file means defaults; a corrupt one stops the command
-   with an error instead of running on silent defaults."
+   A missing file means defaults; a corrupt one returns nil after saying
+   why, so the caller decides to stop — keeping System/exit in one place
+   is what makes this branch testable at all."
   [config-path]
   (let [result (cli-config/load-settings config-path)]
     (if (:error result)
       (do
         (println (str "Failed to load config: " (:message result)))
-        (System/exit 1))
+        nil)
       (:ok result))))
 
 (defn- torrent-path-arg?
@@ -403,14 +404,16 @@
       (print-usage)
       (System/exit 1))
     (let [[config-path rest-args] (split-global-flags args)
-          settings (load-settings-or-exit config-path)
+          settings (try-load-settings config-path)
           cmd (first rest-args)
           cmd-args (rest rest-args)
           handler (get commands cmd)]
-      (if handler
-        ((:fn handler) settings cmd-args)
-        (do
-          (println (str "Unknown command: " cmd))
-          (println)
-          (print-usage)
-          (System/exit 1))))))
+      (if (nil? settings)
+        (System/exit 1)
+        (if handler
+          ((:fn handler) settings cmd-args)
+          (do
+            (println (str "Unknown command: " cmd))
+            (println)
+            (print-usage)
+            (System/exit 1)))))))
