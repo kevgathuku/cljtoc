@@ -164,3 +164,15 @@
           (str "accepted a relative " key-name))))
   (testing "absolute paths with redundant separators still pass"
     (is (some? (:ok (config/parse-settings "{:output-dir \"/tmp//a/./b\"}"))))))
+
+(deftest refusal-messages-name-the-reason-test
+  (testing "a tilde path is refused for the reason users get wrong"
+    (let [message (:message (config/parse-settings "{:output-dir \"~/Downloads\"}"))]
+      (is (re-find #"~ is not expanded" message) message)))
+  (testing "a plain relative path is refused for its own reason"
+    (let [message (:message (config/parse-settings "{:state-dir \"./state\"}"))]
+      (is (re-find #"must be an absolute path" message) message)))
+  (testing "non-directory keys keep the plain message"
+    (let [message (:message (config/parse-settings "{:max-peers \"lots\"}"))]
+      (is (not (re-find #"absolute path" message)) message)
+      (is (re-find #":max-peers" message) message))))

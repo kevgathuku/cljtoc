@@ -106,15 +106,36 @@
        (seq value)
        (.isAbsolute (java.nio.file.Path/of value (into-array String [])))))
 
+(def ^:private dir-keys
+  "Keys naming a directory, all of which must be absolute."
+  #{:state-dir :piece-cache-dir :output-dir})
+
 (def ^:private key-preds
   "Validation per known key. Unknown keys never reach here: parse
-   selects the known keys first, warning about the rest. Directory values
-   must be absolute."
+   selects the known keys first, warning about the rest."
   {:state-dir absolute-path?
    :piece-cache-dir absolute-path?
    :output-dir absolute-path?
    :peer-port #(and (pos-int? %) (<= % 65535))
    :max-peers pos-int?})
+
+(defn- invalid-value-message
+  "Why a value was refused, in the caller's terms. Relative directory
+   values get the reason spelled out, and a leading ~ gets its own line:
+   a shell expands it, the JVM does not, so it would create a directory
+   literally named ~."
+  [key-name value]
+  (let [prefix (str "Invalid config value for " key-name ": " (pr-str value))]
+    (cond
+      (not (contains? dir-keys key-name))
+      prefix
+
+      (and (string? value) (str/starts-with? value "~"))
+      (str prefix " — ~ is not expanded by the client; write the full absolute path")
+
+      :else
+      (str prefix " — must be an absolute path, not a path relative to the"
+           " working directory"))))
 
 (defn- config-error [message]
   {:error :invalid-config :message message})
@@ -134,8 +155,7 @@
                (let [pred (get key-preds key-name)]
                  (when-not (pred value)
                    (reduced (config-error
-                             (str "Invalid config value for " key-name
-                                  ": " (pr-str value)))))))
+                             (invalid-value-message key-name value))))))
              nil
              known))
 
