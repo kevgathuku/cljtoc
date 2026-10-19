@@ -45,9 +45,9 @@
   (testing "a present file merges over defaults"
     (let [dir (test-utils/temp-dir "cfg-")
           path (str dir "/settings.edn")]
-      (spit path "{:output-dir \"./mine\" :max-peers 7}")
+      (spit path (str "{:output-dir \"" dir "/mine\" :max-peers 7}"))
       (let [result (config/load-settings path)]
-        (is (= "./mine" (:output-dir (:ok result))))
+        (is (= (str dir "/mine") (:output-dir (:ok result))))
         (is (= 7 (:max-peers (:ok result))))
         (is (= (:state-dir config/default-settings)
                (:state-dir (:ok result)))))))
@@ -144,8 +144,23 @@
 (deftest paths-pass-through-verbatim-test
   (testing "separator spelling is the filesystem's business, not the config's"
     (let [settings (:ok (config/parse-settings
-                         "{:output-dir \"/tmp//a/./b\"\n :piece-cache-dir \"C:\\\\Users\\\\ana\\\\Downloads\"}"))]
+                         "{:output-dir \"/tmp//a/./b\"}"))]
       (is (= "/tmp//a/./b" (:output-dir settings))
-          "no separator rewriting happens here")
-      (is (= "C:\\Users\\ana\\Downloads" (:piece-cache-dir settings))
-          "Windows-style paths survive untouched"))))
+          "no separator or segment rewriting happens here"))))
+
+(deftest config-paths-must-be-absolute-test
+  (testing "relative directory values are refused rather than resolved against the cwd"
+    ;; A relative dir means `lein run` and a jar invocation download to
+    ;; different places, which is why the config rejects them instead.
+    (doseq [value ["downloads" "./downloads" "../out" "~/Downloads" ""]]
+      (let [result (config/parse-settings (str "{:output-dir \"" value "\"}"))]
+        (is (= :invalid-config (:error result))
+            (str "accepted relative :output-dir " (pr-str value)))
+        (is (re-find #":output-dir" (:message result))))))
+  (testing "every directory key is checked, not just the output dir"
+    (doseq [key-name [":state-dir" ":piece-cache-dir" ":output-dir"]]
+      (is (= :invalid-config
+             (:error (config/parse-settings (str "{" key-name " \"relative/dir\"}"))))
+          (str "accepted a relative " key-name))))
+  (testing "absolute paths with redundant separators still pass"
+    (is (some? (:ok (config/parse-settings "{:output-dir \"/tmp//a/./b\"}"))))))

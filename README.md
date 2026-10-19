@@ -238,6 +238,11 @@ The download directory honors an `XDG_DOWNLOAD_DIR` entry in
 used as-is; macOS and Windows without that file fall back to
 `<home>/Downloads`. Set `:output-dir` explicitly to override either way.
 
+Directory values must be absolute. A relative path is refused rather than
+resolved against the working directory, because the same config would
+otherwise download somewhere different under `lein run` than under the jar
+(and `~/x` is relative to the JVM even though a shell expands it).
+
 A missing file means defaults. A file that fails to parse stops the
 command with the reader's reason rather than running on silent defaults,
 and unknown keys warn and are dropped so a file written for a newer

@@ -95,12 +95,24 @@
    :peer-port 51413
    :max-peers (:max-peers download/default-config)})
 
+(defn- absolute-path?
+  "True when value names an absolute path on this platform. Relative values
+   are refused rather than resolved against the working directory: the same
+   config would otherwise download somewhere different under `lein run` than
+   under the jar, and `~/x` is relative to the JVM even though a shell would
+   expand it."
+  [value]
+  (and (string? value)
+       (seq value)
+       (.isAbsolute (java.nio.file.Path/of value (into-array String [])))))
+
 (def ^:private key-preds
   "Validation per known key. Unknown keys never reach here: parse
-   selects the known keys first, warning about the rest."
-  {:state-dir string?
-   :piece-cache-dir string?
-   :output-dir string?
+   selects the known keys first, warning about the rest. Directory values
+   must be absolute."
+  {:state-dir absolute-path?
+   :piece-cache-dir absolute-path?
+   :output-dir absolute-path?
    :peer-port #(and (pos-int? %) (<= % 65535))
    :max-peers pos-int?})
 
