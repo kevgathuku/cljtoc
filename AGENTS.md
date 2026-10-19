@@ -119,7 +119,25 @@ insertion at scale, codemods), reach for rewrite-clj (a `:dev`-profile dep,
 never production code) instead of text replacement: locating by s-expression
 survives indentation drift that defeats exact-match edits, and zipper
 printing stays balanced by construction. Single sites stay on the edit tool
-with small anchors plus `cljfmt fix`. Two gotchas earned the hard way:
+with small anchors plus `cljfmt fix`. Follow this ladder so the rule gets
+used instead of admired:
+
+- One known site: the edit tool. Its failures are loud (no match, no
+  change), which is what you want when you can already see the text.
+- Pattern-driven, multi-site change (rename across files, wrap every
+  matching form, move blocks): one babashka script using the built-in
+  rewrite-clj (`bb script.clj`, ~0.1s startup, no project boot needed for
+  pure text-structure transforms), then a single verification pass.
+- Transform that needs project semantics (does this spec or var exist):
+  `lein trampoline run -m clojure.main script.clj` (~2s, full classpath).
+  Never `lein repl :headless` for this: it starts a server that blocks
+  forever and never evaluates anything.
+- Always run `clj-kondo --lint` on every touched file after every edit,
+  regardless of tool (~0.1s). A wrong zipper query edits the wrong form
+  confidently and quietly, where exact-match fails loudly — verification
+  is not optional for either path.
+
+Two gotchas earned the hard way:
 
 - A `^Type` hint on a `->`/`->>` chain evaporates during macroexpansion —
   an interop call over the chain reflects even when hinted. Restructure to
