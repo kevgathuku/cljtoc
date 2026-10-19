@@ -1,18 +1,18 @@
 ---
 name: issue-to-pr
-description: "Take a GitHub issue through TDD to an opened PR."
+description: "Take a beads issue through TDD to an opened PR."
 disable-model-invocation: true
 ---
 
-Take a GitHub issue number through validation, TDD implementation, and an opened PR that closes it.
+Take a beads issue id through validation, TDD implementation, and an opened PR that closes it.
 
 ## 1. Fetch and validate
 
-Run `gh issue view <number> --comments`. For every file:line reference in the issue, open the file and confirm the claim still holds. Trace related code through the graft graph per the `AGENTS.md` Graft section; raw `grep -rn` is the fallback for unindexed files only. Check the palace before finalizing verdicts: `mempal search --wing torrent_client_clj "<area> decision"` for prior verdicts on the touched files (one room, `default`, in this store — qualify with keywords, not room filters) — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
+Run `bd show <id>` (description, acceptance criteria, blockers, comments) and `bd update <id> --claim`. If blockers are still open, stop and ask how to proceed. For every file:line reference in the issue, open the file and confirm the claim still holds. Trace related code through the graft graph per the `AGENTS.md` Graft section; raw `grep -rn` is the fallback for unindexed files only. Check the palace before finalizing verdicts: `mempal search --wing torrent_client_clj "<area> decision"` for prior verdicts on the touched files (one room, `default`, in this store — qualify with keywords, not room filters) — a claim the code seems to confirm may already have been refuted (do not re-file it), and a prior decision may have settled the approach. State the verdict in one line per claim (confirmed / stale / partially true), palace verdicts included. Stop if the issue is stale and ask how to proceed.
 
 ## 2. Branch
 
-Check `git status` is clean and `git branch --show-current` is `main`, then create a dedicated branch: `fix/issue-<number>-<short-slug>`.
+Check `git status` is clean and `git branch --show-current` is `main`, then create a dedicated branch: `fix/<id-suffix>-<short-slug>` (suffix is the trailing bead segments, e.g. `fix/0c9-26-assemble-envelope` for `torrent-client-clj-0c9.26`).
 
 ## 3. Recall prior decisions
 
@@ -50,7 +50,7 @@ Before self-review, prove the new code is exercised — green tests alone hide u
 
 ## 7. Self-review with /code-review
 
-Run the `code-review` skill against the branch (fixed point `main`) before opening the PR: Standards (repo conventions) and Spec (the issue as written). Address what it finds — fix, then re-run the gates in step 5 — and note deliberate deviations for the PR body and the palace entry.
+Run the `code-review` skill against the branch (fixed point `main`) before opening the PR: Standards (repo conventions) and Spec (the beads issue as written, acceptance criteria included — every criterion must hold). Address what it finds — fix, then re-run the gates in step 5 — and note deliberate deviations for the PR body and the palace entry.
 
 As part of the review, judge whether the touched code could benefit from clojure.spec tests (fdef arg/ret contracts, generative checks on pure seams); where it would, add them, then re-run the gates in step 5.
 
@@ -63,16 +63,16 @@ Before opening the PR, keep the docs consistent with the change: search `docs/`,
 Stage only intended files, commit with a message describing what changed and why, push with `-u origin`, then `gh pr create` with:
 
 - Title naming the change.
-- `Closes #<number>.` as the first body line.
-- Validation / Changes / Verification sections: what was confirmed, what changed, and the test counts.
+- `Bead: <id>.` as the first body line (GitHub `Closes #` no longer applies — GitHub issues are migrated and closed).
+- Validation / Changes / Verification sections: what was confirmed, what changed, acceptance criteria checked off, and the test counts.
 - Write the commit message, title, and body in the repo Writing voice and tone (`AGENTS.md`): second person, active voice, sentence-case title, descriptive link text.
 
-Return the PR URL.
+Return the PR URL, then `bd close <id> --reason="..."` with the PR link.
 
 ## 10. File the decision and the learnings
 
 Two records, not one — the decision alone strands the discoveries that produced it (on #40 the hang diagnosis and predicate facts sat embedded in the decision drawer until asked for):
 
-- Decision (wing `torrent_client_clj`, room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written.
+- Decision (wing `torrent_client_clj`, room `decisions`): bead id, branch/PR, what changed and why, plus any deviation from the issue as written.
 - Learnings (same wing, room `lessons`, one drawer per lesson): every new discovery from this implementation that a future session would otherwise re-derive the hard way — platform facts (generator magnitudes, predicate ranges), diagnostic methods that worked (per-sym REPL timing for a hung pin), gotchas actually hit (stale-session false reds, out-of-domain probes that instrument rejects). Rule of thumb: if the session paid for it in debugging time, file it; if it merely confirms existing docs, skip it.
 - Verify both landed: `mempal search --wing torrent_client_clj` the issue entity and confirm the new drawers rank first.
