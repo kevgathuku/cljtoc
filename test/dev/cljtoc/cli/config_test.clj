@@ -105,7 +105,9 @@
   (testing "parse-settings is pure and total, so its fdef is check-grade"
     (let [failures (test-utils/check-fdefs
                     '[dev.cljtoc.cli.config/parse-settings
-                      dev.cljtoc.cli.config/default-config-path]
+                      dev.cljtoc.cli.config/default-config-path
+                      dev.cljtoc.cli.config/default-download-dir
+                      dev.cljtoc.cli.config/default-settings]
                     50)]
       (is (empty? failures) (str "fdef check failures: " (pr-str failures))))))
 

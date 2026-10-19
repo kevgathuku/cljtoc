@@ -105,6 +105,13 @@
           (str home (subs value (count "$HOME")))
           value)))))
 
+(s/def ::home string?)
+(s/def ::separator string?)
+(s/def ::user-dirs-content (s/nilable string?))
+(s/def ::download-dir-options
+  (s/keys :req-un [::home]
+          :opt-un [::user-dirs-content ::separator]))
+
 (defn default-download-dir
   "The directory downloads land in. Honors an XDG_DOWNLOAD_DIR entry from
    user-dirs.dirs (the Linux convention, and the one Transmission reads),
@@ -119,6 +126,10 @@
   (or (parse-xdg-download-dir user-dirs-content home)
       (str home separator "Downloads")))
 
+(s/fdef default-download-dir
+  :args (s/cat :options ::download-dir-options)
+  :ret string?)
+
 (defn- user-dirs-content
   "Contents of path, or nil when it is absent or unreadable. Takes the
    path rather than reading config-home itself, so the unreadable branch is
@@ -128,6 +139,15 @@
     (when (.exists file)
       (try (slurp file)
            (catch Exception _ nil)))))
+
+(s/def ::state-dir string?)
+(s/def ::piece-cache-dir string?)
+(s/def ::output-dir string?)
+(s/def ::peer-port (s/and pos-int? #(<= % 65535)))
+(s/def ::max-peers pos-int?)
+(s/def ::settings
+  (s/keys :req-un [::state-dir ::piece-cache-dir ::output-dir
+                   ::peer-port ::max-peers]))
 
 (defn default-settings
   "Build the knobs a user can actually change, with Transmission's values:
@@ -149,6 +169,10 @@
                  :separator file-separator})
    :peer-port 51413
    :max-peers (:max-peers download/default-config)})
+
+(s/fdef default-settings
+  :args (s/cat :user-dirs-content (s/nilable string?))
+  :ret ::settings)
 
 (defn- absolute-path?
   "True when value names an absolute path on this platform. Relative values
