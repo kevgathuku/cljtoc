@@ -1,7 +1,8 @@
 (ns dev.cljtoc.cli.config-test
   "Tests for the client settings file.
-   Seam: default-settings merged with an EDN file; missing file means
-   defaults, corrupt file means an error envelope, never silent defaults."
+   Seam: default-settings merged with an EDN file; no file at the default
+   location means defaults, an explicit missing or corrupt file means an
+   error envelope, never silent defaults."
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.cli.config :as config]
             [dev.cljtoc.test-utils :as test-utils]))
@@ -41,17 +42,21 @@
       (is (= 10 (:max-peers (:ok result)))))))
 
 (deftest load-settings-reads-files-test
-  (testing "a missing file means defaults, not an error"
-    ;; Compares only the environment-stable keys: :output-dir comes from the
-    ;; real user-dirs.dirs on machines that have one, which the suite must
-    ;; not depend on.
+  (testing "an explicit path that does not exist is refused, naming it"
     (let [missing (str (test-utils/temp-dir "cfg-") "/absent.edn")
-          expected (config/default-settings nil)
-          actual (:ok (config/load-settings missing))]
-      (is (map? actual))
-      (doseq [key-name [:state-dir :piece-cache-dir :peer-port :max-peers]]
-        (is (= (get expected key-name) (get actual key-name))
-            (str "default for " key-name " differs")))))
+          result (config/load-settings missing)]
+      (is (= :invalid-config (:error result)))
+      (is (re-find (re-pattern (java.util.regex.Pattern/quote missing))
+                   (:message result)))))
+  (testing "only the default location may be absent; there it means defaults"
+    ;; Exercised on the pure decision rather than load-settings nil: reaching
+    ;; that branch reads the developer's own ~/.config/cljtoc/config.edn.
+    (let [defaults (config/default-settings nil)]
+      (is (= {:ok defaults}
+             (#'config/missing-file-result nil (config/default-config-path) defaults)))
+      (is (= :invalid-config
+             (:error (#'config/missing-file-result "/tmp/explicit.edn"
+                                                   "/tmp/explicit.edn" defaults))))))
   (testing "a present file merges over defaults"
     (let [dir (test-utils/temp-dir "cfg-")
           path (str dir "/settings.edn")]
@@ -258,10 +263,11 @@
 ;;   cannot set environment variables from inside a process, so only the
 ;;   fallback branch is reachable here; the variable branch is exercised by
 ;;   any real XDG setup and is a straight `or`, not logic worth a fixture.
-;; - load-settings' `(or path (default-config-path))` nil branch: reaching it
-;;   reads the developer's own ~/.config/cljtoc/config.edn, which would make
-;;   the suite depend on the machine it runs on. default-config-path is
-;;   asserted directly instead.
+;; - load-settings' nil-path integration: calling it with nil resolves
+;;   default-config-path and reads the developer's own
+;;   ~/.config/cljtoc/config.edn, which would make the suite depend on the
+;;   machine it runs on. Its missing-file decision is covered directly via
+;;   missing-file-result, and default-config-path is asserted on its own.
 ;; ---------------------------------------------------------------------------
 
 (deftest absolute-path-rejects-unreadable-strings-test

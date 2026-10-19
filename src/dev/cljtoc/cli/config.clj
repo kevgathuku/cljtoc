@@ -8,9 +8,10 @@
    a file written for a newer client still loads.
 
    The file is the only source for these values; the command line selects
-   the file (--config) and the command to run, and sets nothing itself. A
-   missing file means defaults; a present-but-unreadable file is an error,
-   never silent defaults over a typo'd file.
+   the file (--config) and the command to run, and sets nothing itself. No
+   file at the default location means defaults; an explicit --config path
+   that does not exist, or a present-but-unreadable file, is an error naming
+   the path — never silent defaults over a typo'd file.
 
    Path values are passed through untouched: java.io.File interprets them,
    so either separator spelling works, including Windows `\\` or `/` in
@@ -290,20 +291,33 @@
   :args (s/cat)
   :ret string?)
 
+(defn- missing-file-result
+  "What a missing config file means: defaults when path is nil (the default
+   location is allowed to hold no file), a named refusal for an explicit path
+   (a mistyped --config must not look like an empty config)."
+  [path resolved defaults]
+  (if (nil? path)
+    {:ok defaults}
+    (config-error (str "Config file not found: " resolved))))
+
 (defn load-settings
-  "Load settings from path (or the default location when nil). A missing
-   file means defaults; a present file parses strictly. Returns
-   {:ok settings} or {:error :invalid-config :message msg}."
+  "Load settings from path. When path is nil, read the default location and
+   fall back to defaults if it holds no file. An explicit path that does not
+   exist is refused, so a mistyped --config cannot look like an empty config.
+   A present file parses strictly. Returns {:ok settings} or
+   {:error :invalid-config :message msg}."
   ([path]
    (let [resolved (or path (default-config-path))
-         ^java.io.File file (io/file resolved)]
-     (if-not (.exists file)
-       {:ok (default-settings (user-dirs-content
-                               (str config-home "/user-dirs.dirs")))}
+         ^java.io.File file (io/file resolved)
+         defaults (default-settings (user-dirs-content
+                                     (str config-home "/user-dirs.dirs")))]
+     (cond
+       (not (.exists file))
+       (missing-file-result path resolved defaults)
+
+       :else
        (try
-         (parse-settings (slurp file)
-                         (default-settings (user-dirs-content
-                                            (str config-home "/user-dirs.dirs"))))
+         (parse-settings (slurp file) defaults)
          (catch Exception exception
            (config-error (str "Could not read config file " resolved
                               ": " (.getMessage exception)))))))))

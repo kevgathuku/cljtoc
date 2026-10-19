@@ -123,9 +123,9 @@
 
 (defn- try-load-settings
   "Load settings from config-path (or the default location when nil).
-   A missing file means defaults; a corrupt one returns nil after saying
-   why, so the caller decides to stop — keeping System/exit in one place
-   is what makes this branch testable at all."
+   A corrupt file, or an explicit path that does not exist, returns nil
+   after saying why, so the caller decides to stop — keeping System/exit in
+   one place is what makes this branch testable at all."
   [config-path]
   (let [result (cli-config/load-settings config-path)]
     (if (:error result)

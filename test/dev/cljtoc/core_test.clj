@@ -251,16 +251,9 @@
           path (str dir "/bad.edn")]
       (spit path "{:max-peers")
       (is (nil? (#'core/try-load-settings path)))))
-  (testing "a missing file yields the defaults"
-    ;; Compares only the environment-stable keys: :output-dir follows the
-    ;; real user-dirs.dirs on a localized or relocated setup, which the suite
-    ;; must not depend on.
-    (let [settings (#'core/try-load-settings
-                    (str (test-utils/temp-dir "cfg-") "/absent.edn"))
-          expected (config/default-settings nil)]
-      (doseq [key-name [:state-dir :piece-cache-dir :peer-port :max-peers]]
-        (is (= (get expected key-name) (get settings key-name))
-            (str "default for " key-name " differs")))))
+  (testing "an explicit path that does not exist yields nil after reporting"
+    (is (nil? (#'core/try-load-settings
+               (str (test-utils/temp-dir "cfg-") "/absent.edn")))))
   (testing "a valid file yields its merged settings"
     (let [dir (test-utils/temp-dir "cfg-")
           path (str dir "/ok.edn")]
