@@ -489,30 +489,58 @@
 ;; Block Assembly (US4)
 ;; ============================================================================
 
+(defn- block-shape-error
+  "Why this received block cannot be assembled, or nil when it can.
+   A peer can send anything on the wire, so the shape is checked here
+   rather than left to a cast: `(alength nil)` is an NPE, a non-byte
+   :data is a ClassCastException, and a block running past the piece end
+   is an ArrayIndexOutOfBoundsException in arraycopy. Each of those
+   kills the coordinator loop, which is not a supervised worker.
+   Returns {:error :invalid-block ...} or {:error :block-overflow ...}."
+  [{:keys [offset data]} expected-length]
+  (cond
+    (not (nat-int? offset))
+    (piece-error :invalid-block
+                 (str "Block offset must be a non-negative integer, got " (pr-str offset)))
+
+    (not (bytes? data))
+    (piece-error :invalid-block
+                 (str "Block at offset " offset " carries no byte array"))
+
+    (> (+ offset (alength ^bytes data)) expected-length)
+    (piece-error :block-overflow
+                 (str "Block at offset " offset " with " (alength ^bytes data)
+                      " bytes runs past piece length " expected-length))))
+
 (defn assemble-piece
   "Assemble received blocks into a single byte array for a piece.
    Blocks is a collection of {:offset n :data bytes} maps.
-   Returns {:ok byte-array} or {:error ...} if blocks have gaps or are empty."
+   Returns {:ok byte-array}, or {:error ...} when blocks are empty, a
+   block is malformed or overflows the piece, blocks have gaps, or they
+   cover less than the whole piece."
   [blocks expected-length]
   (if (empty? blocks)
     (piece-error :invalid-input "No blocks to assemble")
     (let [sorted (sort-by :offset blocks)
-          result (byte-array expected-length)]
-      (loop [expected-offset 0
-             remaining sorted]
-        (if (empty? remaining)
-          (if (= expected-offset expected-length)
-            {:ok result}
-            (piece-error :incomplete-piece
-                         (str "Blocks cover " expected-offset " of " expected-length " bytes")))
-          (let [{:keys [offset data]} (first remaining)
-                data-len (alength ^bytes data)]
-            (if (not= offset expected-offset)
-              (piece-error :gap-in-blocks
-                           (str "Expected offset " expected-offset " but got " offset))
-              (do
-                (System/arraycopy data 0 result offset data-len)
-                (recur (+ expected-offset data-len) (rest remaining))))))))))
+          malformed (keep #(block-shape-error % expected-length) sorted)]
+      (if-let [first-error (first malformed)]
+        first-error
+        (let [result (byte-array expected-length)]
+          (loop [expected-offset 0
+                 remaining sorted]
+            (if (empty? remaining)
+              (if (= expected-offset expected-length)
+                {:ok result}
+                (piece-error :incomplete-piece
+                             (str "Blocks cover " expected-offset " of " expected-length " bytes")))
+              (let [{:keys [offset data]} (first remaining)
+                    data-len (alength ^bytes data)]
+                (if (not= offset expected-offset)
+                  (piece-error :gap-in-blocks
+                               (str "Expected offset " expected-offset " but got " offset))
+                  (do
+                    (System/arraycopy data 0 result offset data-len)
+                    (recur (+ expected-offset data-len) (rest remaining))))))))))))
 
 (s/fdef assemble-piece
   :args (s/cat :blocks (s/coll-of map?) :expected-length pos-int?)

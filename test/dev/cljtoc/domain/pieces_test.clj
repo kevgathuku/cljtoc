@@ -528,11 +528,10 @@
       (is (s/valid? :dev.cljtoc.domain.pieces/piece-state state3)))))
 
 ;; fdef specs hold generatively (stest/check), mirroring
-;; torrent_test.clj / download_test.clj. assemble-piece is excluded on
-;; principle, not by accident: it throws on malformed blocks instead of
-;; returning an error envelope (issue #41), so it is partial over its
-;; declared (s/coll-of map?) args and no generator can make it
-;; check-grade until that issue lands.
+;; torrent_test.clj / download_test.clj. assemble-piece is check-grade
+;; since the malformed-block envelopes landed (issue #41): it validates
+;; every block's shape and bounds before touching arraycopy, so it is
+;; total over its declared (s/coll-of map?) args.
 ;; ---------------------------------------------------------------------------
 
 (deftest fdef-specs-hold-generatively-test
@@ -551,6 +550,7 @@
                       dev.cljtoc.domain.pieces/piece-length
                       dev.cljtoc.domain.pieces/piece-blocks
                       dev.cljtoc.domain.pieces/verify-piece
+                      dev.cljtoc.domain.pieces/assemble-piece
                       dev.cljtoc.domain.pieces/endgame?
                       dev.cljtoc.domain.pieces/select-pieces-endgame]
                     50)]
@@ -566,3 +566,36 @@
           (empty? (set/intersection needed in-flight))
           (empty? (set/intersection needed verified))
           (empty? (set/intersection in-flight verified))))))
+
+;; ---------------------------------------------------------------------------
+;; assemble-piece: malformed blocks return envelopes, never throw
+;; ---------------------------------------------------------------------------
+
+(deftest assemble-piece-rejects-malformed-blocks-test
+  (testing "a block without :data returns an envelope instead of throwing NPE"
+    (let [result (pieces/assemble-piece [{:offset 0}] 4)]
+      (is (= :invalid-block (:error result)))
+      (is (string? (:message result)))))
+  (testing "non-byte :data returns an envelope instead of throwing ClassCastException"
+    (let [result (pieces/assemble-piece [{:offset 0 :data "abcd"}] 4)]
+      (is (= :invalid-block (:error result)))))
+  (testing "nil :data returns an envelope"
+    (let [result (pieces/assemble-piece [{:offset 0 :data nil}] 4)]
+      (is (= :invalid-block (:error result)))))
+  (testing "a block running past the piece end returns :block-overflow, not ArrayIndexOutOfBounds"
+    (let [result (pieces/assemble-piece [{:offset 0 :data (byte-array 8)}] 4)]
+      (is (= :block-overflow (:error result)))
+      (is (string? (:message result)))))
+  (testing "a block starting past the piece end returns :block-overflow"
+    (let [result (pieces/assemble-piece [{:offset 10 :data (byte-array 2)}] 4)]
+      (is (= :block-overflow (:error result)))))
+  (testing "a negative offset returns an envelope"
+    (let [result (pieces/assemble-piece [{:offset -1 :data (byte-array 1)}] 4)]
+      (is (= :invalid-block (:error result)))))
+  (testing "a non-numeric offset returns an envelope"
+    (let [result (pieces/assemble-piece [{:offset nil :data (byte-array 1)}] 4)]
+      (is (= :invalid-block (:error result)))))
+  (testing "well-formed blocks still assemble"
+    (let [result (pieces/assemble-piece [{:offset 0 :data (byte-array [1 2])}
+                                         {:offset 2 :data (byte-array [3 4])}] 4)]
+      (is (= [1 2 3 4] (vec (:ok result)))))))
