@@ -16,28 +16,19 @@
   (disk-impl/create {:state-dir state-dir
                      :piece-cache-dir (test-utils/temp-dir "cli-state-recent-cache-")}))
 
-(defn- saved-record
-  "A record shaped like the ones the client persists: progress reads piece
-   state and stats, so a fixture without them is not a download."
-  [id state]
-  {:id id
-   :state state
-   :piece-state {:total-pieces 1 :needed #{} :in-flight #{} :verified #{}}
-   :stats {:bytes-downloaded 0}})
-
 (deftest load-most-recent-test
   (testing "returns the most recent record, read through the port"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port (saved-record "old" :paused))
-      (disk/save-state port (saved-record "new" :downloading))
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= "new" (:id (state/load-most-recent port dir))))))
   (testing "a corrupt most-recent file reads as nil without falling through"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port (saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "old" :paused))
       (spit (io/file dir "new.edn") "{broken edn")
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
@@ -51,7 +42,7 @@
   (testing "a record whose :id differs from the requested id is not that download"
     (let [dir (test-utils/temp-dir "cli-state-id-")
           port (temp-disk-port dir)]
-      (spit (io/file dir "requested.edn") (pr-str (saved-record "other" :paused)))
+      (spit (io/file dir "requested.edn") (pr-str (test-utils/saved-record "other" :paused)))
       (is (nil? (state/load-record port "requested"))
           "a named lookup must not show a record filed under another id")
       (is (= [] (state/load-all port dir))
@@ -74,15 +65,15 @@
   (testing "returns every record, most recently modified first"
     (let [dir (test-utils/temp-dir "cli-state-all-")
           port (temp-disk-port dir)]
-      (disk/save-state port (saved-record "old" :paused))
-      (disk/save-state port (saved-record "new" :downloading))
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= ["new" "old"] (map :id (state/load-all port dir))))))
   (testing "a corrupt record is skipped, not fatal: the rest stay listed"
     (let [dir (test-utils/temp-dir "cli-state-all-")
           port (temp-disk-port dir)]
-      (disk/save-state port (saved-record "ok" :paused))
+      (disk/save-state port (test-utils/saved-record "ok" :paused))
       (spit (io/file dir "broken.edn") "{broken edn")
       (.setLastModified (io/file dir "broken.edn") 2000)
       (.setLastModified (io/file dir "ok.edn") 1000)
@@ -94,7 +85,7 @@
   (testing "valid EDN of the wrong shape is corrupt too, not listed"
     (let [dir (test-utils/temp-dir "cli-state-all-")
           port (temp-disk-port dir)]
-      (disk/save-state port (saved-record "ok" :paused))
+      (disk/save-state port (test-utils/saved-record "ok" :paused))
       (spit (io/file dir "empty.edn") "{}")
       (spit (io/file dir "number.edn") "42")
       (spit (io/file dir "half.edn") "{:id \"half\" :state :paused}")
@@ -108,7 +99,7 @@
   (testing "a newest file that decodes to a non-record reads as nil, like a syntax error"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port (saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "old" :paused))
       (spit (io/file dir "empty.edn") "{}")
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "empty.edn") 2000)
