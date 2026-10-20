@@ -164,42 +164,15 @@ Two gotchas earned the hard way:
 
 ## Architecture
 
-Four-layer architecture with strict dependency rules (lower layers cannot depend on higher):
-
-```
-Supervisor Layer   → lifecycle management, restart policies
-         ↓
-Coordination Layer → core.async channels, message routing, backpressure
-         ↓
-Protocol Layer     → bencode parsing, peer wire protocol, tracker protocol
-         ↓
-Domain Layer       → pure torrent logic (piece selection, state transitions, verification)
-```
-
-### Layer Rules
-
-- **Domain Layer**: Pure functions only. No I/O, no core.async, no time/randomness. State transitions as `(state, event) → state`.
-- **Protocol Layer**: Pure parsing/encoding. No network sockets, no channels.
-- **Coordination Layer**: core.async flows connecting domain to effects. No domain mutation or business rules.
-- **Supervisor Layer**: Owns all go blocks and channel lifetimes. Workers crash on error; supervisors restart them.
-
-### Effect Ports
-
-All side effects isolated behind injectable protocols:
-- Network I/O (peer/tracker communication)
-- Disk I/O (piece storage)
-- Time (current time, delays)
-- Randomness (peer selection jitter)
+Authoritative map: `doc/architecture.md` (layers, rules, daemon target — read that, not this summary). In short: strict one-way dependencies, Supervisor → Coordination → Protocol → Domain; every side effect behind an injectable port protocol.
 
 ## Constitutional Principles
 
-See `.specify/memory/constitution.md` for authoritative rules. Key points:
+See `.specify/memory/constitution.md` for the authoritative rules (pure domain, explicit effect boundaries, crash-only supervision, no hidden state, I/O-free testing).
 
-1. **Pure Domain**: Domain functions must be deterministic with no side effects
-2. **Explicit Effects**: Effects behind protocols, injected at construction
-3. **Crash-Only**: Workers crash on errors; supervisors handle restarts
-4. **No Hidden State**: No global atoms/vars for app state; all state explicitly passed
-5. **I/O-Free Testing**: 90%+ coverage without actual I/O; inject test doubles
+## Principles
+
+`principles/` holds decision heuristics for agent work — debugging method, redesign discipline, verification rigor. Method guidance, not system rules: the constitution above is authoritative where they overlap. Read the relevant file when its topic comes up.
 
 ## Feature docs
 
@@ -217,7 +190,7 @@ Each feature has a dedicated page under `doc/` (overview plus contract pages):
 - Torrent/bencode data is binary — do not apply UTF-8 encoding/decoding; treat all byte arrays as raw binary
 - Validate a trust boundary once, in the function its callers share: when two entry points enforce the same rule, fix the shared function rather than each caller, or the one you did not patch is still open. A security primitive must not depend on a separate policy check being present and correct at every call site
 - Property-test oracles must be derived independently of the code under test (compute expected offsets from declared lengths, not by calling the domain function): a generated assertion that reuses the implementation proves nothing. Give them room to fail — a spec that passes on the first run has usually not been tried hard enough, and the shrinker is what localizes a real gap. Generate hostile inputs by construction (each value invalid independent of the check — a `"zz"` suffix that can never match hex, a forced odd length), never by picking an index among hand-written breaks: enumeration inside `for-all` is still examples. Prove a new spec bites by weakening the implementation and watching it fail before trusting its green
-- Never assert a performance claim without measuring it, and never call an O(n·m) recomputation negligible because the constant is small: 0.087 ms/call at 100 files became 5 ms/call and ~14 min of CPU at 5000 files. Prefer `clj-nrepl-eval` over `lein run -m clojure.main` for microbenchmarks (no JVM or compile cost per call)
+- Never assert a performance claim without measuring it, and never call an O(n·m) recomputation negligible because the constant is small: 0.087 ms/call at 100 files became 5 ms/call and ~14 min of CPU at 5000 files. Prefer `clj-nrepl-eval` over `lein run -m clojure.main` for microbenchmarks (no JVM or compile cost per call), and prefer transducers over chained lazy seqs in domain hot paths (selection counts, block decomposition)
 - Persisted state must decode back to runtime values: byte arrays are stored as tagged `{:cljtoc/bytes hex}` maps (see `dev.cljtoc.ports.disk/encode-state` / `decode-state`) so a resumed download carries real bytes into handshake and verification. Test the decoded value, not the on-disk shape — asserting the encoded form passes while resume is broken
 - Pause/resume must be covered by a cycle test through the real port (temp dirs), not just the mock: mocks drift from the real envelope contract (e.g. `load-state` returning the download instead of `{:ok download}`)
 - Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
@@ -240,7 +213,6 @@ Each feature has a dedicated page under `doc/` (overview plus contract pages):
 - Do no work when a namespace loads: no sockets, go blocks, or file reads at top level, so `:reload` stays safe after branch switches
 - Throw `ex-info` only at effect boundaries with a namespaced `:type` plus data, and convert to `{:error ...}` at the layer edge; domain and protocol code returns error maps
 - Enable `*warn-on-reflection*` around byte-array hot paths; the parse loops are where reflection hides
-- Prefer transducers over chained lazy seqs in domain hot paths (selection counts, block decomposition), and measure before claiming speed
 - Never use `with-redefs` in tests; drive seams through injected port doubles instead
 - Write `testing` context strings as behavior claims and use `are` for envelope tables
 - Log user-visible behavior changes in CHANGELOG.md under `[Unreleased]` (Keep a Changelog `Added`/`Fixed`); internal refactors and docs-only `[skip ci]` commits are exempt
