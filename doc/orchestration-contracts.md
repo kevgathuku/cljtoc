@@ -127,7 +127,7 @@ The session supervisor owns one download-supervisor subtree per torrent (see [AD
 
 `session-supervisor/start` runs each download on its own thread, so one torrent's stall never serializes the rest. `on-complete` sees each terminal record as it finishes; a failing callback lands on the record as `:session/persist-error` instead of taking the session down. A download that already failed (a refused announce) is kept as it is and not run again — only a later `torrent.resume` re-announces it.
 
-`download-supervisor/supervise-download` prepares the run once and restarts the subtree when it crashes, while the restart budget holds. The subtree publishes its record as it progresses, so a restart resumes from the pieces already verified.
+`download-supervisor/supervise-download` prepares the run once and restarts the subtree when it crashes, while the restart budget holds. The subtree publishes its record as it progresses, so a restart resumes from the pieces already verified, and the pieces the crashed attempt left in flight are requeued.
 
 ---
 
