@@ -235,13 +235,23 @@
     {:downloaded downloaded
      :left (max 0 (- total downloaded))}))
 
-(defn- announce-to-tracker [network-port download]
+(defn announce-to-tracker
+  "Announce to the trackers and return the peers they name.
+
+   The re-announcer (a child of the download supervisor) uses this seam
+   when the swarm runs dry: {:ok peers} with the peer addresses the
+   trackers know, or {:error reason :message}."
+  [network-port download]
   (let [result (network/announce network-port
                                  (:torrent download)
                                  (announce-progress download))]
     (if (:error result)
       (download-error :tracker-error (:message result))
       {:ok (:ok result)})))
+
+(s/fdef announce-to-tracker
+  :args (s/cat :network-port any? :download map?)
+  :ret map?)
 
 (defn initial-stats [time-port]
   (let [now (time/now time-port)]
@@ -941,6 +951,24 @@
            :error {:reason :no-peers
                    :message (str "No peers available (" connected "/" total-attempted " connected)")})))
 
+(defn- re-announce!
+  "Ask the re-announcer for peers when the swarm runs dry.
+
+   The trackers may know peers the swarm has not asked for yet, so the
+   download asks before it gives up. Returns {:state state} when the
+   trackers named peers — they are dialed and the state counts them as
+   pending, so the swarm is not exhausted while the dial is in flight —
+   or {:failed record} when they named none: the download fails then,
+   the way it did before the re-announcer existed."
+  [state env download conn-stats total-attempted detail]
+  (let [{:keys [re-announce dial-peers ports]} env
+        peers (re-announce)]
+    (if (seq peers)
+      (let [dialed (dial-peers peers)]
+        {:state (coordinator/add-pending-dials state dialed)})
+      {:failed (mark-suspended (fail-no-peers download conn-stats total-attempted detail)
+                               (time/now (:time-port ports)))})))
+
 (defn run-event-loop
   "Drive one download from events-ch to completion or swarm exhaustion.
    Handlers plan state transitions, the edge performs effects.
@@ -950,7 +978,10 @@
            {:download ... :active-peers ... :blocks-received ... :expected-blocks ...
             :pending-dials #{...}}
    events-ch — channel of :peer-connected / :peer-message / :peer-disconnected maps
-   env — {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
+   env — {:re-announce (fn [] peers) — asks the re-announcer for peers when the
+             swarm runs dry; :dial-peers (fn [addresses] dialed-addresses) — dials
+             the peers the trackers named and returns the ones it dialed
+           {:message-ctx {:piece-hashes ... :piece-length ... :total-length ... :total-pieces ...}
           :output-layout (:ok (torrent/compile-output-layout info)) — the compiled
                          layout value (not the result envelope), derived once per download
           :prepared-layout (:ok (disk/prepare-output-layout ...)) — the prepared
@@ -1004,12 +1035,16 @@
                       [performed outcome] (perform-effects! planned effects env)]
                   (if (= :ok outcome)
                     (if (coordinator/swarm-exhausted? performed)
-                      ;; A send failure dropped the last peer: fail like a
-                      ;; disconnect instead of waiting on a silent channel.
-                      ;; (Message handling otherwise never removes peers,
-                      ;; so this check is inert for all other paths.)
-                      (mark-suspended (fail-no-peers (:download performed) conn-stats total-attempted "send failure")
-                                      (time/now time-port))
+                      ;; A send failure dropped the last peer: ask the
+                      ;; re-announcer for peers instead of waiting on a
+                      ;; silent channel. (Message handling otherwise never
+                      ;; removes peers, so this check is inert for all
+                      ;; other paths.)
+                      (let [outcome (re-announce! performed env (:download performed)
+                                                  conn-stats total-attempted "send failure")]
+                        (if (:state outcome)
+                          (recur (:state outcome) last-progress-time)
+                          (:failed outcome)))
                       (let [wrote? (boolean (some :write-verified effects))]
                         (when (and show-progress? wrote?)
                           (print-download-progress (:download performed) (:active-peers performed)))
@@ -1043,8 +1078,14 @@
                   (when show-progress?
                     (print-download-progress download active-peers))
                   (if (coordinator/swarm-exhausted? performed)
-                    (mark-suspended (fail-no-peers download conn-stats total-attempted reason)
-                                    (time/now time-port))
+                    ;; The swarm ran dry: ask the re-announcer for peers
+                    ;; before the download gives up.
+                    (let [outcome (re-announce! performed env download
+                                                conn-stats total-attempted reason)]
+                      (if (:state outcome)
+                        (recur (:state outcome)
+                               (if show-progress? now last-progress-time))
+                        (:failed outcome)))
                     (recur performed
                            (if show-progress? now last-progress-time))))
 
@@ -1297,8 +1338,9 @@
    coordinator leaves them open, and the restart opens new ones to the
    same peers, so the crash closes them before it travels to the
    supervisor."
-  [manager plan publish peer-supervisor]
-  (let [{:keys [network-port disk-port time-port]} manager
+  [manager plan publish runtime]
+  (let [{:keys [network-port disk-port time-port config]} manager
+        peer-supervisor (:peer-supervisor runtime)
         {:keys [download layout prepared peer-addresses]} plan
         torrent (:torrent download)
         info (:info torrent)
@@ -1339,6 +1381,11 @@
                                :time-port time-port}
                        :conn-stats conn-stats
                        :total-attempted total-attempted
+                       :re-announce (:request (:re-announcer runtime))
+                       :dial-peers (fn [addresses]
+                                     (let [dialed (capped-peer-addresses addresses config)]
+                                       ((:dial peer-supervisor) dialed)
+                                       dialed))
                        :publish publish-state})
       (catch Exception error
         (close-peers @last-state network-port)
@@ -1347,5 +1394,5 @@
 (s/fdef run-subtree
   :args (s/cat :manager ::download-manager :plan map?
                :publish (s/? (s/fspec :args (s/cat :state map?)))
-               :peer-supervisor map?))
+               :runtime map?))
 

@@ -190,6 +190,21 @@
   [state address]
   (update state :pending-dials (fnil disj #{}) address))
 
+(defn add-pending-dials
+  "Add addresses to the pending dials: they are being dialed, so the swarm
+    is not exhausted yet. Used when the re-announcer finds peers the
+    swarm had not asked for. Pure."
+  [state addresses]
+  (update state :pending-dials (fnil into #{}) addresses))
+
+(s/fdef add-pending-dials
+  :args (s/cat :state ::coordinator-state :addresses (s/coll-of any?))
+  :ret ::coordinator-state
+  :fn #(let [addresses (-> % :args :addresses)
+             updated (:ret %)
+             pending (:pending-dials updated)]
+         (every? (fn [address] (contains? pending address)) addresses)))
+
 (defn on-connected
   "Record a newly connected peer with no assignment yet.
     The address resolves its dial, so it leaves :pending-dials too.

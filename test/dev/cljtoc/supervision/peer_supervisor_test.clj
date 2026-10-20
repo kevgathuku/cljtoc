@@ -125,6 +125,49 @@
         (finally
           ((:stop supervisor)))))))
 
+(deftest supervisor-dials-the-addresses-it-is-handed-test
+  (testing "the supervisor dials the peers the re-announcer found"
+    (let [spawns (atom [])
+          supervisor (peer-supervisor/start
+                      {:spawn (crashing-spawner #{} spawns)
+                       :addresses ["a:1"]
+                       :budget budget
+                       :delay-fn (fn [_] 0)})]
+      (try
+        (is (wait-for #(= 1 (spawn-count spawns "a:1")) 2000)
+            "the first peer was dialed")
+        ((:dial supervisor) ["b:1" "c:1"])
+        (is (wait-for #(= 3 (count @spawns)) 2000)
+            "the peers the trackers named were dialed")
+        (is (= 1 (spawn-count spawns "b:1")))
+        (is (= 1 (spawn-count spawns "c:1")))
+        (finally
+          ((:stop supervisor)))))))
+
+(deftest supervisor-skips-an-address-it-could-not-dial-test
+  (testing "an address whose worker could not be started is left out"
+    (let [spawns (atom [])
+          spawn (fn [_events-ch address]
+                  (swap! spawns conj address)
+                  (if (= address "b:1")
+                    (throw (ex-info "the worker could not be started" {}))
+                    (async/chan 1)))
+          options {:spawn spawn
+                   :addresses ["a:1"]
+                   :budget budget
+                   :delay-fn (fn [_] 0)}
+          supervisor (peer-supervisor/start options)]
+      (try
+        (is (wait-for #(= 1 (spawn-count spawns "a:1")) 2000))
+        ((:dial supervisor) ["b:1"])
+        (is (wait-for #(= 2 (count @spawns)) 2000)
+            "the dial was attempted")
+        (Thread/sleep 100)
+        (is (= 2 (count @spawns))
+            "the address that could not be started was not dialed again")
+        (finally
+          ((:stop supervisor)))))))
+
 (deftest supervisor-drops-a-flapping-address-test
   (testing "an address whose budget ran out is dropped instead of restarted"
     (let [spawns (atom [])
@@ -188,17 +231,17 @@
         (finally
           ((:stop supervisor)))))))
 
-(deftest supervisor-closes-the-event-channel-when-no-worker-is-left-test
-  (testing "the supervisor owns the event channel and closes it when the swarm is gone"
+(deftest supervisor-closes-the-event-channel-when-it-is-stopped-test
+  (testing "the supervisor owns the event channel and closes it when it is stopped"
     (let [spawns (atom [])
           options {:spawn (clean-spawner spawns)
                    :addresses ["a:1"]}
           supervisor (peer-supervisor/start options)]
-      (try
-        (is (wait-for #(channel-closed? (:events-ch supervisor) 100) 2000)
-            "the channel closed once the last worker was gone")
-        (finally
-          ((:stop supervisor)))))))
+      (is (not (channel-closed? (:events-ch supervisor) 100))
+          "the channel stays open while the download may find peers again")
+      ((:stop supervisor))
+      (is (wait-for #(channel-closed? (:events-ch supervisor) 100) 2000)
+          "the channel closed when the supervisor stopped"))))
 
 (deftest supervisor-does-not-restart-a-clean-exit-test
   (testing "a worker that exited cleanly is not restarted"
@@ -208,8 +251,7 @@
                    :delay-fn (fn [_] 0)}
           supervisor (peer-supervisor/start options)]
       (try
-        (is (wait-for #(channel-closed? (:events-ch supervisor) 100) 2000))
-        (Thread/sleep 100)
+        (Thread/sleep 200)
         (is (= 1 (count @spawns))
             "the peer that disconnected cleanly was not dialed again")
         (finally

@@ -96,6 +96,17 @@
     (spawn events-ch address)
     (catch Exception _ nil)))
 
+(defn- spawn-workers
+  "Spawn a worker per address and add it to the live workers. An address
+   whose worker could not be started is left out."
+  [spawn events-ch live addresses]
+  (reduce (fn [live address]
+            (if-let [done (spawn-worker spawn events-ch address)]
+              (assoc live done {:address address})
+              live))
+          live
+          addresses))
+
 (defn- supervise-workers!
   "Watch every worker and act on the ones that finished.
 
@@ -104,19 +115,27 @@
    told the peer is gone with :redial set — the address stays dialed
    because the restart is coming. A clean exit resolves the dial for
    good: the peer is not coming back. A crashed worker whose budget is
-   spent is dropped, which resolves the dial too."
-  [events-ch spawn live restart-times budget delay-fn stop-ch]
+   spent is dropped, which resolves the dial too.
+
+   `dial-ch` carries addresses to dial: the swarm ran dry and the
+   re-announcer found peers again."
+  [events-ch spawn live restart-times budget delay-fn stop-ch dial-ch]
   (loop [live live
          restart-times restart-times]
-    (if (empty? live)
-      (async/close! events-ch)
-      (let [ports (conj (mapv (fn [[done _]] done) live) stop-ch)
-            [outcome port] (async/alts!! ports)
-            address (get-in live [port :address])
-            remaining (dissoc live port)]
-        (if (= port stop-ch)
+    (do
+      (let [ports (conj (conj (mapv (fn [[done _]] done) live) stop-ch) dial-ch)
+            [outcome port] (async/alts!! ports)]
+        (cond
+          (= port stop-ch)
           (async/close! events-ch)
-          (let [now-ms (long ((:now budget)))
+
+          (= port dial-ch)
+          (recur (spawn-workers spawn events-ch live outcome) restart-times)
+
+          :else
+          (let [address (get-in live [port :address])
+                remaining (dissoc live port)
+                now-ms (long ((:now budget)))
                 decision (decide (or outcome {:exit :crash})
                                  (get restart-times address [])
                                  budget
@@ -169,6 +188,7 @@
   (let [budget (merge {:now (fn [] 0)} default-connection-budget budget)
         events-ch (async/chan 256)
         stop-ch (async/chan 1)
+        dial-ch (async/chan 1)
         live (into {}
                    (keep (fn [address]
                            (if-let [done (spawn-worker spawn events-ch address)]
@@ -188,8 +208,13 @@
                                                   {}
                                                   budget
                                                   (or delay-fn default-restart-delay)
-                                                  stop-ch))]
+                                                  stop-ch
+                                                  dial-ch))]
     {:events-ch events-ch
+     ;; Dial more addresses: the re-announcer found peers the swarm had
+     ;; not asked for, and the supervisor owns the dialing.
+     :dial (fn [addresses]
+             (async/>!! dial-ch (vec addresses)))
      ;; offer! never blocks: stopping a supervisor twice must not hang
      ;; the caller on a channel nobody reads any more.
      :stop (fn []

@@ -25,6 +25,7 @@
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.supervision.peer-supervisor :as peer-supervisor]
+            [dev.cljtoc.supervision.re-announcer :as re-announcer]
             [dev.cljtoc.supervision.restart :as restart]
             [dev.cljtoc.supervision.watchdog :as watchdog]))
 
@@ -84,10 +85,18 @@
    (let [outcome (download/prepare-run manager download-record opts)]
      (if (= :ready (:status outcome))
        (let [plan (:plan outcome)
-             peer-supervisor (peer-supervisor-for manager plan)]
+             peer-supervisor (peer-supervisor-for manager plan)
+             re-announcer (re-announcer/start
+                           {:announce (fn []
+                                        (download/announce-to-tracker
+                                         (:network-port manager)
+                                         (:download plan)))})]
          (try
-           (download/run-subtree manager plan nil peer-supervisor)
+           (download/run-subtree manager plan nil
+                                 {:peer-supervisor peer-supervisor
+                                  :re-announcer re-announcer})
            (finally
+             ((:stop re-announcer))
              ((:stop peer-supervisor)))))
        (:record outcome)))))
 
@@ -139,6 +148,11 @@
                                  watchdog)
             child (fn []
                     (let [peer-supervisor (peer-supervisor-for manager plan)
+                          re-announcer (re-announcer/start
+                                        {:announce (fn []
+                                                     (download/announce-to-tracker
+                                                      (:network-port manager)
+                                                      @published))})
                           watchdog (watchdog/start
                                     {:state observed
                                      :now (fn [] (restart/now-ms (:time-port manager)))
@@ -152,9 +166,11 @@
                              (assoc plan :download
                                     (download/requeue-stranded @published))
                              publish
-                             peer-supervisor)
+                             {:peer-supervisor peer-supervisor
+                              :re-announcer re-announcer})
                         (finally
                           (watchdog)
+                          ((:stop re-announcer))
                           ((:stop peer-supervisor))))))
             result (restart/supervise child (restart/budget-for manager budget))]
         (if (contains? result :ok)

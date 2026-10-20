@@ -99,11 +99,13 @@
                          :state :downloading
                          :peers #{{:address "10.0.0.9:6881"}})
           ;; Every read fails, so the worker keeps crashing and the
-          ;; per-connection budget runs out.
+          ;; per-connection budget runs out. The trackers know nobody,
+          ;; so the re-announce cannot rescue the download either.
           net (mock-net/create
                {:handshake-response {:ok {:info-hash info-hash
                                           :peer-id (byte-array 20)}}
-                :receive-default {:throw true}})
+                :receive-default {:throw true}
+                :mock-peers []})
           disk (mock-disk/create)
           result (download-supervisor/supervise-download
                   (test-utils/download-manager net disk)
@@ -114,6 +116,90 @@
           "the dropped peer left the swarm without peers")
       (is (= 4 (count (mock-net/closed-peers net)))
           "the initial worker plus the three restarts the budget allowed"))))
+
+(deftest the-unsupervised-run-asks-the-trackers-again-test
+  (testing "a run whose swarm runs dry asks the trackers before it gives up"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "dry-run-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "dry-run.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "dry-run")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The peer disconnects at once and the trackers know nobody.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:error :disconnected}])
+                :mock-peers []})
+          disk (mock-disk/create)
+          result (download-supervisor/run-download
+                  (test-utils/download-manager net disk)
+                  started)]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))
+          "the re-announce found nobody, so the download gives up"))))
+
+(deftest an-exhausted-swarm-re-announces-before-giving-up-test
+  (testing "a download whose peers ran dry asks the trackers again and carries on"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "reannounce-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "reannounce.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "reannounce")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The first peer disconnects at once; the trackers name a
+          ;; second one, and that one delivers the piece.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:error :disconnected}
+                                          {:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])
+                :mock-peers ["10.0.0.9:6882"]})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :completed (:state result))
+          "the re-announced peer delivered the piece")
+      (is (= 1 (pieces/verified-count (:piece-state result)))))))
+
+(deftest a-download-fails-only-after-the-re-announce-yields-nothing-test
+  (testing "the download gives up when the trackers name nobody"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "dry-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "dry.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "dry")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:error :disconnected}])
+                :mock-peers []})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))
+          "the re-announce found nobody, so the download gives up"))))
 
 (deftest a-stalled-download-is-restarted-by-the-watchdog-test
   (testing "a download whose peers connect but never deliver is restarted, then fails on the budget"

@@ -15,6 +15,7 @@
             [dev.cljtoc.protocol.peer-state :as peer-state]
             [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
             [dev.cljtoc.supervision.peer-supervisor :as peer-supervisor]
+            [dev.cljtoc.supervision.re-announcer :as re-announcer]
             [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
@@ -1300,8 +1301,11 @@
           published (atom [])
           plan (:plan (download/prepare-run manager started nil))
           peer-supervisor (download-supervisor/peer-supervisor-for manager plan)
+          runtime {:peer-supervisor peer-supervisor
+                   :re-announcer (re-announcer/start
+                                  {:announce (fn [] {:ok #{}})})}
           result (deref (future (download/run-subtree manager plan #(swap! published conj %)
-                                                      peer-supervisor))
+                                                      runtime))
                         15000 :timed-out)]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
@@ -1417,7 +1421,12 @@
                      :disk-port disk
                      :time-port (or (:time opts) (mock-time/create))}
              :conn-stats (or (:conn-stats opts) (atom {:connected 0 :failed 0}))
-             :total-attempted 1}
+             :total-attempted 1
+             ;; The trackers know nobody unless the test says otherwise:
+             ;; the download gives up when the swarm runs dry, the way it
+             ;; did before the re-announcer.
+             :re-announce (or (:re-announce opts) (fn [] #{}))
+             :dial-peers (fn [addresses] (vec addresses))}
         state {:download download
                :active-peers {}
                :blocks-received {}
@@ -1437,6 +1446,9 @@
 (deftest run-event-loop-verifies-pieces-test
   (testing "connected -> unchoke -> both pieces completes the download"
     (let [disk (mock-disk/create)
+          ;; The clock moves on every reading, so the run passes the
+          ;; two-second mark and reports its progress while it works.
+          time (mock-time/create {:now 7000 :time-advances 3000})
           events [{:type :peer-connected :address "peer-a"
                    :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
                   {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
@@ -1444,7 +1456,7 @@
                    :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
                   {:type :peer-message :address "peer-a"
                    :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
-          result (scripted-run events (loop-download) disk)]
+          result (scripted-run events (loop-download) disk {:time time})]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
@@ -1575,21 +1587,27 @@
                        :disk-port disk
                        :time-port (mock-time/create)}
                :conn-stats (atom {:connected 0 :failed 0})
-               :total-attempted 2}
+               :total-attempted 2
+               ;; The trackers know nobody: the download gives up.
+               :re-announce (fn [] #{})
+               :dial-peers (fn [addresses] (vec addresses))}
           state {:download (loop-download)
                  :active-peers {}
                  :blocks-received {}
                  :expected-blocks {}
                  :pending-dials #{"peer-a" "peer-b"}}
           result-ch (async/thread (download/run-event-loop state events-ch env))]
-      ;; Workers exit without producing events: only the supervisor can end this.
+      ;; The workers say goodbye and exit, the way the real ones do.
       (doseq [worker @workers]
         (async/put! worker {:exit :clean}))
+      (doseq [address ["peer-a" "peer-b"]]
+        (async/>!! events-ch {:type :peer-disconnected :address address :reason "gone"}))
       (let [[result winner] (async/alts!! [result-ch (async/timeout 5000)])]
         (is (= result-ch winner) "coordinator must win the race; a timeout means it parked")
         (is (= :failed (:state result)))
-        (is (= :no-peers (get-in result [:error :reason])))
-        (is (= "All peers disconnected" (get-in result [:error :message])))))))
+        (is (= :no-peers (get-in result [:error :reason]))
+            "the trackers know nobody, so the download gives up")
+        (is (re-find #"No peers available" (get-in result [:error :message])))))))
 
 ;; Issue #11: the first refused dial must not fail the download while
 ;; other dials are still in flight; failure waits until every dial has
@@ -1667,6 +1685,27 @@
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :verified])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
+
+(deftest run-event-loop-re-announces-after-a-send-failure-test
+  (testing "a send failure that empties the swarm asks the trackers again"
+    (let [disk (mock-disk/create)
+          net (mock-net/create)
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          asked (atom 0)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}]
+          result (scripted-run events (loop-download) disk
+                               {:net net
+                                :close? false
+                                :timeout 3000
+                                :re-announce (fn []
+                                               (swap! asked inc)
+                                               #{"peer-b"})})]
+      (is (= 1 @asked) "the trackers were asked again")
+      (is (= :timed-out result)
+          "the download waits for the peers the trackers named"))))
 
 (deftest run-event-loop-failure-stamps-suspension-time-test
   (testing "a failed run carries when it stopped, so resume measures the
@@ -2441,8 +2480,11 @@
                    :config {}}
           plan (:plan (download/prepare-run manager started nil))
           peer-supervisor (download-supervisor/peer-supervisor-for manager plan)
+          runtime {:peer-supervisor peer-supervisor
+                   :re-announcer (re-announcer/start
+                                  {:announce (fn [] {:ok #{}})})}
           result (try
-                   (download/run-subtree manager plan nil peer-supervisor)
+                   (download/run-subtree manager plan nil runtime)
                    ::no-crash
                    (catch Exception error error))]
       (is (instance? Exception result)
