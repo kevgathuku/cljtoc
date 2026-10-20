@@ -2,7 +2,9 @@
   "Shared test utilities and helper functions."
   (:require [clojure.java.io :as io]
             [clojure.string :as string]
+            [clojure.spec.alpha :as s]
             [clojure.spec.test.alpha :as stest]
+            [expound.alpha :as expound]
             [clojure.core.async.impl.protocols :as chan]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.test-doubles.randomness :as mock-randomness]
@@ -56,18 +58,31 @@
   [bytes-seqs]
   (mock-randomness/->MockRandomness (atom bytes-seqs)))
 
+(defn- report-check-failures
+  "Print each failed check result through expound; returns results unchanged.
+   Binds expound as the explain printer because explain-result refuses the
+   default printer. Test-stdout only, so green runs stay byte-identical."
+  [check-results]
+  (let [failures (filter :failure check-results)]
+    (when (seq failures)
+      (binding [s/*explain-out* expound/printer]
+        (println (expound/explain-results-str failures)))))
+  check-results)
+
 (defn check-fdefs
   "Run stest/check over syms, each naming a var with an fdef.
    Returns {sym failure} for failures only, so one deftest can pin a whole
    namespace's check-grade specs while still naming the culprit and its
-   shrunk counterexample."
+   shrunk counterexample. Failures also print through expound."
   [syms num-tests]
-  (into {}
-        (comp (map #(first (stest/check [%] {:clojure.spec.test.check/opts
-                                             {:num-tests num-tests}})))
-              (keep (fn [{:keys [sym failure]}]
-                      (when failure [sym failure]))))
-        syms))
+  (let [check-results (report-check-failures
+                       (mapcat #(stest/check [%] {:clojure.spec.test.check/opts
+                                                  {:num-tests num-tests}})
+                               syms))]
+    (into {}
+          (keep (fn [{:keys [sym failure]}]
+                  (when failure [sym failure])))
+          check-results)))
 
 (defn layout-test-info
   "Build an info dict for the given piece length and file lengths:

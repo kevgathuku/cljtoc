@@ -6,7 +6,10 @@
   Requires nothing project-specific: pull in only the namespaces you
   need, with :reload so edits are picked up."
   (:require [clojure.repl :refer [doc find-doc source]]
-            [clojure.tools.namespace.repl :as repl]))
+            [clojure.spec.alpha :as s]
+            [clojure.tools.namespace.repl :as repl]
+            [expound.alpha :as expound]
+            [io.aviso.repl :as pretty-repl]))
 
 ;; Real vars (not :refer mappings) so both bare use in this namespace
 ;; and qualified user/refresh use from anywhere else resolve.
@@ -18,6 +21,8 @@
 (defn welcome
   "Print the require cheat sheet for interactive probing."
   []
+  (alter-var-root #'s/*explain-out* (constantly expound/printer))
+  (pretty-repl/install-pretty-exceptions)
   (println)
   (println "  cljtoc REPL — require what you need, with :reload:")
   (println)
@@ -43,6 +48,9 @@
   (println "  Spec probes (fully-qualified — this ns has no aliases):")
   (println "    (s/valid? :dev.cljtoc.protocol.tracker/port 70000)")
   (println "    (stest/instrument `dev.cljtoc.protocol.tracker/tracker-error)")
+  (println "  Readable errors (wired above on startup):")
+  (println "    spec failures print through expound automatically")
+  (println "    (pretty-repl/pretty-pst *e) ; demunged stacktrace of last error")
   (println "  Private fns (specs are the interface; helpers stay defn-):")
   (println "    (@#'tracker/valid-ipv4? \"10.0.0.9\") ; deref the var, then call")
   (println "  Stale session? :reload refreshes only named namespaces —")
