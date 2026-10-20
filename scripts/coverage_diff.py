@@ -124,20 +124,32 @@ def main() -> int:
         return 2
 
     overall_uncovered = 0
+    setup_errors: list[str] = []
     for src in files:
         rel = str(src).removeprefix("src/")
-        cov_file = cov_dir / rel
-        if not cov_file.exists():
-            print(f"{rel}\t(no per-line file — namespace was not instrumented)")
-            continue
         added = compute_added(str(src), base)
         if not added:
+            continue
+        cov_file = cov_dir / rel
+        if not cov_file.exists():
+            # The namespace was not instrumented, so the diff lines in
+            # this file were never measured. Reporting them as covered
+            # would make the gate pass vacuously, so this is a setup
+            # error instead.
+            setup_errors.append(rel)
             continue
         rows, uncovered = intersect(cov_file, added)
         overall_uncovered += uncovered
         for ln, marker, text in sorted(rows, key=lambda r: r[0]):
             print(f"{rel}\t{ln}\t{marker} {text}")
 
+    if setup_errors:
+        print(
+            "\nnamespace(s) not instrumented, so their changed lines were "
+            "never measured: " + ", ".join(setup_errors),
+            file=sys.stderr,
+        )
+        return 2
     if overall_uncovered > 0:
         print(f"\n{overall_uncovered} uncovered added line(s) across the diff", file=sys.stderr)
         return 1
