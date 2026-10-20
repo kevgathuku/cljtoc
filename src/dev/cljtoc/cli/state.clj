@@ -23,6 +23,27 @@
   [file]
   (str/replace (.getName ^java.io.File file) #"\.edn$" ""))
 
+(defn download-record?
+  "Whether a decoded state file is a download record the CLI can act on.
+   Valid EDN of the wrong shape (a bare number, an empty map, a map missing
+   piece state) is corrupt too: listing it would throw inside progress and
+   hide every later record from a status listing."
+  [value]
+  (and (map? value)
+       (string? (:id value))
+       (keyword? (:state value))
+       (map? (:piece-state value))
+       (integer? (get-in value [:piece-state :total-pieces]))
+       (map? (:stats value))))
+
+(defn load-record
+  "Load one state file through the port, keeping it only when it decodes to
+   a download record. Nil means absent, unreadable, or the wrong shape —
+   the CLI's single missing-state story."
+  [disk-port id]
+  (let [result (disk/load-state disk-port id)]
+    (when (download-record? (:ok result)) (:ok result))))
+
 (defn load-most-recent
   "Load the most recently started download. Dir-scanning by recency lives
    here (the port has no equivalent); the bytes move through the port."
@@ -31,7 +52,7 @@
      (when (.exists dir)
        (let [files (sort-by #(.lastModified ^java.io.File %) > (.listFiles dir))]
          (when (seq files)
-           (:ok (disk/load-state disk-port (state-id (first files))))))))))
+           (load-record disk-port (state-id (first files)))))))))
 
 (defn load-all
   "Load every saved download record, most recently modified first.
@@ -46,7 +67,7 @@
                              [(.lastModified file) (.getName file)])
                            (fn [left right] (compare right left))
                            (.listFiles dir))]
-        (into [] (keep #(:ok (disk/load-state disk-port (state-id %)))) files)))))
+        (into [] (keep #(load-record disk-port (state-id %))) files)))))
 
 (s/fdef load-all
   :args (s/cat :disk-port any? :state-dir string?)

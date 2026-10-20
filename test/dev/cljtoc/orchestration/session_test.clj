@@ -3,7 +3,8 @@
 
    Seam: session start/run through mock ports, so two torrents run with
    no network and no real disk."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.orchestration.session :as session]
             [dev.cljtoc.protocol.peer :as peer]
@@ -128,12 +129,113 @@
       (is (= [{:torrent-path "/two/movie.torrent" :error :duplicate-id}]
              (map #(select-keys % [:torrent-path :error]) (session/failures started)))))))
 
+(deftest start-torrents-refuses-overlapping-output-test
+  (testing "two torrents declaring the same output path cannot overwrite each other's bytes"
+    (let [disk (mock-disk/create
+                {:torrent-data {"/a.torrent" {:info-hash (byte-array 20)
+                                              :info {:pieces ["h1"]
+                                                     :piece-length 4
+                                                     :name "payload.bin"
+                                                     :length 4}}
+                                "/b.torrent" {:info-hash (byte-array 20)
+                                              :info {:pieces ["h1"]
+                                                     :piece-length 4
+                                                     :name "payload.bin"
+                                                     :length 4}}}})
+          net (mock-net/create)
+          started (session/start-torrents (session/session (manager net disk))
+                                          ["/a.torrent" "/b.torrent"]
+                                          "/out")]
+      (is (= ["a"] (map :id (session/downloads started)))
+          "different ids still share one physical file")
+      (is (= [{:torrent-path "/b.torrent" :error :overlapping-output}]
+             (map #(select-keys % [:torrent-path :error]) (session/failures started)))))))
+
+(deftest start-torrents-keeps-a-failed-announce-record-test
+  (testing "a tracker refusal is a failed download, not a refused start"
+    (let [disk (mock-disk/create
+                {:torrent-data {"/x.torrent" {:info-hash (byte-array 20)
+                                              :info {:pieces ["h1"]
+                                                     :piece-length 4
+                                                     :name "x.bin"
+                                                     :length 4}}}})
+          net (mock-net/create
+               {:announce-to-url-error {:error :tracker-unreachable
+                                        :message "down"}})
+          started (session/start-torrents (session/session (manager net disk))
+                                          ["/x.torrent"]
+                                          "/out")
+          run (session/run-downloads started)
+          record (first (session/downloads run))]
+      (is (= [] (session/failures started)))
+      (is (= ["x"] (map :id (session/downloads started)))
+          "the failed record carries an id, so it can be saved and resumed")
+      (is (= :failed (:state record)) "run-downloads leaves a refused announce untouched"))))
+
+(deftest run-downloads-reports-each-result-as-it-finishes-test
+  (testing "a finished download reaches the persister while its sibling is still blocked"
+    (let [piece-0 (test-utils/to-bytes "abcd")
+          info-hash-a (bencode/sha1-hash (test-utils/to-bytes "info-a"))
+          torrent-a {:info-hash info-hash-a
+                     :announce "http://a.test/announce"
+                     :info {:pieces [(bencode/sha1-hash piece-0)]
+                            :piece-length 4
+                            :name "a.bin"
+                            :length 4}}
+          torrent-b {:info-hash (bencode/sha1-hash (test-utils/to-bytes "info-b"))
+                     :announce "http://b.test/announce"
+                     :info {:pieces [(bencode/sha1-hash piece-0)]
+                            :piece-length 4
+                            :name "b.bin"
+                            :length 4}}
+          release-b (promise)
+          a-saved (promise)
+          disk (mock-disk/create
+                {:torrent-data {"/a.torrent" torrent-a
+                                "/b.torrent" torrent-b}})
+          net (mock-net/create
+               {:mock-peers []
+                :announce-to-url-responses {"http://a.test/announce"
+                                            {:ok #{"10.0.0.1:6881"}}
+                                            "http://b.test/announce"
+                                            {:ok #{"10.0.0.2:6881"}}}
+                :connect-response
+                (fn [address]
+                  (if (str/starts-with? address "10.0.0.2")
+                    (do
+                      (deref release-b 5000 false)
+                      {:error :connect-failed :message "blocked"})
+                    {:ok {:id address
+                          :address address
+                          :bitfield #{0}}}))
+                :handshake-response {:ok {:info-hash info-hash-a
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0)}])})
+          runner (Thread.
+                  (fn []
+                    (session/run-downloads
+                     (session/start-torrents (session/session (manager net disk))
+                                             ["/a.torrent" "/b.torrent"]
+                                             "/out")
+                     (fn [download]
+                       (when (= "a" (:id download))
+                         (deliver a-saved true))))))]
+      (.start runner)
+      (is (true? (deref a-saved 5000 false))
+          "A's terminal record reached the persister before B finished")
+      (is (.isAlive runner) "B is still blocked, so the session has not returned")
+      (deliver release-b true)
+      (.join runner 10000))))
+
 (deftest run-one-folds-an-unexpected-throw-test
   (testing "a throwing run becomes a failed record instead of taking the session down"
     (let [torrent {:info-hash (byte-array 20)
                    :info {:pieces [] :piece-length 4 :name "x.bin" :length 0}}
           download {:id "x" :torrent torrent :state :downloading :peers #{}}
-          result (deref (#'session/run-one {:disk-port nil :config {}} download))]
+          result (deref (#'session/run-one {:disk-port nil :config {}} download (fn [_])))]
       (is (= :failed (:state result)))
       (is (= :run-exception (get-in result [:error :reason]))))))
 

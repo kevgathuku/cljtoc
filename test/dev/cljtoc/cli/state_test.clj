@@ -16,19 +16,28 @@
   (disk-impl/create {:state-dir state-dir
                      :piece-cache-dir (test-utils/temp-dir "cli-state-recent-cache-")}))
 
+(defn- saved-record
+  "A record shaped like the ones the client persists: progress reads piece
+   state and stats, so a fixture without them is not a download."
+  [id state]
+  {:id id
+   :state state
+   :piece-state {:total-pieces 1 :needed #{} :in-flight #{} :verified #{}}
+   :stats {:bytes-downloaded 0}})
+
 (deftest load-most-recent-test
   (testing "returns the most recent record, read through the port"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
-      (disk/save-state port {:id "new" :state :downloading})
+      (disk/save-state port (saved-record "old" :paused))
+      (disk/save-state port (saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= "new" (:id (state/load-most-recent port dir))))))
   (testing "a corrupt most-recent file reads as nil without falling through"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
+      (disk/save-state port (saved-record "old" :paused))
       (spit (io/file dir "new.edn") "{broken edn")
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
@@ -45,15 +54,15 @@
   (testing "returns every record, most recently modified first"
     (let [dir (test-utils/temp-dir "cli-state-all-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
-      (disk/save-state port {:id "new" :state :downloading})
+      (disk/save-state port (saved-record "old" :paused))
+      (disk/save-state port (saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= ["new" "old"] (map :id (state/load-all port dir))))))
   (testing "a corrupt record is skipped, not fatal: the rest stay listed"
     (let [dir (test-utils/temp-dir "cli-state-all-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "ok" :state :paused})
+      (disk/save-state port (saved-record "ok" :paused))
       (spit (io/file dir "broken.edn") "{broken edn")
       (.setLastModified (io/file dir "broken.edn") 2000)
       (.setLastModified (io/file dir "ok.edn") 1000)
@@ -61,5 +70,27 @@
   (testing "a missing dir reads as empty"
     (let [dir (test-utils/temp-dir "cli-state-all-")
           port (temp-disk-port dir)]
-      (is (= [] (state/load-all port (str dir "/absent")))))))
+      (is (= [] (state/load-all port (str dir "/absent"))))))
+  (testing "valid EDN of the wrong shape is corrupt too, not listed"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (saved-record "ok" :paused))
+      (spit (io/file dir "empty.edn") "{}")
+      (spit (io/file dir "number.edn") "42")
+      (spit (io/file dir "half.edn") "{:id \"half\" :state :paused}")
+      (doseq [name ["empty.edn" "number.edn" "half.edn"]]
+        (.setLastModified (io/file dir name) 3000))
+      (.setLastModified (io/file dir "ok.edn") 1000)
+      (is (= ["ok"] (map :id (state/load-all port dir)))
+          "a wrong-shape record would throw in progress and hide the rest"))))
+
+(deftest load-most-recent-ignores-a-wrong-shape-record-test
+  (testing "a newest file that decodes to a non-record reads as nil, like a syntax error"
+    (let [dir (test-utils/temp-dir "cli-state-recent-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (saved-record "old" :paused))
+      (spit (io/file dir "empty.edn") "{}")
+      (.setLastModified (io/file dir "old.edn") 1000)
+      (.setLastModified (io/file dir "empty.edn") 2000)
+      (is (nil? (state/load-most-recent port dir))))))
 

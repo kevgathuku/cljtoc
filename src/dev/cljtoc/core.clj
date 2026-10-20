@@ -170,9 +170,9 @@
   [disk-port state-dir args]
   (if (seq args)
     (let [arg (first args)]
-      (or (:ok (disk/load-state disk-port arg))
+      (or (cli-state/load-record disk-port arg)
           (when (torrent-path-arg? arg)
-            (:ok (disk/load-state disk-port (disk/id-from-path arg))))))
+            (cli-state/load-record disk-port (disk/id-from-path arg)))))
     (cli-state/load-most-recent disk-port state-dir)))
 
 (defn- status-records
@@ -227,9 +227,10 @@
             ;; sees every torrent the session owns.
             (save-or-exit (:disk-port manager) download)))
         (println "Starting download to: " output-dir)
-        (let [finished (session/run-downloads started)]
+        (let [finished (session/run-downloads
+                        started
+                        (fn [download] (save-or-exit (:disk-port manager) download)))]
           (doseq [download (session/downloads finished)]
-            (save-or-exit (:disk-port manager) download)
             (println)
             (print-progress (download/progress time-port download)))
           (when (or (seq (session/failures finished))
@@ -421,7 +422,13 @@
           (if (nil? settings)
             (System/exit 1)
             (if handler
-              ((:fn handler) settings cmd-args)
+              (do
+                ((:fn handler) settings cmd-args)
+                ;; `future` runs on Clojure's non-daemon agent pool; without
+                ;; this the JVM lingers ~60s after the command succeeds.
+                ;; The CLI is the lifecycle boundary the session API must
+                ;; not own.
+                (shutdown-agents))
               (do
                 (println (str "Unknown command: " cmd))
                 (println)

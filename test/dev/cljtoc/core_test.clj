@@ -182,11 +182,20 @@
   (disk-impl/create {:state-dir state-dir
                      :piece-cache-dir (test-utils/temp-dir "core-test-cache-")}))
 
+(defn- saved-record
+  "A record shaped like the ones the client persists: status reads piece
+   state and stats, so a fixture without them is not a download."
+  [id state]
+  {:id id
+   :state state
+   :piece-state {:total-pieces 1 :needed #{} :in-flight #{} :verified #{}}
+   :stats {:bytes-downloaded 0}})
+
 (deftest load-command-state-test
   (testing "by id loads the record the port saved"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (is (= {:ok :saved} (disk/save-state port {:id "cmd-1" :state :paused})))
+      (is (= {:ok :saved} (disk/save-state port (saved-record "cmd-1" :paused))))
       (let [loaded (#'core/load-command-state port dir ["cmd-1"])]
         (is (= "cmd-1" (:id loaded)))
         (is (= :paused (:state loaded))))))
@@ -202,21 +211,21 @@
   (testing "no id falls back to the most recent record"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
-      (disk/save-state port {:id "new" :state :downloading})
+      (disk/save-state port (saved-record "old" :paused))
+      (disk/save-state port (saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= "new" (:id (#'core/load-command-state port dir []))))))
   (testing "a torrent path resolves to the id the download was saved under"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "path" :state :paused})
+      (disk/save-state port (saved-record "path" :paused))
       (is (= "path" (:id (#'core/load-command-state port dir ["./tmp/path.torrent"]))))
       (is (= "path" (:id (#'core/load-command-state port dir ["./tmp/path"]))))))
   (testing "an exact id wins over path derivation, so dotted ids are not mangled"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "archive.v2" :state :paused})
+      (disk/save-state port (saved-record "archive.v2" :paused))
       (is (= "archive.v2" (:id (#'core/load-command-state port dir ["archive.v2"]))))))
   (testing "no id with an empty dir reads as nil"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
@@ -227,7 +236,7 @@
   (testing "a missing dotted id does not resolve to another download's state"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "archive" :state :paused})
+      (disk/save-state port (saved-record "archive" :paused))
       (is (nil? (#'core/load-command-state port dir ["archive.v2"]))
           "archive.v2 is a bare id, not a torrent path — no fallback, no wrong download"))))
 
@@ -235,16 +244,16 @@
   (testing "no id lists every saved download, most recent first"
     (let [dir (test-utils/temp-dir "core-status-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
-      (disk/save-state port {:id "new" :state :downloading})
+      (disk/save-state port (saved-record "old" :paused))
+      (disk/save-state port (saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= ["new" "old"] (map :id (#'core/status-records port dir []))))))
   (testing "a named id lists only that download"
     (let [dir (test-utils/temp-dir "core-status-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "cmd-1" :state :paused})
-      (disk/save-state port {:id "cmd-2" :state :paused})
+      (disk/save-state port (saved-record "cmd-1" :paused))
+      (disk/save-state port (saved-record "cmd-2" :paused))
       (is (= ["cmd-2"] (map :id (#'core/status-records port dir ["cmd-2"]))))))
   (testing "an unknown id lists nothing"
     (let [dir (test-utils/temp-dir "core-status-")
