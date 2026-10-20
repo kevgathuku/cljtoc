@@ -829,7 +829,13 @@
   (loop [state state
          [effect & rest-effects] effects]
     (if (nil? effect)
-      [state :ok]
+      (do
+        ;; The supervisor seam: hand the record to whoever supervises this
+        ;; run, so a restarted subtree resumes from the pieces already
+        ;; verified instead of re-fetching them.
+        (when-let [publish (:publish env)]
+          (publish (:download state)))
+        [state :ok])
       (let [{:keys [ports conn-stats output-layout prepared-layout]} env
             {:keys [network-port disk-port time-port]} ports]
         (cond
@@ -1126,6 +1132,198 @@
                (assoc written :download download)
                (recur download rest-pieces)))))))))
 
+(defn prepare-run
+  "Prepare one download's run: compile and initialize the output layout,
+   materialize the pieces the cache already holds, and cap the peer
+   addresses to dial.
+
+   Returns {:status :ready :plan plan} when the download is ready to
+   run, or {:status :finished :record record} when it reached a terminal
+   state before any peer was dialed -- completed, or failed for a reason
+   the caller has to see.
+
+   The plan is
+   {:download record :layout layout :prepared prepared :peer-addresses addresses}
+   and is what a supervisor hands to run-subtree. Preparing once and
+   running the subtree as often as the supervisor needs keeps a restart
+   from resolving the output layout against the filesystem again, and
+   keeps one compiled layout the one every piece write is checked
+   against.
+
+   opts is optional: {:materialized? true :layout layout} carries a
+   materialization resume-download already completed into this run, so
+   the cached pieces are not read, verified, and written a second time.
+   The caller guarantees the layout was compiled from this download's
+   own info and the materialization ran after its last piece-state
+   change -- only resume-and-run sets this, immediately after its own
+   reconcile, over the untouched record. Anything else (missing flag,
+   missing or invalid layout) prepares the full layout as before."
+  [manager download opts]
+  (let [{:keys [disk-port time-port config]} manager
+        carried (:layout opts)
+        ;; The O(1) shape gate, not the O(files) invariant check: the
+        ;; layout came out of compile-output-layout in this same process,
+        ;; so this only refuses a caller that forged the opts map.
+        use-carried? (and (:materialized? opts)
+                          (some? carried)
+                          (disk/valid-output-layout? carried))
+        compiled (if use-carried?
+                   {:ok carried}
+                   (torrent/compile-output-layout (:info (:torrent download))))]
+    (if (:error compiled)
+      {:status :finished
+       :record (fail-disk download
+                          "Failed to compile output layout"
+                          (:message compiled))}
+      (let [layout (:ok compiled)
+            init-result (disk/initialize-output-layout
+                         disk-port
+                         layout
+                         (:output-dir download))
+             ;; The one full filesystem resolution this run performs: after
+             ;; init created every declared file, freeze the alias-free
+             ;; layout so every later piece write re-validates only the
+             ;; files it touches. A refused prepare fails the download
+             ;; before any peer is dialed, like a refused init.
+            prepare-result (when-not (:error init-result)
+                             (disk/prepare-output-layout
+                              disk-port
+                              layout
+                              (:output-dir download)))
+            prepared (:ok prepare-result)
+            ;; Materialize before asking whether the download is complete: a
+            ;; resumed record's verified bytes are in the piece cache, and
+            ;; initialize-output-layout only created the files at their
+            ;; declared length. Asking first is what let :completed mean "the
+            ;; files exist" instead of "the content is on disk". Skipped when
+            ;; the layout was never created, so nothing is written into a
+            ;; layout that failed to initialize -- and skipped wholesale
+            ;; when the caller carried a completed materialization in.
+            materialized (cond
+                           (:error init-result)
+                           init-result
+
+                           (:error prepare-result)
+                           (assoc prepare-result :download download)
+
+                           use-carried?
+                           {:ok download}
+
+                           :else
+                           (materialize-verified-pieces download
+                                                        disk-port
+                                                        layout
+                                                        prepared))
+            ;; Read only where materialization succeeded; the two failure
+            ;; branches below still report on the original record.
+            revived (:ok materialized)
+            ;; Dial candidates capped exactly as the spawn below reads them,
+            ;; so the empty guard and the worker spawn cannot drift apart.
+            ;; From the original record: materialization only edits
+            ;; :piece-state, never :peers, so this is identical on the
+            ;; success path and well-defined on the failure paths, where
+            ;; revived is nil and the cond returns before using it.
+            peer-addresses (capped-peer-addresses (map :address (:peers download))
+                                                  config)]
+        (cond
+          (:error init-result)
+          {:status :finished
+           :record (fail-disk download
+                              "Failed to initialize output layout"
+                              (:message init-result))}
+
+          (:error prepare-result)
+          {:status :finished
+           :record (fail-disk download
+                              "Failed to prepare output layout"
+                              (:message prepare-result))}
+
+          (:error materialized)
+          {:status :finished
+           :record (fail-disk (:download materialized)
+                              "Failed to materialize verified pieces"
+                              (:message materialized))}
+
+          (pieces/complete? (:piece-state revived))
+          {:status :finished
+           :record (evict-completed-cache disk-port
+                                          (complete-download time-port revived))}
+
+     ;; No dial candidates: no workers would spawn and the coordinator
+     ;; would block on the event channel forever.
+          (empty? peer-addresses)
+          {:status :finished
+           :record (assoc revived :state :failed
+                          :error {:reason :no-peers
+                                  :message "No peers available: nothing to connect to"})}
+
+          :else
+          {:status :ready
+           :plan {:download revived
+                  :layout layout
+                  :prepared prepared
+                  :peer-addresses peer-addresses}})))))
+
+(defn run-subtree
+  "Run the download's child subtree: dial the capped peers and drive the
+   coordinator until the download reaches a terminal state. Returns the
+   final Download record.
+
+   `publish` is called with the download record as the run progresses.
+   A supervisor uses it to resume a restarted subtree from the pieces
+   already verified instead of re-fetching them. It is optional: a
+   caller that runs the subtree once passes nil.
+
+   The subtree owns its event channel: it creates the channel and hands
+   it to the peer workers, whose exit closes it."
+  [manager plan publish]
+  (let [{:keys [network-port disk-port time-port]} manager
+        {:keys [download layout prepared peer-addresses]} plan
+        torrent (:torrent download)
+        info (:info torrent)
+        info-hash (:info-hash torrent)
+        total-pieces (count (:pieces info))
+        piece-hashes (:pieces info)
+        piece-length (:piece-length info)
+        ;; The compiled layout already carries the content length:
+        ;; one derivation, no second walk of the declared files.
+        total-length (:total layout)
+        peer-id (network/peer-id network-port)
+        events-ch (async/chan 256)
+        total-attempted (count peer-addresses)
+        conn-stats (atom {:connected 0 :failed 0})]
+
+    (println (str "  Connecting to " total-attempted " peers..."))
+    (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
+
+    ;; Spawn peer workers; their channels close on worker exit,
+    ;; so watching them tells the coordinator when all peers are gone.
+    (let [worker-chs (mapv (fn [addr]
+                             (peer-worker/run-peer network-port info-hash peer-id
+                                                   addr total-pieces events-ch))
+                           peer-addresses)]
+      (watch-workers! worker-chs events-ch))
+
+    ;; Hand the event channel to the coordinator loop
+    (run-event-loop (coordinator/initial-state download peer-addresses)
+                    events-ch
+                    {:message-ctx {:piece-hashes piece-hashes
+                                   :piece-length piece-length
+                                   :total-length total-length
+                                   :total-pieces total-pieces}
+                     :output-layout layout
+                     :prepared-layout prepared
+                     :ports {:network-port network-port
+                             :disk-port disk-port
+                             :time-port time-port}
+                     :conn-stats conn-stats
+                     :total-attempted total-attempted
+                     :publish publish})))
+
+(s/fdef run-subtree
+  :args (s/cat :manager ::download-manager :plan map?
+               :publish (s/? (s/fspec :args (s/cat :record map?)))))
+
 (defn run-download
   "Run the download to completion. Blocking call.
    Connects to peers, requests pieces, writes verified pieces.
@@ -1144,137 +1342,16 @@
   ([manager download]
    (run-download manager download nil))
   ([manager download opts]
-   (let [{:keys [disk-port time-port config]} manager
-         carried (:layout opts)
-         ;; The O(1) shape gate, not the O(files) invariant check: the
-         ;; layout came out of compile-output-layout in this same process,
-         ;; so this only refuses a caller that forged the opts map.
-         use-carried? (and (:materialized? opts)
-                           (some? carried)
-                           (disk/valid-output-layout? carried))
-         compiled (if use-carried?
-                    {:ok carried}
-                    (torrent/compile-output-layout (:info (:torrent download))))]
-     (if (:error compiled)
-       (fail-disk download "Failed to compile output layout" (:message compiled))
-       (let [layout (:ok compiled)
-             init-result (disk/initialize-output-layout
-                          disk-port
-                          layout
-                          (:output-dir download))
-             ;; The one full filesystem resolution this run performs: after
-             ;; init created every declared file, freeze the alias-free
-             ;; layout so every later piece write re-validates only the
-             ;; files it touches. A refused prepare fails the download
-             ;; before any peer is dialed, like a refused init.
-             prepare-result (when-not (:error init-result)
-                              (disk/prepare-output-layout
-                               disk-port
-                               layout
-                               (:output-dir download)))
-             prepared (:ok prepare-result)
-             ;; Materialize before asking whether the download is complete: a
-             ;; resumed record's verified bytes are in the piece cache, and
-             ;; initialize-output-layout only created the files at their
-             ;; declared length. Asking first is what let :completed mean "the
-             ;; files exist" instead of "the content is on disk". Skipped when
-             ;; the layout was never created, so nothing is written into a
-             ;; layout that failed to initialize -- and skipped wholesale
-             ;; when the caller carried a completed materialization in.
-             materialized (cond
-                            (:error init-result)
-                            init-result
+   (let [outcome (prepare-run manager download opts)]
+     (if (= :ready (:status outcome))
+       (run-subtree manager (:plan outcome) nil)
+       (:record outcome)))))
 
-                            (:error prepare-result)
-                            (assoc prepare-result :download download)
-
-                            use-carried?
-                            {:ok download}
-
-                            :else
-                            (materialize-verified-pieces download
-                                                         disk-port
-                                                         layout
-                                                         prepared))
-            ;; Read only where materialization succeeded; the two failure
-            ;; branches below still report on the original record.
-             revived (:ok materialized)
-            ;; Dial candidates capped exactly as the spawn below reads them,
-            ;; so the empty guard and the worker spawn cannot drift apart.
-            ;; From the original record: materialization only edits
-            ;; :piece-state, never :peers, so this is identical on the
-            ;; success path and well-defined on the failure paths, where
-            ;; revived is nil and the cond returns before using it.
-             peer-addresses (capped-peer-addresses (map :address (:peers download))
-                                                   config)]
-         (cond
-           (:error init-result)
-           (fail-disk download
-                      "Failed to initialize output layout"
-                      (:message init-result))
-
-           (:error prepare-result)
-           (fail-disk download
-                      "Failed to prepare output layout"
-                      (:message prepare-result))
-
-           (:error materialized)
-           (fail-disk (:download materialized)
-                      "Failed to materialize verified pieces"
-                      (:message materialized))
-
-           (pieces/complete? (:piece-state revived))
-           (evict-completed-cache disk-port (complete-download time-port revived))
-
-    ;; No dial candidates: no workers would spawn and the coordinator
-    ;; would block on the event channel forever.
-           (empty? peer-addresses)
-           (assoc revived :state :failed
-                  :error {:reason :no-peers
-                          :message "No peers available: nothing to connect to"})
-
-           :else
-           (let [{:keys [network-port disk-port time-port]} manager
-                 torrent (:torrent revived)
-                 info (:info torrent)
-                 info-hash (:info-hash torrent)
-                 total-pieces (count (:pieces info))
-                 piece-hashes (:pieces info)
-                 piece-length (:piece-length info)
-                ;; The compiled layout already carries the content length:
-                ;; one derivation, no second walk of the declared files.
-                 total-length (:total layout)
-                 peer-id (network/peer-id network-port)
-                 events-ch (async/chan 256)
-                 total-attempted (count peer-addresses)
-                 conn-stats (atom {:connected 0 :failed 0})]
-
-             (println (str "  Connecting to " total-attempted " peers..."))
-             (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
-
-      ;; Spawn peer workers; their channels close on worker exit,
-      ;; so watching them tells the coordinator when all peers are gone.
-             (let [worker-chs (mapv (fn [addr]
-                                      (peer-worker/run-peer network-port info-hash peer-id
-                                                            addr total-pieces events-ch))
-                                    peer-addresses)]
-               (watch-workers! worker-chs events-ch))
-
-      ;; Hand the event channel to the coordinator loop
-             (run-event-loop (coordinator/initial-state revived peer-addresses)
-                             events-ch
-                             {:message-ctx {:piece-hashes piece-hashes
-                                            :piece-length piece-length
-                                            :total-length total-length
-                                            :total-pieces total-pieces}
-                              :output-layout layout
-                              :prepared-layout prepared
-                              :ports {:network-port network-port
-                                      :disk-port disk-port
-                                      :time-port time-port}
-                              :conn-stats conn-stats
-                              :total-attempted total-attempted}))))))))
+(s/fdef prepare-run
+  :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))
+  :ret map?)
 
 (s/fdef run-download
   :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))
   :ret map?)
+
