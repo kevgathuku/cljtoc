@@ -8,6 +8,8 @@
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.ports.randomness-impl :as randomness-impl]
             [dev.cljtoc.ports.time :as time-port]
+            [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
+            [dev.cljtoc.supervision.session-supervisor :as session-supervisor]
             [dev.cljtoc.cli.state :as cli-state]
             [dev.cljtoc.cli.config :as cli-config]
             [clojure.java.io :as io]
@@ -237,10 +239,13 @@
             ;; sees every torrent the session owns.
             (save-or-exit (:disk-port manager) download)))
         (println "Starting download to: " output-dir)
-        (let [finished (session/run-downloads
-                        started
-                        (fn [download] (persist (:disk-port manager) download)))
-              finished-downloads (session/downloads finished)
+        (let [supervisor (session-supervisor/start
+                          manager
+                          (session/downloads started)
+                          {:on-complete (fn [download]
+                                          (persist (:disk-port manager) download))})
+              _ (session-supervisor/await-all supervisor)
+              finished-downloads (session-supervisor/records supervisor)
               persist-failures (keep #(when-let [error (:session/persist-error %)]
                                         [(:id %) error])
                                      finished-downloads)]
@@ -251,7 +256,7 @@
             (println)
             (println (str "Failed to save download state for " download-id ": "
                           (:message error))))
-          (when (or (seq (session/failures finished))
+          (when (or (seq (session/failures started))
                     (seq persist-failures)
                     (some #(= :failed (:state %)) finished-downloads))
             (System/exit 1)))))))
@@ -292,10 +297,13 @@
    The dead gap since the last verified byte (pause, failure, or crash)
    is folded out of the rate denominator on every resume, so the average
    below measures active time. Otherwise the reconciled materialization
-   travels into run-download, so the cached pieces are not read, verified,
+   travels into the run, so the cached pieces are not read, verified,
    and written a second time before the swarm is dialed. Returns the
    refusal envelope when the record cannot be resumed, else the final
-   Download record."
+   Download record.
+
+   The run goes through the download supervisor, so a coordinator crash
+   restarts the run instead of failing the download."
   [manager state]
   (let [{:keys [disk-port network-port time-port]} manager
         resumed (download/resume-download disk-port network-port state)]
@@ -304,8 +312,11 @@
       (let [revived (download/accumulate-downtime time-port (:ok resumed))]
         (if (= :completed (:state revived))
           (download/complete-download time-port revived)
-          (download/run-download manager revived {:materialized? true
-                                                  :layout (:layout resumed)}))))))
+          (download-supervisor/supervise-download
+           manager
+           revived
+           {:opts {:materialized? true
+                   :layout (:layout resumed)}}))))))
 
 (defn- refusal?
   "True when result is a refusal envelope rather than a Download record.

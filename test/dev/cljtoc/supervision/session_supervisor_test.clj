@@ -275,3 +275,17 @@
       (deliver release true)
       (session-supervisor/await-all supervisor)
       (is (= ["a"] (map :id (session-supervisor/records supervisor)))))))
+
+(deftest session-supervisor-leaves-a-failed-download-alone-test
+  (testing "a refused announce is kept as it is; only a later torrent.resume re-announces it"
+    (let [calls (atom 0)
+          child (fn [download-record]
+                  (swap! calls inc)
+                  {:id (:id download-record) :state :completed})
+          supervisor (session-supervisor/start (manager (mock-net/create)
+                                                        (mock-disk/create))
+                                               [{:id "a" :state :failed}]
+                                               {:child child})]
+      (session-supervisor/await-all supervisor)
+      (is (= 0 @calls) "the download already failed; running it again would re-announce it")
+      (is (= [:failed] (map :state (session-supervisor/records supervisor)))))))

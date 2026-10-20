@@ -1236,9 +1236,9 @@
                          :state :downloading
                          :peers #{{:address "10.0.0.9:6881"}}
                          :piece-state {:total-pieces 1
-                                      :needed #{}
-                                      :in-flight #{}
-                                      :verified #{0}})
+                                       :needed #{}
+                                       :in-flight #{}
+                                       :verified #{0}})
           ;; The materialization reads the verified piece from the cache:
           ;; a verified piece the cache no longer holds goes back to
           ;; :needed, and the download is no longer complete.

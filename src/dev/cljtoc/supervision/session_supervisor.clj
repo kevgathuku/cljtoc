@@ -23,6 +23,12 @@
 (s/def ::child
   (s/fspec :args (s/cat :download-record ::download-record) :ret map?))
 
+(def ^:private terminal-states
+  "The download states that need no run: the download already reached its
+   end. A refused announce leaves a :failed record, and only a later
+   torrent.resume re-announces it."
+  #{:completed :failed})
+
 (defn- default-child
   "Run one download under its download supervisor, then persist the
    terminal record. A failing persister lands on the record as
@@ -82,10 +88,12 @@
                        (map (fn [download-record]
                               (let [record (atom nil)
                                     run (future
-                                          (let [finished (run-child manager
-                                                                    child
-                                                                    download-record
-                                                                    budget)]
+                                          (let [finished (if (terminal-states (:state download-record))
+                                                           download-record
+                                                           (run-child manager
+                                                                      child
+                                                                      download-record
+                                                                      budget))]
                                             (reset! record finished)
                                             finished))]
                                 [(:id download-record)
