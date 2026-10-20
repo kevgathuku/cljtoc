@@ -13,7 +13,12 @@
 
   time/ITimePort
   (now [_]
-    @current-time)
+    (let [advance (:time-advances @config)]
+      (if (pos-int? advance)
+        (let [current @current-time]
+          (swap! current-time + advance)
+          current)
+        @current-time)))
 
   (monotonic [_]
     @monotonic-time)
@@ -40,6 +45,8 @@
    Options:
    - :now - the current time in milliseconds (default: 0)
    - :monotonic - the monotonic time in milliseconds (default: 0)
+   - :time-advances - milliseconds the clock moves on every reading
+     (default: 0, a clock that stands still)
    - :timeout-multiplier - multiplier for timeout delays (default: 1)
    - :interval-multiplier - multiplier for interval delays (default: 1)"
   ([]

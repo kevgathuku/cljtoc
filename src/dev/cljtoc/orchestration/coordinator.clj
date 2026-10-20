@@ -190,6 +190,21 @@
   [state address]
   (update state :pending-dials (fnil disj #{}) address))
 
+(defn add-pending-dials
+  "Add addresses to the pending dials: they are being dialed, so the swarm
+    is not exhausted yet. Used when the re-announcer finds peers the
+    swarm had not asked for. Pure."
+  [state addresses]
+  (update state :pending-dials (fnil into #{}) addresses))
+
+(s/fdef add-pending-dials
+  :args (s/cat :state ::coordinator-state :addresses (s/coll-of any?))
+  :ret ::coordinator-state
+  :fn #(let [addresses (-> % :args :addresses)
+             updated (:ret %)
+             pending (:pending-dials updated)]
+         (every? (fn [address] (contains? pending address)) addresses)))
+
 (defn on-connected
   "Record a newly connected peer with no assignment yet.
     The address resolves its dial, so it leaves :pending-dials too.
@@ -241,30 +256,36 @@
     Any resolved address leaves :pending-dials (attempted minus
     resolved): a refused dial was still pending, a connected peer
     resolved at connect time, and a repeat event is a no-op.
+    A redial event keeps the address pending instead: the peer
+    supervisor is about to dial it again, so the swarm is not
+    exhausted yet and the download keeps waiting for it.
     Returns [updated-state effects] (a disconnect plans no I/O);
     the caller checks swarm-exhausted? to decide on failure."
   [state event]
-  (let [{:keys [address]} event
+  (let [{:keys [address redial]} event
         assigned (get-in state [:active-peers address :assigned-piece])
         state (if assigned
                 (requeue-assignment state address assigned)
-                state)]
-    [(-> state
-         (update :active-peers dissoc address)
-         (update :blocks-received dissoc address)
-         (update :expected-blocks dissoc address)
-         (resolve-dial address))
+                state)
+        state (-> state
+                  (update :active-peers dissoc address)
+                  (update :blocks-received dissoc address)
+                  (update :expected-blocks dissoc address))]
+    [(if redial
+       (update state :pending-dials (fnil conj #{}) address)
+       (resolve-dial state address))
      []]))
 
 (s/fdef on-disconnected
   :args (s/cat :state ::coordinator-state :event ::addressed-event)
   :ret (s/tuple ::coordinator-state ::no-effects)
   :fn #(let [address (-> % :args :event :address)
+             redial (boolean (-> % :args :event :redial))
              [updated _] (:ret %)]
          (and (not (contains? (:active-peers updated) address))
               (not (contains? (:blocks-received updated) address))
               (not (contains? (:expected-blocks updated) address))
-              (not (contains? (:pending-dials updated) address)))))
+              (= redial (contains? (:pending-dials updated) address)))))
 
 (defn- all-peer-available-sets
   "Get a collection of available-piece-sets from all active peers."

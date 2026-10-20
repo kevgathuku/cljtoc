@@ -5,6 +5,10 @@
             [dev.cljtoc.coordination.peer-worker :as peer-worker]
             [dev.cljtoc.test-doubles.network :as mock-net]))
 
+;; (run-peer) — the outer catch is not covered: connect returns an envelope
+;; rather than throwing, and a report put cannot throw, so nothing reaches it.
+;; It stays as the boundary for a port that breaks its contract.
+
 (defn- take-timeout
   [ch timeout-ms]
   (let [timeout-ch (async/timeout timeout-ms)]

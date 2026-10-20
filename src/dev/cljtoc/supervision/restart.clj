@@ -42,10 +42,16 @@
 
 (def default-budget
   "How often a supervisor may restart a child inside the window. Both
-   supervisor levels use it: a child that crashes three times inside a
-   minute is failing for good, not flapping."
+   supervisor levels use it: a child that crashes three times inside the
+   window is failing for good, not flapping.
+
+   The window is five minutes so it still bounds the watchdog, whose
+   deadline has to outlast an optimistic-unchoke rotation: the window
+   holds ceil(window/deadline) - 1 restarts, so a shorter window would
+   let a download that never moves restart forever. The two numbers are
+   chosen together."
   {:limit 3
-   :window-ms 60000})
+   :window-ms 300000})
 
 (defn prune
   "The restart times still inside the sliding window: the ones that

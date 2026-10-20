@@ -13,6 +13,9 @@
             [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
+            [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
+            [dev.cljtoc.supervision.peer-supervisor :as peer-supervisor]
+            [dev.cljtoc.supervision.re-announcer :as re-announcer]
             [dev.cljtoc.test-utils :as test-utils]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
@@ -486,11 +489,11 @@
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-peers")
                          :state :downloading
                          :peers #{})
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port (mock-disk/create)
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port (mock-disk/create)
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   started)]
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason]))))))
 
@@ -501,11 +504,11 @@
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "capped-empty")
                          :state :downloading
                          :peers #{{:address "10.0.0.1:6881"}})
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port (mock-disk/create)
-                                         :time-port (mock-time/create)
-                                         :config {:max-peers 0}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port (mock-disk/create)
+                                                    :time-port (mock-time/create)
+                                                    :config {:max-peers 0}}
+                                                   started)]
       (is (= :failed (:state result)))
       (is (= :no-peers (get-in result [:error :reason])))
       (is (= "No peers available: nothing to connect to" (get-in result [:error :message]))))))
@@ -1032,11 +1035,11 @@
                                           {:ok (peer/->Piece 0 0 piece-0-bytes)}
                                           {:ok (peer/->Piece 1 0 piece-1-bytes)}])})
           disk (mock-disk/create)
-          result (deref (future (download/run-download {:network-port net
-                                                        :disk-port disk
-                                                        :time-port (mock-time/create)
-                                                        :config {}}
-                                                       started))
+          result (deref (future (download-supervisor/run-download {:network-port net
+                                                                   :disk-port disk
+                                                                   :time-port (mock-time/create)
+                                                                   :config {}}
+                                                                  started))
                         15000 :timed-out)]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
@@ -1070,11 +1073,11 @@
                                           {:ok (peer/->Piece 0 0 piece-0-bytes)}
                                           {:ok (peer/->Piece 1 0 piece-1-bytes)}])})
           disk (mock-disk/create)
-          result (deref (future (download/run-download {:network-port net
-                                                        :disk-port disk
-                                                        :time-port (mock-time/create)
-                                                        :config {}}
-                                                       started))
+          result (deref (future (download-supervisor/run-download {:network-port net
+                                                                   :disk-port disk
+                                                                   :time-port (mock-time/create)
+                                                                   :config {}}
+                                                                  started))
                         15000 :timed-out)]
       (is (= :completed (:state result)))
       (is (nil? (mock-disk/get-piece disk info-hash 0))
@@ -1109,11 +1112,11 @@
                          :state :downloading)
           disk (mock-disk/create {:output-init-error {:error :write-error
                                                       :message "no space"}})
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port disk
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port disk
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   started)]
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
       (is (re-find #"no space" (get-in result [:error :message])))
@@ -1128,11 +1131,11 @@
                          :peers #{{:address "10.0.0.9:6881"}})
           disk (mock-disk/create {:output-prepare-error {:error :alias-error
                                                          :message "escapes the output dir"}})
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port disk
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port disk
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   started)]
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
       (is (re-find #"Failed to prepare output layout" (get-in result [:error :message])))
@@ -1145,11 +1148,11 @@
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "empty")
                          :state :downloading)
           disk (mock-disk/create)
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port disk
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port disk
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   started)]
       (is (= :completed (:state result)))
       (is (= 1 (count @(:layouts-initialized disk)))))))
 
@@ -1160,11 +1163,11 @@
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-name")
                          :state :downloading)
           disk (mock-disk/create)
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port disk
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port disk
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   started)]
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
       ;; The compile branch's prefix, not just "output layout": the pre-compile
@@ -1181,11 +1184,11 @@
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "empty-layout")
                          :state :downloading)
           disk (mock-disk/create)
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port disk
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        started)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port disk
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   started)]
       (is (= :completed (:state result)))
       (is (= [(:ok (torrent/compile-output-layout info))]
              (mapv :layout @(:layouts-initialized disk)))))))
@@ -1297,13 +1300,18 @@
                    :config {}}
           published (atom [])
           plan (:plan (download/prepare-run manager started nil))
-          result (deref (future (download/run-subtree manager plan #(swap! published conj %)))
+          peer-supervisor (download-supervisor/peer-supervisor-for manager plan)
+          runtime {:peer-supervisor peer-supervisor
+                   :re-announcer (re-announcer/start
+                                  {:announce (fn [] {:ok #{}})})}
+          result (deref (future (download/run-subtree manager plan #(swap! published conj %)
+                                                      runtime))
                         15000 :timed-out)]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
-      (is (seq @published) "the run published its record")
-      (is (= 1 (pieces/verified-count (:piece-state (last @published))))
-          "the published record carries the verified piece, so a restart resumes from it"))))
+      (is (seq @published) "the run published its state")
+      (is (= 1 (pieces/verified-count (:piece-state (:download (last @published)))))
+          "the published state carries the verified piece, so a restart resumes from it"))))
 
 (deftest mock-init-refuses-uncompiled-layout-test
   (testing "the mock mirrors the real port: raw info or nil is :invalid-info, unrecorded"
@@ -1413,7 +1421,12 @@
                      :disk-port disk
                      :time-port (or (:time opts) (mock-time/create))}
              :conn-stats (or (:conn-stats opts) (atom {:connected 0 :failed 0}))
-             :total-attempted 1}
+             :total-attempted 1
+             ;; The trackers know nobody unless the test says otherwise:
+             ;; the download gives up when the swarm runs dry, the way it
+             ;; did before the re-announcer.
+             :re-announce (or (:re-announce opts) (fn [] #{}))
+             :dial-peers (fn [addresses] (vec addresses))}
         state {:download download
                :active-peers {}
                :blocks-received {}
@@ -1433,6 +1446,9 @@
 (deftest run-event-loop-verifies-pieces-test
   (testing "connected -> unchoke -> both pieces completes the download"
     (let [disk (mock-disk/create)
+          ;; The clock moves on every reading, so the run passes the
+          ;; two-second mark and reports its progress while it works.
+          time (mock-time/create {:now 7000 :time-advances 3000})
           events [{:type :peer-connected :address "peer-a"
                    :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
                   {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}
@@ -1440,7 +1456,7 @@
                    :message (peer/->Piece 0 0 (test-utils/to-bytes "abcd"))}
                   {:type :peer-message :address "peer-a"
                    :message (peer/->Piece 1 0 (test-utils/to-bytes "efgh"))}]
-          result (scripted-run events (loop-download) disk)]
+          result (scripted-run events (loop-download) disk {:time time})]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
@@ -1504,7 +1520,7 @@
                    :disk-port disk
                    :time-port (mock-time/create)
                    :config {}}
-          result (download/run-download manager download)]
+          result (download-supervisor/run-download manager download)]
       (is (= :completed (:state result)))
       (is (some? (:completed-at (:stats result)))))))
 
@@ -1544,41 +1560,25 @@
       (is (= :no-peers (get-in result [:error :reason])))
       (is (= "All peers disconnected" (get-in result [:error :message]))))))
 
-;; Issue #32: the worker-exit signal must close the event channel, so
-;; the coordinator's nil? branch terminates the download instead of
-;; parking. Raced against a timeout so a regression fails, never hangs.
-
-(deftest watch-workers-closes-events-when-all-done-test
-  (testing "events-ch closes once every worker channel closes"
-    (let [worker-a (async/chan 1)
-          worker-b (async/chan 1)
-          events-ch (async/chan 16)
-          _ (download/watch-workers! [worker-a worker-b] events-ch)]
-      (async/close! worker-a)
-      (async/close! worker-b)
-      (let [[value winner] (async/alts!! [events-ch (async/timeout 3000)])]
-        (is (= events-ch winner))
-        (is (nil? value)))))
-  (testing "zero workers closes immediately instead of parking"
-    (let [events-ch (async/chan 16)
-          _ (download/watch-workers! [] events-ch)
-          [_ winner] (async/alts!! [events-ch (async/timeout 3000)])]
-      (is (= events-ch winner)))))
-
 ;; Issue #32 acceptance: a worker set that all exit drives the
 ;; coordinator to :failed/:no-peers instead of parking. No disconnect
-;; events are enqueued, so only the watcher closing events-ch (the nil?
-;; branch) can end the run — a missing watcher loses the timeout race.
-;; Raced against a timeout so a regression fails instead of hanging.
+;; events are enqueued, so only the peer supervisor closing the event
+;; channel (the nil? branch) can end the run — a supervisor that never
+;; closes it loses the timeout race. Raced against a timeout so a
+;; regression fails instead of hanging.
 (deftest run-event-loop-worker-exits-fail-no-peers-test
   (testing "an exited worker set ends the download with :no-peers"
     (let [disk (mock-disk/create)
           torrent (two-piece-torrent)
           info (:info torrent)
-          events-ch (async/chan 16)
-          worker-a (async/chan 1)
-          worker-b (async/chan 1)
-          _ (download/watch-workers! [worker-a worker-b] events-ch)
+          workers (atom [])
+          supervisor (peer-supervisor/start
+                      {:spawn (fn [_events-ch _address]
+                                (let [worker (async/chan 1)]
+                                  (swap! workers conj worker)
+                                  worker))
+                       :addresses ["peer-a" "peer-b"]})
+          events-ch (:events-ch supervisor)
           env {:message-ctx {:piece-hashes (:pieces info)
                              :piece-length (:piece-length info)
                              :total-length (:length info)
@@ -1587,21 +1587,27 @@
                        :disk-port disk
                        :time-port (mock-time/create)}
                :conn-stats (atom {:connected 0 :failed 0})
-               :total-attempted 2}
+               :total-attempted 2
+               ;; The trackers know nobody: the download gives up.
+               :re-announce (fn [] #{})
+               :dial-peers (fn [addresses] (vec addresses))}
           state {:download (loop-download)
                  :active-peers {}
                  :blocks-received {}
                  :expected-blocks {}
                  :pending-dials #{"peer-a" "peer-b"}}
           result-ch (async/thread (download/run-event-loop state events-ch env))]
-      ;; Workers exit without producing events: only the watcher can end this.
-      (async/close! worker-a)
-      (async/close! worker-b)
+      ;; The workers say goodbye and exit, the way the real ones do.
+      (doseq [worker @workers]
+        (async/put! worker {:exit :clean}))
+      (doseq [address ["peer-a" "peer-b"]]
+        (async/>!! events-ch {:type :peer-disconnected :address address :reason "gone"}))
       (let [[result winner] (async/alts!! [result-ch (async/timeout 5000)])]
         (is (= result-ch winner) "coordinator must win the race; a timeout means it parked")
         (is (= :failed (:state result)))
-        (is (= :no-peers (get-in result [:error :reason])))
-        (is (= "All peers disconnected" (get-in result [:error :message])))))))
+        (is (= :no-peers (get-in result [:error :reason]))
+            "the trackers know nobody, so the download gives up")
+        (is (re-find #"No peers available" (get-in result [:error :message])))))))
 
 ;; Issue #11: the first refused dial must not fail the download while
 ;; other dials are still in flight; failure waits until every dial has
@@ -1679,6 +1685,27 @@
       (is (contains? (get-in result [:piece-state :needed]) 0))
       (is (empty? (get-in result [:piece-state :verified])))
       (is (= #{{:id "data-a"}} (mock-net/closed-peers net))))))
+
+(deftest run-event-loop-re-announces-after-a-send-failure-test
+  (testing "a send failure that empties the swarm asks the trackers again"
+    (let [disk (mock-disk/create)
+          net (mock-net/create)
+          _ (mock-net/add-peer-response net "data-a" nil
+                                        {:error :send-failed :message "boom"})
+          asked (atom 0)
+          events [{:type :peer-connected :address "peer-a"
+                   :peer-data {:id "data-a"} :peer-state (loop-peer-state)}
+                  {:type :peer-message :address "peer-a" :message (peer/->Unchoke)}]
+          result (scripted-run events (loop-download) disk
+                               {:net net
+                                :close? false
+                                :timeout 3000
+                                :re-announce (fn []
+                                               (swap! asked inc)
+                                               #{"peer-b"})})]
+      (is (= 1 @asked) "the trackers were asked again")
+      (is (= :timed-out result)
+          "the download waits for the peers the trackers named"))))
 
 (deftest run-event-loop-failure-stamps-suspension-time-test
   (testing "a failed run carries when it stopped, so resume measures the
@@ -2050,8 +2077,8 @@
                    :disk-port disk
                    :time-port (mock-time/create)
                    :config {}}
-          result (download/run-download manager download {:materialized? true
-                                                          :layout layout})]
+          result (download-supervisor/run-download manager download {:materialized? true
+                                                                     :layout layout})]
       (is (= :completed (:state result)))
       (is (empty? (mock-disk/get-output-layouts disk))
           "no output write happened in this run"))))
@@ -2066,8 +2093,8 @@
                    :disk-port disk
                    :time-port (mock-time/create)
                    :config {}}
-          result (download/run-download manager download {:materialized? true
-                                                          :layout nil})]
+          result (download-supervisor/run-download manager download {:materialized? true
+                                                                     :layout nil})]
       (is (= :failed (:state result)))
       (is (= #{0} (:needed (:piece-state result)))))))
 
@@ -2125,11 +2152,11 @@
                           :state :downloading)
           _ (disk/write-piece port (:info-hash torrent) 0 piece-0)
           _ (disk/write-piece port (:info-hash torrent) 1 piece-1)
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port port
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        download)
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port port
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   download)
           on-disk (slurp (io/file output-dir "whole.bin"))]
       (is (= :completed (:state result)))
       (is (= (seq content) (seq (test-utils/to-bytes on-disk)))
@@ -2308,11 +2335,11 @@
                                           {:ok (peer/->Piece 1 0 (nth piece-bytes 1))}
                                           {:ok (peer/->Piece 2 0 (nth piece-bytes 2))}])})
           resumed (:ok (download/resume-download nil net failed))
-          result (deref (future (download/run-download {:network-port net
-                                                        :disk-port disk-port
-                                                        :time-port (mock-time/create)
-                                                        :config {}}
-                                                       resumed))
+          result (deref (future (download-supervisor/run-download {:network-port net
+                                                                   :disk-port disk-port
+                                                                   :time-port (mock-time/create)
+                                                                   :config {}}
+                                                                  resumed))
                         15000 :timed-out)
           read-file (fn [name]
                       (seq (java.nio.file.Files/readAllBytes
@@ -2346,11 +2373,11 @@
           disk (mock-disk/create {:output-write-error {:error :write-error
                                                        :message "disk full"}})
           _ (disk/write-piece disk (:info-hash torrent) 0 piece-0)
-          result (download/run-download {:network-port (mock-net/create)
-                                         :disk-port disk
-                                         :time-port (mock-time/create)
-                                         :config {}}
-                                        download)]
+          result (download-supervisor/run-download {:network-port (mock-net/create)
+                                                    :disk-port disk
+                                                    :time-port (mock-time/create)
+                                                    :config {}}
+                                                   download)]
       (is (= :failed (:state result)))
       (is (= :disk-error (get-in result [:error :reason])))
       (is (re-find #"^Failed to materialize verified pieces"
@@ -2411,11 +2438,11 @@
                                           {:ok (peer/->Unchoke)}
                                           {:ok (peer/->Piece 1 0 (nth piece-bytes 1))}])})
           resumed (:ok (download/resume-download nil net paused))
-          result (deref (future (download/run-download {:network-port net
-                                                        :disk-port disk-port
-                                                        :time-port (mock-time/create)
-                                                        :config {}}
-                                                       resumed))
+          result (deref (future (download-supervisor/run-download {:network-port net
+                                                                   :disk-port disk-port
+                                                                   :time-port (mock-time/create)
+                                                                   :config {}}
+                                                                  resumed))
                         15000 :timed-out)
           on-disk (seq (java.nio.file.Files/readAllBytes
                         (.toPath (io/file output-dir "resumed"))))]
@@ -2452,8 +2479,12 @@
                    :time-port (mock-time/create)
                    :config {}}
           plan (:plan (download/prepare-run manager started nil))
+          peer-supervisor (download-supervisor/peer-supervisor-for manager plan)
+          runtime {:peer-supervisor peer-supervisor
+                   :re-announcer (re-announcer/start
+                                  {:announce (fn [] {:ok #{}})})}
           result (try
-                   (download/run-subtree manager plan nil)
+                   (download/run-subtree manager plan nil runtime)
                    ::no-crash
                    (catch Exception error error))]
       (is (instance? Exception result)

@@ -36,10 +36,16 @@
     (get-in @responses [(:id peer) (:type message)] {:ok :sent}))
 
   (receive-message [_ _]
-    (or (when-let [receive-queue (:receive-responses config)]
-          (let [[queued-responses _] (swap-vals! receive-queue rest)]
-            (first queued-responses)))
-        {:ok {:type :keep-alive}}))
+    (let [response (or (when-let [receive-queue (:receive-responses config)]
+                         (let [[queued-responses _] (swap-vals! receive-queue rest)]
+                           (first queued-responses)))
+                       (get config :receive-default {:ok {:type :keep-alive}}))]
+      ;; A {:throw true} response makes the read fail the way a broken socket
+      ;; does: an exception, not an envelope. The peer worker treats that as
+      ;; a crash, so the crash path stays drivable.
+      (when (:throw response)
+        (throw (ex-info "mock receive failed" {})))
+      response))
 
   (receive-handshake [_ peer]
     (let [response (:handshake-response config)]
@@ -121,7 +127,11 @@
      or {:error ...} for receive-handshake
    - :receive-responses - atom holding a seq of {:ok ...} / {:error ...}
      returned one per receive-message call; falls back to keep-alive
-     once the queue is empty
+     once the queue is empty. A {:throw true} response throws instead of
+     returning, the way a broken socket does
+   - :receive-default - the response every read falls back to once the
+     queue is empty (default: a keep-alive); {:throw true} makes every
+     read fail like a broken socket
    - :on-send - (fn [peer message]) side effect run on every send-message
      call, so tests can observe effect timing (e.g. advance a mock clock)"
   ([]

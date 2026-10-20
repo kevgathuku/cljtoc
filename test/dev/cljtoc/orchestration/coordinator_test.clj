@@ -5,7 +5,8 @@
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.protocol.peer :as peer]
             [dev.cljtoc.protocol.peer-state :as peer-state]
-            [dev.cljtoc.orchestration.coordinator :as coordinator]))
+            [dev.cljtoc.orchestration.coordinator :as coordinator]
+            [dev.cljtoc.test-utils :as test-utils]))
 
 (def ^:private coordinator-source
   "Source text of the kernel, read from the working tree (lein runs from root)."
@@ -91,10 +92,40 @@
     (let [state (coordinator/initial-state {:piece-state (one-piece-state)} [])]
       (is (= [state []] (coordinator/on-message state {:address "ghost" :message {}} {}))))))
 
+(deftest add-pending-dials-specs-hold-generatively-test
+  (testing "the generative check holds over the pending-dial fdef"
+    (is (= {} (dev.cljtoc.test-utils/check-fdefs
+               ['dev.cljtoc.orchestration.coordinator/add-pending-dials]
+               100)))))
+
 (deftest no-test-check-require-test
   (testing "coordinator never requires test.check (it is :dev-only and absent from the uberjar)"
     (is (not (re-find #"test\.check" coordinator-source))
         "coordinator.clj must not require clojure.test.check.generators")))
+
+(deftest a-redial-disconnect-keeps-the-address-dialed-test
+  (testing "a peer that will be dialed again stays pending, so the swarm is not exhausted"
+    (let [download {:piece-state (one-piece-state)}
+          state (coordinator/initial-state download ["peer-a"])
+          [connected _] (coordinator/on-connected state {:address "peer-a"
+                                                         :peer-data :pd
+                                                         :peer-state {}})
+          [redialed effects] (coordinator/on-disconnected connected {:address "peer-a"
+                                                                     :redial true})]
+      (is (= [] effects))
+      (is (empty? (:active-peers redialed)))
+      (is (= #{"peer-a"} (:pending-dials redialed))
+          "the address stays dialed: the peer supervisor is about to dial it again")
+      (is (false? (coordinator/swarm-exhausted? redialed))
+          "the swarm is not exhausted while the redial is pending"))))
+
+(deftest add-pending-dials-counts-the-new-peers-test
+  (testing "the addresses the re-announcer found are dialed, so the swarm is not exhausted"
+    (let [state (coordinator/initial-state {:piece-state (one-piece-state)} ["peer-a"])
+          updated (coordinator/add-pending-dials state ["peer-b" "peer-c"])]
+      (is (= #{"peer-a" "peer-b" "peer-c"} (:pending-dials updated)))
+      (is (false? (coordinator/swarm-exhausted? updated))
+          "the swarm is not exhausted while the new peers are dialed"))))
 
 (deftest disconnect-accepts-address-only-event-test
   (testing "on-disconnected accepts events with only :address (refused dials carry no :peer-state)"

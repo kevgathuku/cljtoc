@@ -11,6 +11,7 @@
             [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.test-doubles.network :as mock-net]
+            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.test-doubles.time :as mock-time]
             [dev.cljtoc.test-utils :as test-utils]))
 
@@ -54,6 +55,184 @@
       (is (= :completed (:state result)))
       (is (= 1 (pieces/verified-count (:piece-state result)))))))
 
+(deftest a-crashed-peer-worker-is-restarted-test
+  (testing "a peer worker that crashes is restarted and the download still completes"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "crash-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "crash.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "crash")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The first read fails the way a broken socket does: an
+          ;; exception, not an envelope. The peer worker crashes on it,
+          ;; and the peer supervisor restarts that worker alone.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:throw true}
+                                          {:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :completed (:state result)))
+      (is (= 1 (pieces/verified-count (:piece-state result)))))))
+
+(deftest a-flapping-peer-is-dropped-when-its-budget-runs-out-test
+  (testing "a peer whose worker keeps crashing is dropped instead of restarted forever"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "flap-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "flap.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "flap")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; Every read fails, so the worker keeps crashing and the
+          ;; per-connection budget runs out. The trackers know nobody,
+          ;; so the re-announce cannot rescue the download either.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-default {:throw true}
+                :mock-peers []})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))
+          "the dropped peer left the swarm without peers")
+      (is (= 4 (count (mock-net/closed-peers net)))
+          "the initial worker plus the three restarts the budget allowed"))))
+
+(deftest the-unsupervised-run-asks-the-trackers-again-test
+  (testing "a run whose swarm runs dry asks the trackers before it gives up"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "dry-run-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "dry-run.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "dry-run")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The peer disconnects at once and the trackers know nobody.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:error :disconnected}])
+                :mock-peers []})
+          disk (mock-disk/create)
+          result (download-supervisor/run-download
+                  (test-utils/download-manager net disk)
+                  started)]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))
+          "the re-announce found nobody, so the download gives up"))))
+
+(deftest an-exhausted-swarm-re-announces-before-giving-up-test
+  (testing "a download whose peers ran dry asks the trackers again and carries on"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "reannounce-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "reannounce.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "reannounce")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The first peer disconnects at once; the trackers name a
+          ;; second one, and that one delivers the piece.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:error :disconnected}
+                                          {:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])
+                :mock-peers ["10.0.0.9:6882"]})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :completed (:state result))
+          "the re-announced peer delivered the piece")
+      (is (= 1 (pieces/verified-count (:piece-state result)))))))
+
+(deftest a-download-fails-only-after-the-re-announce-yields-nothing-test
+  (testing "the download gives up when the trackers name nobody"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "dry-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "dry.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "dry")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:error :disconnected}])
+                :mock-peers []})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))
+          "the re-announce found nobody, so the download gives up"))))
+
+(deftest a-stalled-download-is-restarted-by-the-watchdog-test
+  (testing "a download whose peers connect but never deliver is restarted, then fails on the budget"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "stall-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "stall.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "stall")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The peer connects and answers, but never delivers a block:
+          ;; the download stands still and the watchdog fires.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}})
+          disk (mock-disk/create)
+          ;; The real clock: the watchdog's deadline is measured on it,
+          ;; and a mock clock that never moves would never stall.
+          manager (assoc (test-utils/download-manager net disk)
+                         :time-port (time/->RealTimePort))
+          result (download-supervisor/supervise-download
+                  manager
+                  started
+                  {:watchdog {:deadline-ms 100 :poll-ms 10}})]
+      (is (= :failed (:state result)))
+      (is (= :restart-budget-exhausted (get-in result [:error :reason]))
+          "the watchdog kept restarting the subtree until the budget ran out")
+      (is (= 4 (count (mock-net/closed-peers net)))
+          "the initial attempt plus the three restarts the budget allowed"))))
+
 (deftest supervise-download-restarts-a-crashed-subtree-test
   (testing "a crashed subtree runs again while the budget holds"
     (let [calls (atom 0)
@@ -63,7 +242,7 @@
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan _publish]
+                   :run (fn [_manager _plan _publish _peer-supervisor]
                           (swap! calls inc)
                           (if (= 1 @calls)
                             (throw (ex-info "coordinator crash" {}))
@@ -85,10 +264,10 @@
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager plan publish]
+                   :run (fn [_manager plan publish _peer-supervisor]
                           (swap! plans conj (:download plan))
                           (if (= 1 (count @plans))
-                            (do (publish progressed)
+                            (do (publish {:download progressed})
                                 (throw (ex-info "coordinator crash" {})))
                             {:id "supervised" :state :completed}))})]
       (is (= :completed (:state result)))
@@ -108,7 +287,7 @@
                   {:budget {:limit 2 :window-ms 60000}
                    :prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan _publish]
+                   :run (fn [_manager _plan _publish _peer-supervisor]
                           (swap! calls inc)
                           (throw (ex-info "coordinator crash" {})))})]
       (is (= :failed (:state result)))
@@ -139,7 +318,7 @@
                   {:prepare (fn [_manager _record _opts]
                               (swap! prepares inc)
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan _publish]
+                   :run (fn [_manager _plan _publish _peer-supervisor]
                           (swap! runs inc)
                           (if (= 1 @runs)
                             (throw (ex-info "coordinator crash" {}))
@@ -163,10 +342,10 @@
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager plan publish]
+                   :run (fn [_manager plan publish _peer-supervisor]
                           (swap! plans conj (:download plan))
                           (if (= 1 (count @plans))
-                            (do (publish stranded)
+                            (do (publish {:download stranded})
                                 (throw (ex-info "coordinator crash" {})))
                             {:id "supervised" :state :completed}))})]
       (is (= :completed (:state result)))
@@ -191,8 +370,8 @@
                   {:budget {:limit 1 :window-ms 60000}
                    :prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan publish]
-                          (publish progressed)
+                   :run (fn [_manager _plan publish _peer-supervisor]
+                          (publish {:download progressed})
                           (throw (ex-info "coordinator crash" {})))})]
       (is (= :failed (:state result)))
       (is (= :restart-budget-exhausted (get-in result [:error :reason])))
@@ -209,8 +388,8 @@
                   {:on-progress #(swap! seen conj %)
                    :prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan publish]
-                          (publish (assoc record :state :downloading))
+                   :run (fn [_manager _plan publish _peer-supervisor]
+                          (publish {:download (assoc record :state :downloading)})
                           {:id "supervised" :state :completed})})]
       (is (= :completed (:state result)))
       (is (= 1 (count @seen)))
