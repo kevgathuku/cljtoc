@@ -16,7 +16,6 @@
    under the same rest-for-one policy."
   (:require [clojure.spec.alpha :as s]
             [dev.cljtoc.orchestration.download :as download]
-            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.supervision.restart :as restart]))
 
 (def default-budget
@@ -26,15 +25,6 @@
    flapping."
   {:limit 3
    :window-ms 60000})
-
-(defn- now-ms
-  "The current time in milliseconds, or 0 when the manager carries no
-   clock: without one the restart window never slides, and the budget
-   reads as a plain counter."
-  [manager]
-  (if-let [time-port (:time-port manager)]
-    (long (time/now time-port))
-    0))
 
 (defn- budget-exhausted-record
   "The failed record a download gets when its subtree crashed more often
@@ -80,7 +70,7 @@
             result (restart/supervise child
                                       {:limit (:limit budget)
                                        :window-ms (:window-ms budget)
-                                       :now (fn [] (now-ms manager))})]
+                                       :now (fn [] (restart/now-ms (:time-port manager)))})]
         (if (contains? result :ok)
           (:ok result)
           (budget-exhausted-record download-record

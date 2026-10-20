@@ -12,7 +12,8 @@
    StackOverflowError — are not crashes and are left to propagate: a
    broken JVM is not a flaky child, and folding it into a restart would
    hide it."
-  (:require [clojure.spec.alpha :as s]))
+  (:require [clojure.spec.alpha :as s]
+            [dev.cljtoc.ports.time :as time]))
 
 (s/def ::limit pos-int?)
 
@@ -61,6 +62,15 @@
                :window-ms ::window-ms
                :now-ms nat-int?)
   :ret boolean?)
+
+(defn now-ms
+  "The current time in milliseconds, or 0 when there is no clock: without
+   one the restart window never slides, and the budget reads as a plain
+   counter."
+  [time-port]
+  (if (some? time-port)
+    (long (time/now time-port))
+    0))
 
 (defn supervise
   "Run `child` and restart it when it crashes, while the budget holds.
