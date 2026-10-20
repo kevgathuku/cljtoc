@@ -42,7 +42,7 @@ A peer's network location: a host plus a port, written canonically as `host:port
 _Avoid_: peer string, endpoint, peer ID
 
 **Swarm exhaustion**:
-No live peer connections, no dials still in flight, and pieces still incomplete — the counter-based condition under which the coordinator fails a download for lack of peers. A closed event channel (every peer worker exited) fails the download the same way. Connected-but-choking peers and tracker re-announce are deliberately outside this definition. Supervisor exhaustion (per-supervisor restart intensity exceeded) is also a download-failure path.
+No live peer connections, no dials still in flight, and pieces still incomplete — the counter-based condition under which the coordinator fails a download for lack of peers. A closed event channel fails the download the same way; in a run the peer supervisor closes it when it is stopped, and it stays open after every worker exits because the re-announcer may dial more peers. Connected-but-choking peers and tracker re-announce are deliberately outside this definition. Supervisor exhaustion (per-supervisor restart intensity exceeded) is also a download-failure path.
 
 ## Lifecycle and supervision
 
@@ -72,7 +72,7 @@ _Avoid_: using "session" for a single `Download` (a `Download` is one torrent's 
 A child of the download supervisor that issues tracker announces on swarm exhaustion (issue #22). The peers the trackers name are dialed and the download carries on; the download gives up only when the trackers name nobody. A re-announce failure triggers rest-for-one restart of the coordinator subtree.
 
 **Watchdog**:
-A child of the download supervisor that detects "connected but choking forever" (issue #23): the blocks the download receives and the peers it is connected to stop moving. Firing the watchdog crashes the coordinator subtree, so the download supervisor restarts it — rest-for-one, bounded by its restart budget. The deadline is fifteen seconds, well past a healthy peer's handshake.
+A child of the download supervisor that detects "connected but choking forever" (issue #23): the blocks the download receives and the peers it is connected to stop moving. Firing the watchdog crashes the coordinator subtree, so the download supervisor restarts it — rest-for-one, bounded by its restart budget. The deadline is a minute, which outlasts two optimistic-unchoke rotations: a fresh downloader has no pieces to offer, so the peers usually unchoke it only through optimistic unchoke, about every 30 seconds. The download supervisor's restart window is five minutes, so the watchdog's restarts still run out of budget.
 
 ## Peer exchange
 

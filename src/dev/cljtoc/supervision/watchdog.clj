@@ -16,11 +16,19 @@
 (def default-stall-deadline-ms
   "How long a download may stand still before the watchdog fires.
 
-   Fifteen seconds is well past the handshake and the first unchoke of
-   a healthy peer, and it fits inside the download supervisor's restart
-   window: a download that never moves runs out of budget and fails
-   instead of being restarted forever."
-  15000)
+   A minute covers two optimistic-unchoke rotations: a fresh downloader
+   has no pieces to offer, so the peers usually unchoke it only through
+   optimistic unchoke, which rotates about every 30 seconds. A shorter
+   deadline would fire on a healthy download whose peers have not
+   unchoked it yet.
+
+   The deadline has to fit inside the download supervisor's restart
+   window too, or a download that never moves never runs out of budget:
+   the window holds ceil(window/deadline) - 1 restarts, so the budget
+   only gives up when the deadline is at most a quarter of the window.
+   Both numbers live in one place (`restart/default-budget` and this
+   value) and they are chosen together."
+  60000)
 
 (def default-poll-ms
   "How often the watchdog looks when the download stands still."
@@ -30,15 +38,31 @@
 
 (s/def ::deadline-ms pos-int?)
 
-(defn progress-marker
-  "The value that changes when the download makes progress: the blocks it
-   received and the peers it is connected to.
+;; The options the watchdog takes. The specs are declared before the fdef
+;; that references them, because the spec registry resolves at load time.
+(s/def ::state any?)
 
-   A peer that connects changes the marker too, so the handshake is not
-   counted as a stall: the watchdog waits for the blocks of a peer that
-   is already there."
+(s/def ::now (s/fspec :args [] :ret nat-int?))
+
+(s/def ::fire fn?)
+
+(defn progress-marker
+  "The value that changes when the download makes progress.
+
+   Three signals, each one moving on real progress:
+   the blocks the download received, the pieces it verified, and the
+   peers it is connected to.
+
+   The verified pieces matter: the buffered blocks are not monotonic.
+   Verifying a piece clears that peer's buffer, so a torrent whose
+   pieces fit in one block would otherwise show `[0 n]` while it
+   verifies steadily, and the watchdog would fire on a healthy
+   download. A peer that connects also changes the marker, so the
+   handshake is not counted as a stall: the watchdog waits for the
+   blocks of a peer that is already there."
   [state]
-  [(reduce + 0 (map count (vals (:blocks-received state))))
+  [(+ (reduce + 0 (map count (vals (:blocks-received state))))
+      (count (get-in state [:download :piece-state :verified] #{})))
    (count (:active-peers state))])
 
 (s/fdef progress-marker

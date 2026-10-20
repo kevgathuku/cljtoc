@@ -11,6 +11,14 @@
             [dev.cljtoc.coordination.peer-connection :as peer-connection]
             [dev.cljtoc.ports.network :as net]))
 
+(defn- report!
+  "Put a peer event on the channel. Returns false when the channel is
+   closed: the peer supervisor stopped, so the worker reports nothing
+   more and closes its socket. A put released by close! returns nil,
+   which is false too."
+  [events-ch event]
+  (async/>!! events-ch event))
+
 (defn run-peer
   "Connect to peer, perform handshake, then enter read loop.
    All events are put onto events-ch for the coordinator.
@@ -44,34 +52,42 @@
                                   :reason (:message connect-result)})
             {:exit :clean})
           (let [{:keys [peer-data peer-state]} (:ok connect-result)]
-            (try
-              ;; Notify coordinator of successful connection
-              (async/>!! events-ch {:type :peer-connected
-                                    :address address
-                                    :peer-data peer-data
-                                    :peer-state peer-state})
-              ;; Enter read loop
-              (loop []
-                (let [msg-result (net/receive-message network-port peer-data)]
-                  (if (or (nil? msg-result) (:error msg-result))
-                    (do
-                      (peer-connection/close network-port peer-data)
-                      (async/>!! events-ch {:type :peer-disconnected
+            ;; A closed channel means the supervisor stopped: nobody
+            ;; listens, so the worker closes its socket and goes.
+            (if-not (report! events-ch {:type :peer-connected
+                                        :address address
+                                        :peer-data peer-data
+                                        :peer-state peer-state})
+              (do (peer-connection/close network-port peer-data)
+                  {:exit :clean})
+              (try
+                ;; Enter read loop
+                (loop []
+                  (let [msg-result (net/receive-message network-port peer-data)]
+                    (cond
+                      (or (nil? msg-result) (:error msg-result))
+                      (do
+                        (peer-connection/close network-port peer-data)
+                        (report! events-ch {:type :peer-disconnected
                                             :address address
                                             :reason (or (:message msg-result) "connection closed")})
-                      {:exit :clean})
-                    (do
-                      (async/>!! events-ch {:type :peer-message
-                                            :address address
-                                            :message (:ok msg-result)})
-                      (recur)))))
-              (catch Exception e
-                ;; An unexpected failure: close the connection and report
-                ;; the crash. The supervisor decides whether the worker is
-                ;; restarted, and it is the one that tells the coordinator
-                ;; the peer is gone.
-                (peer-connection/close network-port peer-data)
-                {:exit :crash :error e})))))
+                        {:exit :clean})
+
+                      (report! events-ch {:type :peer-message
+                                          :address address
+                                          :message (:ok msg-result)})
+                      (recur)
+
+                      :else
+                      (do (peer-connection/close network-port peer-data)
+                          {:exit :clean}))))
+                (catch Exception e
+                  ;; An unexpected failure: close the connection and report
+                  ;; the crash. The supervisor decides whether the worker is
+                  ;; restarted, and it is the one that tells the coordinator
+                  ;; the peer is gone.
+                  (peer-connection/close network-port peer-data)
+                  {:exit :crash :error e}))))))
       (catch Exception e
         {:exit :crash :error e}))))
 

@@ -16,7 +16,8 @@
 
    Per ADR-0011 the supervisor owns the event channel: the workers get
    the write end, the coordinator gets the read end, and the supervisor
-   closes the channel once no worker is left."
+   closes the channel when it is stopped. The channel stays open after
+   every worker exits, because the re-announcer may dial more peers."
   (:require [clojure.core.async :as async]
             [clojure.spec.alpha :as s]
             [dev.cljtoc.domain.backoff :as backoff]
@@ -27,6 +28,10 @@
 (s/def ::outcome (s/keys :req-un [::exit]))
 
 (s/def ::restart-time nat-int?)
+
+(s/def ::limit pos-int?)
+
+(s/def ::window-ms pos-int?)
 
 (s/def ::budget (s/keys :req-un [::limit ::window-ms]))
 
@@ -44,12 +49,17 @@
   {:limit 3
    :window-ms 60000})
 
-(def default-restart-delay
+(defn default-restart-delay
   "The wait before a crashed peer is restarted: an exponential backoff
    from the shared pure module, so a peer that keeps crashing does not
    spin the supervisor. No jitter yet — the manager carries no
    randomness port, and a deterministic delay already breaks the loop."
-  (fn [attempt] (backoff/exponential-backoff attempt 200 3200)))
+  [attempt]
+  (backoff/exponential-backoff attempt 200 3200))
+
+(s/fdef default-restart-delay
+  :args (s/cat :attempt nat-int?)
+  :ret pos-int?)
 
 (defn decide
   "What the supervisor does about a worker that just finished.
@@ -182,8 +192,10 @@
    address may be restarted and carries the clock the window slides on
    (:limit, :window-ms, :now). `delay-fn` is the wait before a restart.
 
-   Returns {:events-ch ch :stop (fn [])}: the channel the coordinator
-   reads, and the stop fn that ends the supervisor."
+   Returns {:events-ch ch :dial (fn [addresses]) :stop (fn [])}: the
+   channel the coordinator reads, the dial for more addresses, and the
+   stop fn that ends the supervisor and closes the channel. The channel
+   stays open until the stop, so a re-announce can still dial peers."
   [{:keys [spawn addresses budget delay-fn]}]
   (let [budget (merge {:now (fn [] 0)} default-connection-budget budget)
         events-ch (async/chan 256)
@@ -213,13 +225,28 @@
     {:events-ch events-ch
      ;; Dial more addresses: the re-announcer found peers the swarm had
      ;; not asked for, and the supervisor owns the dialing.
+     ;;
+     ;; This blocks behind a restart delay: the monitor sleeps a restarted
+     ;; peer's backoff inside the same loop that reads this channel, so a
+     ;; dial waits at most one delay (3.2s at the cap). The coordinator
+     ;; waits on its event channel meanwhile, which is what it does on a
+     ;; dry swarm anyway.
      :dial (fn [addresses]
              (async/>!! dial-ch (vec addresses)))
      ;; offer! never blocks: stopping a supervisor twice must not hang
      ;; the caller on a channel nobody reads any more.
+     ;;
+     ;; The drain is the point: a closed channel leaves a pending put
+     ;; waiting forever, and nobody reads the channel any more. Taking
+     ;; the buffered events completes those puts, so the workers see
+     ;; the closed channel and exit instead of parking with an open
+     ;; socket.
      :stop (fn []
              (async/offer! stop-ch :stop)
-             (async/<!! monitor))}))
+             (async/<!! monitor)
+             (async/<!! (async/go-loop []
+                          (when (some? (async/<! events-ch))
+                            (recur)))))}))
 
 ;; Excluded from stest/check: the supervisor spawns threads and channels,
 ;; and no generator can conjure a worker seam or a channel to watch.

@@ -99,9 +99,38 @@
       (is (= :restart (:action decision))
           "the crashes fell out of the window, so the budget is fresh again"))))
 
+(deftest decide-pins-the-budget-edges-test
+  (testing "an empty history always allows a restart"
+    (is (= :restart (:action (peer-supervisor/decide {:exit :crash}
+                                                     []
+                                                     {:limit 1 :window-ms 60000}
+                                                     0)))))
+
+  (testing "the tightest budget allows one restart and no more"
+    (is (= :restart (:action (peer-supervisor/decide {:exit :crash}
+                                                     []
+                                                     {:limit 1 :window-ms 60000}
+                                                     0))))
+    (is (= :drop (:action (peer-supervisor/decide {:exit :crash}
+                                                  [100]
+                                                  {:limit 1 :window-ms 60000}
+                                                  1000)))))
+
+  (testing "a crash older than the window is never charged"
+    (is (= :restart (:action (peer-supervisor/decide {:exit :crash}
+                                                     [1]
+                                                     {:limit 1 :window-ms 1000}
+                                                     5000)))))
+
+  (testing "no restart is allowed at all when the limit is zero"
+    (is (= :drop (:action (peer-supervisor/decide {:exit :crash}
+                                                  []
+                                                  {:limit 0 :window-ms 60000}
+                                                  0))))))
+
 (deftest decide-specs-hold-generatively-test
   (testing "the generative check holds over the decision's fdef"
-    (is (= {} (test-utils/check-fdefs ['peer-supervisor/decide] 100)))))
+    (is (= {} (test-utils/check-fdefs [`peer-supervisor/decide] 100)))))
 
 (deftest supervisor-restarts-a-crashed-worker-alone-test
   (testing "a crashed worker is restarted while the other workers keep running"
@@ -165,6 +194,35 @@
         (Thread/sleep 100)
         (is (= 2 (count @spawns))
             "the address that could not be started was not dialed again")
+        (finally
+          ((:stop supervisor)))))))
+
+(deftest stopping-the-supervisor-ends-the-workers-test
+  (testing "the stop drains the channel, so a worker parked on a full buffer exits"
+    (let [exited (atom false)
+          options {:spawn (fn [events-ch _address]
+                            ;; A worker that reports and keeps reporting,
+                            ;; the way the real one does, until the channel
+                            ;; closes under it.
+                            (let [done (async/chan 1)]
+                              (async/thread
+                                (loop []
+                                  (when (async/>!! events-ch
+                                                   {:type :peer-message
+                                                    :address "a:1"
+                                                    :message {}})
+                                    (recur)))
+                                (reset! exited true)
+                                (async/>!! done {:exit :clean}))
+                              done))
+                   :addresses ["a:1"]}
+          supervisor (peer-supervisor/start options)]
+      (try
+        ;; Let the worker flood the channel until its put parks.
+        (Thread/sleep 200)
+        ((:stop supervisor))
+        (is (wait-for (fn [] @exited) 2000)
+            "the worker exited instead of parking on a full buffer")
         (finally
           ((:stop supervisor)))))))
 

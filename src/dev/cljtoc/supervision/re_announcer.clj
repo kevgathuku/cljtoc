@@ -17,10 +17,14 @@
 (s/def ::peers (s/coll-of string?))
 
 (def default-max-announces
-  "How often the re-announcer asks the trackers before it gives up.
+  "How often one re-announcer asks the trackers before it gives up.
 
-   The trackers may keep naming peers the swarm cannot reach; without a
-   bound the download would ask forever and never give up either."
+   The trackers may keep naming peers the swarm cannot reach, and the
+   peers the swarm cannot reach disconnect, so the download would ask
+   forever without a bound. This bound is per attempt: the download
+   supervisor starts a fresh re-announcer on every restart, so the
+   number of attempts is bounded by its restart budget, and the total
+   number of asks is the product of the two."
   3)
 
 (s/def ::announce
