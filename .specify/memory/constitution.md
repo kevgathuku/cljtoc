@@ -53,6 +53,7 @@ in pure functions at the trust boundary before crossing an effect port:
 - Path and name components MUST be confinement-checked before reaching the filesystem
 - Declared sizes MUST bound what is written, so stale state cannot survive a write
 - Validation failures MUST return `{:error ...}` maps, never throw, per ADR-0007
+- A rule enforced from two entry points MUST live in the function its callers share, so no caller can bypass it
 
 **Rationale**: Explicit effect boundaries enable testing without actual I/O, deterministic integration tests with simulated time/network/disk, and clear ownership of failure modes. Validating at the trust boundary keeps hostile input from ever reaching an effect, and keeps the check itself pure and unit-testable.
 
