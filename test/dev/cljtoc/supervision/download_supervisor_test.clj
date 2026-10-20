@@ -27,13 +27,6 @@
            :state :downloading
            :peers #{{:address "10.0.0.9:6881"}})))
 
-(defn- manager
-  [network-port disk-port]
-  {:network-port network-port
-   :disk-port disk-port
-   :time-port (mock-time/create)
-   :config {}})
-
 (deftest supervise-download-runs-the-download-test
   (testing "the real path runs the download to completion"
     (let [piece-0-bytes (test-utils/to-bytes "abcd")
@@ -55,7 +48,7 @@
                                           {:ok (peer/->Piece 0 0 piece-0-bytes)}])})
           disk (mock-disk/create)
           result (download-supervisor/supervise-download
-                  (manager net disk)
+                  (test-utils/download-manager net disk)
                   started
                   {})]
       (is (= :completed (:state result)))
@@ -66,7 +59,7 @@
     (let [calls (atom 0)
           record (download-record)
           result (download-supervisor/supervise-download
-                  (manager (mock-net/create) (mock-disk/create))
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
@@ -88,7 +81,7 @@
                                           :in-flight #{}
                                           :verified #{0}})
           result (download-supervisor/supervise-download
-                  (manager (mock-net/create) (mock-disk/create))
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
@@ -110,7 +103,7 @@
     (let [calls (atom 0)
           record (download-record)
           result (download-supervisor/supervise-download
-                  (manager (mock-net/create) (mock-disk/create))
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
                   record
                   {:budget {:limit 2 :window-ms 60000}
                    :prepare (fn [_manager _record _opts]
@@ -126,7 +119,7 @@
   (testing "a download that is already done never runs a subtree"
     (let [record (download-record)
           result (download-supervisor/supervise-download
-                  (manager (mock-net/create) (mock-disk/create))
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :finished :record {:id "supervised"
@@ -141,7 +134,7 @@
           runs (atom 0)
           record (download-record)
           result (download-supervisor/supervise-download
-                  (manager (mock-net/create) (mock-disk/create))
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
                   record
                   {:prepare (fn [_manager _record _opts]
                               (swap! prepares inc)
@@ -155,3 +148,53 @@
       (is (= 1 @prepares)
           "preparing again would resolve the output layout against the filesystem twice")
       (is (= 2 @runs)))))
+
+(deftest supervise-download-requeues-the-stranded-pieces-on-a-restart-test
+  (testing "a restart asks for the pieces the crashed attempt left in flight"
+    (let [plans (atom [])
+          record (download-record)
+          stranded (assoc record
+                          :piece-state {:total-pieces 1
+                                        :needed #{}
+                                        :in-flight #{0}
+                                        :verified #{}})
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
+                  record
+                  {:prepare (fn [_manager _record _opts]
+                              {:status :ready :plan {:download record}})
+                   :run (fn [_manager plan publish]
+                          (swap! plans conj (:download plan))
+                          (if (= 1 (count @plans))
+                            (do (publish stranded)
+                                (throw (ex-info "coordinator crash" {})))
+                            {:id "supervised" :state :completed}))})]
+      (is (= :completed (:state result)))
+      (is (empty? (:in-flight (:piece-state (first @plans))))
+          "the first attempt ran the prepared record")
+      (is (= #{0} (:needed (:piece-state (second @plans))))
+          "the restart asks for the piece the crashed attempt left in flight")
+      (is (empty? (:in-flight (:piece-state (second @plans))))
+          "nothing is left in flight, so the restarted swarm can ask for it"))))
+
+(deftest supervise-download-keeps-the-verified-pieces-when-the-budget-runs-out-test
+  (testing "a download that crashed past its budget keeps the pieces it verified"
+    (let [record (download-record)
+          progressed (assoc record
+                            :piece-state {:total-pieces 1
+                                          :needed #{}
+                                          :in-flight #{}
+                                          :verified #{0}})
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
+                  record
+                  {:budget {:limit 1 :window-ms 60000}
+                   :prepare (fn [_manager _record _opts]
+                              {:status :ready :plan {:download record}})
+                   :run (fn [_manager _plan publish]
+                          (publish progressed)
+                          (throw (ex-info "coordinator crash" {})))})]
+      (is (= :failed (:state result)))
+      (is (= :restart-budget-exhausted (get-in result [:error :reason])))
+      (is (= 1 (pieces/verified-count (:piece-state result)))
+          "the verified piece survives the supervisor's give-up"))))

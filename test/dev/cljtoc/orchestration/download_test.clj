@@ -2423,3 +2423,40 @@
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
       (is (= (seq (test-utils/to-bytes "abcdefgh")) on-disk)))))
+
+(deftest run-subtree-closes-its-peers-when-the-coordinator-crashes-test
+  (testing "a crashed coordinator closes the peer connections it held"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "crash-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "crash.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "crash")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])})
+          ;; The piece write throws: an unexpected error in a port
+          ;; implementation, which the crash-only design treats as a
+          ;; crash rather than an envelope.
+          disk (mock-disk/create {:write-throws true})
+          manager {:network-port net
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          plan (:plan (download/prepare-run manager started nil))
+          result (try
+                   (download/run-subtree manager plan nil)
+                   ::no-crash
+                   (catch Exception error error))]
+      (is (instance? Exception result)
+          "the crash travels to the supervisor instead of failing the download")
+      (is (= ["10.0.0.9:6881"] (map :address (mock-net/closed-peers net)))
+          "the restart opens new connections, so the crashed attempt's are closed"))))

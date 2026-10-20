@@ -531,6 +531,18 @@
           piece-state
           (:in-flight piece-state)))
 
+(defn requeue-stranded
+  "The download record with every in-flight piece back in :needed.
+
+   A run that died mid-piece left that piece in flight: no peer is
+   requesting it and nothing will verify it, so the next attempt would
+   skip it forever and the download could never complete. A restarted
+   subtree requeues what the crashed attempt stranded, exactly as a
+   resumed download does."
+  [download-record]
+  (assoc download-record
+         :piece-state (requeue-stranded-pieces (:piece-state download-record))))
+
 (declare materialize-verified-pieces)
 
 (defn- reconcile-verified-pieces
@@ -812,6 +824,12 @@
     (disk/write-prepared-piece disk-port prepared output-dir piece-index bytes)
     (disk/write-output-piece disk-port layout output-dir piece-index bytes)))
 
+(defn- close-peers
+  "Close every peer connection a coordinator state holds."
+  [state network-port]
+  (doseq [[_ peer-info] (:active-peers state)]
+    (network/close-peer network-port (:peer-data peer-info))))
+
 (defn- perform-effects!
   "Deliver planned effects at the loop edge: block-request sends go out
    over the network port, verified pieces go to the piece cache and the
@@ -830,11 +848,12 @@
          [effect & rest-effects] effects]
     (if (nil? effect)
       (do
-        ;; The supervisor seam: hand the record to whoever supervises this
-        ;; run, so a restarted subtree resumes from the pieces already
-        ;; verified instead of re-fetching them.
+        ;; The supervisor seam: hand the coordinator state to whoever
+        ;; supervises this run, so a restarted subtree resumes from the
+        ;; pieces already verified and closes the peers the crashed
+        ;; attempt opened.
         (when-let [publish (:publish env)]
-          (publish (:download state)))
+          (publish state))
         [state :ok])
       (let [{:keys [ports conn-stats output-layout prepared-layout]} env
             {:keys [network-port disk-port time-port]} ports]
@@ -963,8 +982,7 @@
         (do
           (println)
           (println "  Download complete!")
-          (doseq [[_ peer-info] (:active-peers state)]
-            (network/close-peer network-port (:peer-data peer-info)))
+          (close-peers state network-port)
           (evict-completed-cache (:disk-port ports)
                                  (complete-download time-port download)))
 
@@ -1264,6 +1282,10 @@
                   :prepared prepared
                   :peer-addresses peer-addresses}})))))
 
+(s/fdef prepare-run
+  :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))
+  :ret map?)
+
 (defn run-subtree
   "Run the download's child subtree: dial the capped peers and drive the
    coordinator until the download reaches a terminal state. Returns the
@@ -1275,7 +1297,10 @@
    caller that runs the subtree once passes nil.
 
    The subtree owns its event channel: it creates the channel and hands
-   it to the peer workers, whose exit closes it."
+   it to the peer workers, whose exit closes it. It also owns its peer
+   connections: a crashed coordinator leaves them open, and the restart
+   opens new ones to the same peers, so the crash closes them before it
+   travels to the supervisor."
   [manager plan publish]
   (let [{:keys [network-port disk-port time-port]} manager
         {:keys [download layout prepared peer-addresses]} plan
@@ -1291,7 +1316,13 @@
         peer-id (network/peer-id network-port)
         events-ch (async/chan 256)
         total-attempted (count peer-addresses)
-        conn-stats (atom {:connected 0 :failed 0})]
+        conn-stats (atom {:connected 0 :failed 0})
+        ;; The last coordinator state the run published: it carries the
+        ;; peer connections a crash leaves open.
+        last-state (atom nil)
+        publish-state (fn [state]
+                        (reset! last-state state)
+                        (when publish (publish (:download state))))]
 
     (println (str "  Connecting to " total-attempted " peers..."))
     (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
@@ -1305,20 +1336,24 @@
       (watch-workers! worker-chs events-ch))
 
     ;; Hand the event channel to the coordinator loop
-    (run-event-loop (coordinator/initial-state download peer-addresses)
-                    events-ch
-                    {:message-ctx {:piece-hashes piece-hashes
-                                   :piece-length piece-length
-                                   :total-length total-length
-                                   :total-pieces total-pieces}
-                     :output-layout layout
-                     :prepared-layout prepared
-                     :ports {:network-port network-port
-                             :disk-port disk-port
-                             :time-port time-port}
-                     :conn-stats conn-stats
-                     :total-attempted total-attempted
-                     :publish publish})))
+    (try
+      (run-event-loop (coordinator/initial-state download peer-addresses)
+                      events-ch
+                      {:message-ctx {:piece-hashes piece-hashes
+                                     :piece-length piece-length
+                                     :total-length total-length
+                                     :total-pieces total-pieces}
+                       :output-layout layout
+                       :prepared-layout prepared
+                       :ports {:network-port network-port
+                               :disk-port disk-port
+                               :time-port time-port}
+                       :conn-stats conn-stats
+                       :total-attempted total-attempted
+                       :publish publish-state})
+      (catch Exception error
+        (close-peers @last-state network-port)
+        (throw error)))))
 
 (s/fdef run-subtree
   :args (s/cat :manager ::download-manager :plan map?
@@ -1346,10 +1381,6 @@
      (if (= :ready (:status outcome))
        (run-subtree manager (:plan outcome) nil)
        (:record outcome)))))
-
-(s/fdef prepare-run
-  :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))
-  :ret map?)
 
 (s/fdef run-download
   :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))

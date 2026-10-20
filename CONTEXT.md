@@ -55,7 +55,7 @@ The component responsible for a worker's lifecycle: detecting exits or crashes, 
 _Avoid_: parent thread, retry loop, watchdog (lives inside the supervisor)
 
 **Restart budget**:
-The sliding-window bound on how often a supervisor may restart a child. Per-connection at the peer supervisor (each handshake attempt has its own budget keyed by peer address and pruned by a supervisor-wide timer); per-supervisor intensity at the download supervisor (the whole coordinator subtree, charged only on coordinator-level failures, not on every peer restart).
+The sliding-window bound on how often a supervisor may restart a child. Per-connection at the peer supervisor (each handshake attempt is its own budget window keyed by peer address and pruned by a supervisor-wide timer); per-supervisor intensity at the download supervisor (the whole coordinator subtree, charged only on coordinator-level failures, not on every peer restart) and at the session supervisor above it (a download supervisor that crashed outright). Running out of budget is the give-up point: the download fails with `:restart-budget-exhausted` instead of being restarted again.
 _Avoid_: retry counter, max retries, attempt limit
 
 **Clean shutdown**:
@@ -65,7 +65,8 @@ A SIGINT-triggered orderly stop: peer connections close, in-progress state persi
 One long-lived session process that owns every torrent across CLI invocations: it loads all torrents plus resume state at start, accepts add/remove while running, and persists on a timer and on SIGTERM. A CLI invocation is a thin client against the running daemon, never a session itself. Transmission equivalent: `tr_session` plus `transmission-daemon`.
 
 **Session**:
-The daemon's in-memory ownership of N downloads: one download-supervisor subtree per torrent under a session supervisor, sharing one peer port, peer id, bandwidth, and queue instance. The current `orchestration.session` record (one map per blocking CLI call) is the stepping stone toward this, not the end state. See [ADR-0012](docs/adr/0012-daemon-session.md).
+One run of the client that owns several downloads: it starts every requested torrent together and keeps a failed start from taking the others down. The running belongs to the session supervisor, which gives each download its own thread and one download-supervisor subtree per torrent, so one flaky torrent never restarts its siblings. The daemon's session is the same idea made long-lived: one process owns N torrents across CLI invocations, sharing one peer port, peer id, bandwidth, and queue instance; the current `orchestration.session` record (one map per blocking CLI call) is the stepping stone toward that, not the end state. See [ADR-0012](docs/adr/0012-daemon-session.md).
+_Avoid_: using "session" for a single `Download` (a `Download` is one torrent's job; a `Session` is the set of them).
 
 **Re-announcer**:
 A child of the download supervisor that issues tracker announces on swarm exhaustion (issue #22). A re-announce failure triggers rest-for-one restart of the coordinator subtree.
@@ -107,6 +108,3 @@ One single-torrent download job: torrent description, piece state, peer connecti
 **Download progress**:
 A point-in-time snapshot of a download's completion, transfer totals, rate, and connected-peer count.
 
-**Session**:
-One run of the client that owns several downloads: it starts every requested torrent together and keeps a failed start from taking the others down. The running belongs to the session supervisor, which gives each download its own thread. In the blocking CLI the session lives for a single command; a long-lived, queryable session is the daemon's job.
-_Avoid_: using "session" for a single `Download` (a `Download` is one torrent's job; a `Session` is the set of them).

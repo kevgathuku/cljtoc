@@ -8,15 +8,7 @@
             [dev.cljtoc.orchestration.session :as session]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.test-doubles.network :as mock-net]
-            [dev.cljtoc.test-doubles.time :as mock-time]
             [dev.cljtoc.test-utils :as test-utils]))
-
-(defn- manager
-  [network-port disk-port]
-  {:network-port network-port
-   :disk-port disk-port
-   :time-port (mock-time/create)
-   :config {}})
 
 (deftest start-torrents-starts-every-path-and-reports-failures-test
   (testing "two torrents become two downloads; a bad path is reported, not fatal"
@@ -26,7 +18,7 @@
                                 "/b.torrent" {:info-hash (byte-array 20)
                                               :info {:pieces ["h1" "h2"]}}}})
           net (mock-net/create)
-          started (session/start-torrents (session/session (manager net disk))
+          started (session/start-torrents (session/session (test-utils/download-manager net disk))
                                           ["/a.torrent" "/missing.torrent" "/b.torrent"]
                                           "/out")]
       (is (= ["a" "b"] (map :id (session/downloads started))))
@@ -42,7 +34,7 @@
                                 "/two/movie.torrent" {:info-hash (byte-array 20)
                                                       :info {:pieces ["h1"]}}}})
           net (mock-net/create)
-          started (session/start-torrents (session/session (manager net disk))
+          started (session/start-torrents (session/session (test-utils/download-manager net disk))
                                           ["/one/movie.torrent" "/two/movie.torrent"]
                                           "/out")]
       (is (= ["movie"] (map :id (session/downloads started)))
@@ -65,7 +57,7 @@
                                                      :name "payload.bin"
                                                      :length 4}}}})
           net (mock-net/create)
-          started (session/start-torrents (session/session (manager net disk))
+          started (session/start-torrents (session/session (test-utils/download-manager net disk))
                                           ["/a.torrent" "/b.torrent"]
                                           "/out")]
       (is (= ["a"] (map :id (session/downloads started)))
@@ -84,7 +76,7 @@
           net (mock-net/create
                {:announce-to-url-error {:error :tracker-unreachable
                                         :message "down"}})
-          started (session/start-torrents (session/session (manager net disk))
+          started (session/start-torrents (session/session (test-utils/download-manager net disk))
                                           ["/x.torrent"]
                                           "/out")
           record (first (session/downloads started))]

@@ -45,11 +45,16 @@
   (write-piece [_ info-hash piece-index bytes]
     (if-let [err (:write-error config)]
       err
-      (if-let [scope (disk/cache-scope info-hash)]
-        (do
-          (swap! piece-cache assoc [scope piece-index] bytes)
-          {:ok :written})
-        disk/invalid-info-hash-error)))
+      (if (:write-throws config)
+        ;; An unexpected error in a port implementation. The crash-only
+        ;; design treats it as a crash rather than an envelope, so a test
+        ;; can drive the supervisor's restart path.
+        (throw (ex-info "disk exploded" {}))
+        (if-let [scope (disk/cache-scope info-hash)]
+          (do
+            (swap! piece-cache assoc [scope piece-index] bytes)
+            {:ok :written})
+          disk/invalid-info-hash-error))))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,

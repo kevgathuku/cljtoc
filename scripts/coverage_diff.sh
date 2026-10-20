@@ -42,30 +42,22 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 2
 fi
 
-touch_target() {
-  sed -E 's|^src/||; s|\.clj$||; s|/|.|g' <<<"$1"
-}
-
 # The namespace a source file declares, read from its ns form. The file
 # name is not the namespace: this repo spells a namespace with hyphens
 # in a file named with underscores (download_supervisor.clj holds
 # dev.cljtoc.supervision.download-supervisor), and cloverage selects
-# namespaces by the name the code declares, so the path-derived name
-# selects nothing. Falls back to the path when the file declares no ns.
+# namespaces by the name the code declares, so a path-derived name
+# selects nothing.
 ns_of() {
-  local file="$1"
-  local declared
-  declared=$(sed -nE 's/^\(ns[[:space:]]+([A-Za-z0-9._-]+).*/\1/p' "$file" | head -n 1)
-  if [[ -n "$declared" ]]; then
-    echo "$declared"
-  else
-    touch_target "$file"
-  fi
+  sed -nE 's/^\(ns[[:space:]]+([A-Za-z0-9._-]+).*/\1/p' "$1" | head -n 1
 }
 
 ns_flags=()
 for f in "${files[@]}"; do
-  ns_flags+=(-n "$(ns_of "$f")")
+  ns=$(ns_of "$f")
+  if [[ -n "$ns" ]]; then
+    ns_flags+=(-n "$ns")
+  fi
 done
 
 target_dir="target/coverage-diff"

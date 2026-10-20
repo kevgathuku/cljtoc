@@ -21,30 +21,30 @@
 (deftest supervise-returns-the-child-result-test
   (testing "a child that returns is never restarted"
     (let [calls (atom 0)
-          result (restart/supervise (fn [attempt]
+          result (restart/supervise (fn []
                                       (swap! calls inc)
-                                      {:attempt attempt})
+                                      :done)
                                     (budget 3))]
-      (is (= {:ok {:attempt 0}} result))
+      (is (= {:ok :done} result))
       (is (= 1 @calls) "the child ran once"))))
 
 (deftest supervise-restarts-a-crashing-child-test
   (testing "a crashed child runs again while the budget holds"
     (let [calls (atom 0)
-          result (restart/supervise (fn [attempt]
+          result (restart/supervise (fn []
                                       (swap! calls inc)
-                                      (if (< attempt 2)
-                                        (throw (ex-info "crash" {:attempt attempt}))
-                                        {:attempt attempt}))
+                                      (if (< @calls 3)
+                                        (throw (ex-info "crash" {:call @calls}))
+                                        :done))
                                     (budget 3))]
-      (is (= {:ok {:attempt 2}} result)
+      (is (= {:ok :done} result)
           "the child ran until it returned")
       (is (= 3 @calls) "two crashes, then a return"))))
 
 (deftest supervise-gives-up-when-the-budget-runs-out-test
   (testing "a child that keeps crashing is reported as failed, not restarted forever"
     (let [calls (atom 0)
-          result (restart/supervise (fn [_attempt]
+          result (restart/supervise (fn []
                                       (swap! calls inc)
                                       (throw (ex-info "crash" {})))
                                     (budget 2))]
@@ -58,7 +58,7 @@
 (deftest supervise-lets-errors-propagate-test
   (testing "an Error is not a crash: it is left to propagate"
     (let [result (try
-                   (restart/supervise (fn [_attempt]
+                   (restart/supervise (fn []
                                         (throw (OutOfMemoryError. "heap")))
                                       (budget 3))
                    (catch Throwable error error))]
@@ -72,14 +72,14 @@
           sliding-budget {:limit 1
                           :window-ms window-ms
                           :now (fn [] @now-ms)}
-          result (restart/supervise (fn [attempt]
+          result (restart/supervise (fn []
                                       (swap! calls inc)
-                                      (if (= 0 attempt)
+                                      (if (= 1 @calls)
                                         (do (swap! now-ms + (* 2 window-ms))
                                             (throw (ex-info "crash" {})))
-                                        {:attempt attempt}))
+                                        :done))
                                     sliding-budget)]
-      (is (= {:ok {:attempt 1}} result)
+      (is (= {:ok :done} result)
           "the first restart fell outside the window, so the budget was whole")
       (is (= 2 @calls)))))
 
@@ -90,11 +90,11 @@
 
 (deftest restart-allowed-follows-the-limit-test
   (testing "the budget permits a restart while fewer than the limit happened"
-    (is (true? (restart/restart-allowed? [] 3 window-ms 0)))
-    (is (true? (restart/restart-allowed? [0 1] 3 window-ms 2)))
-    (is (false? (restart/restart-allowed? [0 1 2] 3 window-ms 3))
+    (is (true? (restart/restart-allowed? [] 3)))
+    (is (true? (restart/restart-allowed? [0 1] 3)))
+    (is (false? (restart/restart-allowed? [0 1 2] 3))
         "three restarts inside the window exhaust a limit of three")
-    (is (true? (restart/restart-allowed? [0 1 2] 3 window-ms (* 10 window-ms)))
+    (is (true? (restart/restart-allowed? (restart/prune [0 1 2] window-ms (* 10 window-ms)) 3))
         "the same restarts fall out of the window as time passes")))
 
 (deftest fdef-specs-hold-generatively-test

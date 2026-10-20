@@ -52,22 +52,16 @@
 
    The download's own subtree restarts happen inside the download
    supervisor, so they never reach this level. What reaches it is a
-   child that crashed outright — a bug in the supervisor itself — and
-   the session restarts that download alone."
+   child that crashed outright — the download supervisor could not even
+   prepare its run — and the session restarts that download alone."
   [manager child download-record budget]
-  (let [outcome (restart/supervise (fn [_attempt] (child download-record))
-                                   {:limit (:limit budget)
-                                    :window-ms (:window-ms budget)
-                                    :now (fn [] (restart/now-ms (:time-port manager)))})]
+  (let [outcome (restart/supervise (fn [] (child download-record))
+                                   (restart/budget-for manager budget))]
     (if (contains? outcome :ok)
       (:ok outcome)
-      (assoc download-record
-             :state :failed
-             :error {:reason :restart-budget-exhausted
-                     :message (str "The download supervisor crashed "
-                                   (:restarts outcome)
-                                   " times within " (:window-ms budget)
-                                   "ms and was not restarted again")}))))
+      (download-supervisor/budget-exhausted-record download-record
+                                                   (:restarts outcome)
+                                                   (:window-ms budget)))))
 
 (defn start
   "Start one download supervisor per download, each on its own thread, and
@@ -82,25 +76,19 @@
    it."
   [manager downloads {:keys [on-complete budget child]
                       :or {on-complete (fn [_])
-                           budget download-supervisor/default-budget}}]
+                           budget restart/default-budget}}]
   (let [child (or child (default-child manager on-complete))
         children (into {}
                        (map (fn [download-record]
-                              (let [record (atom nil)
-                                    run (future
-                                          (let [finished (if (terminal-states (:state download-record))
-                                                           download-record
-                                                           (run-child manager
-                                                                      child
-                                                                      download-record
-                                                                      budget))]
-                                            (reset! record finished)
-                                            finished))]
-                                [(:id download-record)
-                                 {:id (:id download-record)
-                                  :download download-record
-                                  :record record
-                                  :run run}])))
+                              [(:id download-record)
+                               {:download download-record
+                                :run (future
+                                       (if (terminal-states (:state download-record))
+                                         download-record
+                                         (run-child manager
+                                                    child
+                                                    download-record
+                                                    budget)))}]))
                        downloads)]
     (->SessionSupervisor children)))
 
@@ -127,7 +115,7 @@
    still running has no record yet, so it is not listed."
   [session-supervisor]
   (->> (:children session-supervisor)
-       (keep (fn [[_ child]] @(:record child)))
+       (keep (fn [[_ child]] (deref (:run child) 0 nil)))
        (sort-by :id)
        vec))
 

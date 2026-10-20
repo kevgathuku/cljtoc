@@ -21,12 +21,14 @@
 
 (s/def ::restart-time nat-int?)
 
-;; The child the supervisor runs: it takes the attempt number and
-;; returns the child's terminal result.
-(s/def ::child (s/fspec :args (s/cat :attempt nat-int?) :ret any?))
+;; The child the supervisor runs: it returns the child's terminal result.
+(s/def ::child (s/fspec :args [] :ret any?))
+
+;; The clock the window slides on: the current time in milliseconds.
+(s/def ::now (s/fspec :args [] :ret nat-int?))
 
 (s/def ::budget
-  (s/keys :req-un [::limit ::window-ms]))
+  (s/keys :req-un [::limit ::window-ms ::now]))
 
 (s/def ::ok any?)
 
@@ -37,6 +39,13 @@
 (s/def ::outcome
   (s/or :ok (s/keys :req-un [::ok])
         :error (s/keys :req-un [::error ::restarts])))
+
+(def default-budget
+  "How often a supervisor may restart a child inside the window. Both
+   supervisor levels use it: a child that crashes three times inside a
+   minute is failing for good, not flapping."
+  {:limit 3
+   :window-ms 60000})
 
 (defn prune
   "The restart times still inside the sliding window: the ones that
@@ -52,15 +61,14 @@
 
 (defn restart-allowed?
   "True when the budget still permits a restart: fewer than `limit`
-   restarts happened inside the window."
-  [restart-times limit window-ms now-ms]
-  (< (count (prune restart-times window-ms now-ms)) limit))
+   restarts happened inside the window. `window-times` are the restarts
+   already pruned to the window."
+  [window-times limit]
+  (< (count window-times) limit))
 
 (s/fdef restart-allowed?
-  :args (s/cat :restart-times (s/coll-of ::restart-time)
-               :limit ::limit
-               :window-ms ::window-ms
-               :now-ms nat-int?)
+  :args (s/cat :window-times (s/coll-of ::restart-time)
+               :limit ::limit)
   :ret boolean?)
 
 (defn now-ms
@@ -72,31 +80,37 @@
     (long (time/now time-port))
     0))
 
+(defn budget-for
+  "The restart budget a supervisor runs with: `limit` restarts inside
+   `window-ms`, measured on the manager's clock."
+  [manager {:keys [limit window-ms]}]
+  {:limit limit
+   :window-ms window-ms
+   :now (fn [] (now-ms (:time-port manager)))})
+
 (defn supervise
   "Run `child` and restart it when it crashes, while the budget holds.
 
-   `child` takes the attempt number and returns the child's terminal
-   result; an Exception it throws is a crash. `budget` is
-   {:limit n :window-ms ms :now (fn [] ms)} — the clock is a fn so the
-   window slides on whatever time source the caller injects.
+   `child` returns the child's terminal result; an Exception it throws is
+   a crash. `budget` is {:limit n :window-ms ms :now (fn [] ms)} — the
+   clock is a fn so the window slides on whatever time source the caller
+   injects.
 
    Returns {:ok result} when the child returned, or
    {:error :restart-budget-exhausted :restarts n :last-error error} when
    the budget ran out. A child that returns is never restarted: only a
    crash is."
   [child {:keys [limit window-ms now]}]
-  (loop [attempt 0
-         restart-times []
-         restarts 0]
+  (loop [restart-times []]
     (let [outcome (try
-                    {:returned (child attempt)}
+                    {:returned (child)}
                     (catch Exception error {:crashed error}))]
       (if (contains? outcome :returned)
         {:ok (:returned outcome)}
         (let [now-ms (long (now))
               window-times (prune restart-times window-ms now-ms)]
-          (if (< (count window-times) limit)
-            (recur (inc attempt) (conj window-times now-ms) (inc restarts))
+          (if (restart-allowed? window-times limit)
+            (recur (conj window-times now-ms))
             {:error :restart-budget-exhausted
              :restarts (count window-times)
              :last-error (:crashed outcome)}))))))
