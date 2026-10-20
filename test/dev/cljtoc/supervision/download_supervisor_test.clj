@@ -233,6 +233,46 @@
       (is (= 4 (count (mock-net/closed-peers net)))
           "the initial attempt plus the three restarts the budget allowed"))))
 
+(defn- wait-for-paused
+  "True once a :paused record was published, or false on timeout: an
+   interrupt that restarts instead of suspending never publishes one."
+  [published timeout-ms]
+  (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+    (loop []
+      (cond
+        (some #(= :paused (:state %)) @published) true
+        (> (System/currentTimeMillis) deadline) false
+        :else (do (Thread/sleep 20) (recur))))))
+
+(deftest supervise-download-returns-paused-on-interrupt-test
+  (testing "an interrupted run returns the published record paused instead of restarting"
+    (let [calls (atom 0)
+          record (download-record)
+          published (atom [])
+          started (promise)
+          blocker (promise)
+          run-fn (fn [_manager _plan publish _runtime]
+                   (swap! calls inc)
+                   (publish {:download record})
+                   (deliver started true)
+                   @blocker
+                   {:id "supervised" :state :completed})
+          fut (future (download-supervisor/supervise-download
+                       (test-utils/download-manager (mock-net/create) (mock-disk/create))
+                       record
+                       {:prepare (fn [_manager _record _opts]
+                                   {:status :ready :plan {:download record}})
+                        :run run-fn
+                        :on-progress #(swap! published conj %)}))]
+      (try
+        (is (not= :timed-out (deref started 5000 :timed-out)) "the run started")
+        (future-cancel fut)
+        (is (wait-for-paused published 5000)
+            "the interrupt suspends instead of crashing")
+        (is (= 1 @calls) "the subtree ran once: no restart on interrupt")
+        (finally
+          (deliver blocker nil))))))
+
 (deftest supervise-download-restarts-a-crashed-subtree-test
   (testing "a crashed subtree runs again while the budget holds"
     (let [calls (atom 0)

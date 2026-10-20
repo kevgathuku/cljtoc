@@ -168,6 +168,18 @@
                              publish
                              {:peer-supervisor peer-supervisor
                               :re-announcer re-announcer})
+                        ;; An interrupt is a stop, not a crash: pausing
+                        ;; here keeps it out of the restart budget, so
+                        ;; shutdown and pause never redial the swarm.
+                        (catch InterruptedException _
+                          (let [record @published
+                                paused (if (= :downloading (:state record))
+                                         (or (:ok (download/pause-download
+                                                   (:time-port manager) nil record))
+                                             record)
+                                         record)]
+                            (publish {:download paused})
+                            paused))
                         (finally
                           (watchdog)
                           ((:stop re-announcer))

@@ -11,6 +11,7 @@
    the terminal records awaits them; a caller that wants to know how a
    running session is doing reads the records that have landed so far."
   (:require [clojure.spec.alpha :as s]
+            [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
             [dev.cljtoc.supervision.restart :as restart]))
 
@@ -66,14 +67,33 @@
   (let [published (atom nil)
         report (fn [record]
                  (reset! published record)
-                 (when publish-record (publish-record (:id record) record)))
-        outcome (restart/supervise (fn [] (child download-record report))
-                                   (restart/budget-for manager budget))]
-    (if (contains? outcome :ok)
-      (:ok outcome)
-      (download-supervisor/budget-exhausted-record (or @published download-record)
-                                                   (:restarts outcome)
-                                                   (:window-ms budget)))))
+                 (when publish-record (publish-record (:id record) record)))]
+    (try
+      (let [outcome (restart/supervise (fn [] (child download-record report))
+                                       (restart/budget-for manager budget))
+            ;; The live view holds the freshest record either way, so a
+            ;; later stop acts on what the run actually ended with
+            ;; instead of a stale in-progress snapshot.
+            result (if (contains? outcome :ok)
+                     (:ok outcome)
+                     (download-supervisor/budget-exhausted-record (or @published download-record)
+                                                                  (:restarts outcome)
+                                                                  (:window-ms budget)))]
+        (report result)
+        result)
+      ;; An interrupt is a stop, not a crash: the download keeps the
+      ;; pieces it verified and comes back :paused, without spending
+      ;; the restart budget. This only fires outside the download
+      ;; supervisor, which pauses the same way one level down.
+      (catch InterruptedException _
+        (let [record (or @published download-record)
+              paused (if (= :downloading (:state record))
+                       (or (:ok (download/pause-download
+                                 (:time-port manager) nil record))
+                           record)
+                       record)]
+          (report paused)
+          paused)))))
 
 (defn start
   "Start one download supervisor per download, each on its own thread, and
@@ -103,17 +123,22 @@
         publish-record (fn [id record] (swap! live assoc id record))
         children (into {}
                        (map (fn [download-record]
-                              [(:id download-record)
-                               {:download download-record
-                                :run (future
-                                       (if (terminal-states (:state download-record))
-                                         (do (publish-record (:id download-record) download-record)
-                                             download-record)
-                                         (run-child manager
-                                                    child
-                                                    download-record
-                                                    budget
-                                                    publish-record)))}]))
+                              (let [done (promise)]
+                                [(:id download-record)
+                                 {:download download-record
+                                  :done done
+                                  :run (future
+                                         (try
+                                           (if (terminal-states (:state download-record))
+                                             (do (publish-record (:id download-record) download-record)
+                                                 download-record)
+                                             (run-child manager
+                                                        child
+                                                        download-record
+                                                        budget
+                                                        publish-record))
+                                           (finally
+                                             (deliver done true))))}])))
                        downloads)]
     (->SessionSupervisor children live)))
 
@@ -139,28 +164,79 @@
 
 (defn await-all
   "Block until every child reached a terminal state. Returns the session
-   supervisor, whose records now hold the final ones."
+   supervisor, whose records now hold the final ones. A child stopped
+   with cancel holds no value to await — deref would throw — so stopped
+   children are skipped: their records already landed in the live view."
   [session-supervisor]
   (doseq [[_ child] (:children session-supervisor)]
-    @(:run child))
+    (try
+      @(:run child)
+      (catch java.util.concurrent.CancellationException _ nil)))
   session-supervisor)
 
 (s/fdef await-all
   :args (s/cat :session-supervisor map?)
   :ret map?)
 
+(def ^:private join-timeout-ms
+  "How long stop waits for one child to unwind, in milliseconds.
+   Unwinding is local work — an interrupt out of a channel park, peer
+   closes, supervisor stops — so anything slower is wedged; shutdown
+   must not hang behind it."
+  30000)
+
+(defn- join-run
+  "Wait for a cancelled run to unwind. Returns :done when it finished,
+   :timeout when it didn't. Waits on the run's own done signal — delivered
+   by the run's thread after its final report landed — and never on the
+   future: cancel marks the future done synchronously while its thread is
+   still unwinding, so neither `future-done?` nor deref on the future
+   waits at all. A run cancelled before its thread started never delivers,
+   so stopping one waits out the bound; callers only stop runs that have
+   started, so that case does not come up."
+  [child timeout-ms]
+  (if (= :timeout (deref (:done child) timeout-ms :timeout))
+    :timeout
+    :done))
+
 (defn stop
-  "Stop every running child: cancel its future, so the download supervisor
-   unwinds and the daemon can shut down without waiting for a torrent that
-   is in no hurry. A child that already finished is left alone."
+  "Stop every running child and wait for each to unwind, so the download
+   supervisors suspend instead of crashing and the daemon can persist
+   every torrent before the process exits. A child that already finished
+   is left alone; one that will not stop in time is left behind with a
+   warning while shutdown continues with the rest."
   [session-supervisor]
-  (doseq [[_ child] (:children session-supervisor)]
-    (future-cancel (:run child)))
+  (doseq [[id child] (:children session-supervisor)]
+    (future-cancel (:run child))
+    (when (= :timeout (join-run child join-timeout-ms))
+      (println (str "Download would not stop, continuing shutdown: " id))))
   session-supervisor)
 
 (s/fdef stop
   :args (s/cat :session-supervisor map?)
   :ret map?)
+
+(defn stop-child
+  "Stop one download's run and wait for it to unwind, so pause and stop
+   act on a record no run is still moving. Returns the record the run
+   ended with, or nil when the session holds no such download. Throws
+   when the run would not stop inside the join bound: pausing a runaway
+   run would lie, so the caller fails loudly instead. The bound is
+   injectable so tests need not wait out the production one."
+  ([supervisor id]
+   (stop-child supervisor id join-timeout-ms))
+  ([supervisor id timeout-ms]
+   (if-let [child (get (:children supervisor) id)]
+     (do (future-cancel (:run child))
+         (if (= :timeout (join-run child timeout-ms))
+           (throw (ex-info (str "Download would not stop: " id)
+                           {:type ::stop-timeout :id id}))
+           (get @(:live-records supervisor) id)))
+     nil)))
+
+(s/fdef stop-child
+  :args (s/cat :supervisor map? :id ::id :timeout-ms (s/? nat-int?))
+  :ret (s/nilable map?))
 
 (defn add
   "Start one more download under the session and return the session with
@@ -181,10 +257,13 @@
     ;; Seed the live view directly: the atom stays an atom — an `update`
     ;; over it would swap the value and store the plain map back.
     (swap! live assoc id download-record)
-    (update session-supervisor :children assoc id
-            {:download download-record
-             :run (future (run-child manager child download-record
-                                     budget report))})))
+    (let [done (promise)]
+      (update session-supervisor :children assoc id
+              {:download download-record
+               :done done
+               :run (future (try (run-child manager child download-record
+                                            budget report)
+                                 (finally (deliver done true))))}))))
 
 (s/fdef add
   :args (s/cat :manager map? :session-supervisor map? :download-record ::download-record
@@ -193,10 +272,13 @@
 
 (defn records
   "The download records that have landed so far, ordered by id. A download
-   still running has no record yet, so it is not listed."
+   still running has no record yet, so it is not listed. Same for one
+   stopped with cancel: its future holds no value, and its record lives
+   in the live view instead."
   [session-supervisor]
   (->> (:children session-supervisor)
-       (keep (fn [[_ child]] (deref (:run child) 0 nil)))
+       (keep (fn [[_ child]] (try (deref (:run child) 0 nil)
+                                  (catch java.util.concurrent.CancellationException _ nil))))
        (sort-by :id)
        vec))
 

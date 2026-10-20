@@ -111,6 +111,11 @@
    clock is a fn so the window slides on whatever time source the caller
    injects.
 
+   An interrupt is a stop, never a crash: InterruptedException passes
+   straight through instead of spending the budget, so the supervisor
+   that owns the stop decision sees it. Callers that stop runs catch it
+   around this call and suspend instead.
+
    Returns {:ok result} when the child returned, or
    {:error :restart-budget-exhausted :restarts n :last-error error} when
    the budget ran out. A child that returns is never restarted: only a
@@ -119,6 +124,8 @@
   (loop [restart-times []]
     (let [outcome (try
                     {:returned (child)}
+                    (catch InterruptedException interrupted
+                      (throw interrupted))
                     (catch Exception error {:crashed error}))]
       (if (contains? outcome :returned)
         {:ok (:returned outcome)}

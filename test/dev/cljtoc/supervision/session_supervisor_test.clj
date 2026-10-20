@@ -51,6 +51,101 @@
         (is (= ["a" "b"] (map :id records)))
         (is (= [:completed :completed] (map :state records)))))))
 
+(deftest session-treats-interrupt-as-suspend-test
+  (testing "an interrupted child returns the published record paused instead of restarting"
+    (let [calls (atom 0)
+          child (fn [download-record publish]
+                  (swap! calls inc)
+                  (publish (assoc download-record :state :downloading))
+                  (throw (InterruptedException. "stop")))
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:child child})]
+      (await-bounded supervisor)
+      (is (= 1 @calls) "no restart on interrupt")
+      (is (= :paused (:state (first (session-supervisor/records supervisor)))))
+      (is (= "a" (:id (first (session-supervisor/records supervisor))))))))
+
+(deftest stop-child-returns-the-ended-record-test
+  (testing "stopping a running download returns the record its run ended with"
+    (let [blocker (promise)
+          started (promise)
+          child (fn [download-record publish]
+                  (publish (assoc download-record :state :downloading))
+                  (deliver started true)
+                  @blocker
+                  download-record)
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:child child})]
+      (try
+        (is (not= :timed-out (deref started 5000 :timed-out)) "the run started")
+        (let [ended (session-supervisor/stop-child supervisor "a")]
+          (is (= :paused (:state ended)) "the run suspended instead of crashing")
+          (is (future-done? (-> supervisor :children (get "a") :run))
+              "the run unwound before stop-child returned"))
+        (finally
+          (deliver blocker nil)))))
+  (testing "an unknown id stops nothing"
+    (let [supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:child (fn [record _] record)})]
+      (is (nil? (session-supervisor/stop-child supervisor "ghost"))))))
+
+(deftest stop-child-throws-when-the-run-would-not-stop-test
+  (testing "a run that ignores its interrupt fails loudly instead of hanging the caller"
+    (let [release (promise)
+          started (promise)
+          child (fn [_ _]
+                  (deliver started true)
+                  (try @release
+                       (catch InterruptedException _
+                         ;; Clear the flag so the loop genuinely spins:
+                         ;; without this the first sleep rethrows on the
+                         ;; still-set flag and the run unwinds instead of
+                         ;; ignoring the stop.
+                         (Thread/interrupted)
+                         (loop []
+                           (if (realized? release)
+                             :gave-up
+                             (do (Thread/sleep 50) (recur)))))))
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:child child})]
+      (try
+        (is (not= :timed-out (deref started 5000 :timed-out)) "the run started")
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"would not stop"
+                              (session-supervisor/stop-child supervisor "a" 100)))
+        (finally
+          (deliver release nil))))))
+
+(deftest stop-joins-running-children-test
+  (testing "stop waits for every run to unwind instead of abandoning it"
+    (let [blocker (promise)
+          started (promise)
+          child (fn [download-record publish]
+                  (publish (assoc download-record :state :downloading))
+                  (deliver started true)
+                  @blocker
+                  download-record)
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"} {:id "b"}]
+                                               {:child child})]
+      (try
+        (is (not= :timed-out (deref started 5000 :timed-out)) "a run started")
+        (let [stopped (session-supervisor/stop supervisor)]
+          (is (every? future-done? (map (comp :run val) (:children stopped)))
+              "every run unwound before stop returned")
+          (is (= #{:paused} (set (map :state (vals @(:live-records stopped)))))
+              "both runs suspended instead of crashing"))
+        (finally
+          (deliver blocker nil))))))
+
 (deftest one-download-restart-leaves-its-siblings-untouched-test
   (testing "a download whose coordinator crashes is restarted, and its sibling keeps running"
     (let [piece-0 (test-utils/to-bytes "abcd")
