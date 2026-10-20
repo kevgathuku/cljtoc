@@ -293,9 +293,19 @@
 ;; regressed — a failure mode worse than no test. The wiring they call is
 ;; covered at its own seam instead: make-ports (settings reach the ports and the manager), state-dir
 ;; (load-command-state), status-records (the one-or-all listing the status
-;; command prints), and session/start-torrents + run-downloads (the
-;; multi-torrent run the download command drives), which is where a
+;; command prints), and session/start-torrents + the session supervisor
+;; (the multi-torrent run the download command drives), which is where a
 ;; regression would actually land.
+;;
+;; The rows the download command's body adds, named one by one:
+;; (core.clj 246) — the on-complete callback that persists a finished
+;;   record: it runs on the session supervisor's worker thread, and the
+;;   command body is its only caller.
+;; (core.clj 247-252) — awaiting the session and printing each finished
+;;   download's progress: the command body calls System/exit on its
+;;   failure path, so driving it would kill the test JVM.
+;; (core.clj 260) — the exit check for a sibling that ended :failed:
+;;   System/exit again.
 ;; ---------------------------------------------------------------------------
 
 (deftest dangling-config-flag-is-detected-test

@@ -45,9 +45,27 @@ fi
 touch_target() {
   sed -E 's|^src/||; s|\.clj$||; s|/|.|g' <<<"$1"
 }
+
+# The namespace a source file declares, read from its ns form. The file
+# name is not the namespace: this repo spells a namespace with hyphens
+# in a file named with underscores (download_supervisor.clj holds
+# dev.cljtoc.supervision.download-supervisor), and cloverage selects
+# namespaces by the name the code declares, so the path-derived name
+# selects nothing. Falls back to the path when the file declares no ns.
+ns_of() {
+  local file="$1"
+  local declared
+  declared=$(sed -nE 's/^\(ns[[:space:]]+([A-Za-z0-9._-]+).*/\1/p' "$file" | head -n 1)
+  if [[ -n "$declared" ]]; then
+    echo "$declared"
+  else
+    touch_target "$file"
+  fi
+}
+
 ns_flags=()
 for f in "${files[@]}"; do
-  ns_flags+=(-n "$(touch_target "$f")")
+  ns_flags+=(-n "$(ns_of "$f")")
 done
 
 target_dir="target/coverage-diff"
@@ -66,6 +84,7 @@ if ! lein cloverage \
     --no-colorize \
     -o "$target_dir" \
     "${ns_flags[@]}" \
+    "${ns_args[@]}" \
     --fail-threshold 0 \
     "${extra[@]}" 1>&2; then
   echo "cloverage failed" >&2

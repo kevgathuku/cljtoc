@@ -1119,6 +1119,25 @@
       (is (re-find #"no space" (get-in result [:error :message])))
       (is (empty? @(:layouts-initialized disk))))))
 
+(deftest run-download-fails-on-output-prepare-error-test
+  (testing "a refused layout preparation fails the download before any peer is dialed"
+    (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "prepare-fail")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          disk (mock-disk/create {:output-prepare-error {:error :alias-error
+                                                         :message "escapes the output dir"}})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (re-find #"Failed to prepare output layout" (get-in result [:error :message])))
+      (is (re-find #"escapes the output dir" (get-in result [:error :message]))))))
+
 (deftest run-download-initializes-layout-before-completing-test
   (testing "a zero-piece download materializes its output layout before completing"
     (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}

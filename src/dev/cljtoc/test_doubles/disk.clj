@@ -100,8 +100,13 @@
     ;; carrying one resolved entry per declared path and an empty
     ;; parent-mtimes map (no filesystem to track), so orchestration tests
     ;; thread exactly what the real port hands the fast write path.
-    (if (not (disk/consistent-output-layout? layout))
-      disk/invalid-output-layout-error
+    ;; An :output-prepare-error knob forces the refusal the real port
+    ;; makes when a declared path escapes the output dir or aliases another
+    ;; one, so a test can drive a failed preparation without a filesystem.
+    (if-let [err (or (:output-prepare-error config)
+                     (when-not (disk/consistent-output-layout? layout)
+                       disk/invalid-output-layout-error))]
+      err
       {:ok {:layout layout
             :output-dir output-dir
             :parent-mtimes {}
