@@ -48,10 +48,10 @@ No live peer connections, no dials still in flight, and pieces still incomplete 
 
 **Worker**:
 A concurrent unit whose lifecycle is owned by a supervisor. Workers exit cleanly on envelope-bounded errors (an `INetworkPort` returning `{:error …}`) and crash on anything else (spec failures, NPEs, malformed-message exceptions). The supervisor observes both through the worker's done-channel close.
-_Avoid_: thread, goroutine, task, daemon
+_Avoid_: thread, goroutine, task ("daemon" alone always means the daemon process below, never a worker)
 
 **Supervisor**:
-The component responsible for a worker's lifecycle: detecting exits or crashes, deciding restart or drop, and enforcing the restart budget that bounds in-flight churn. Sits above the coordination layer in the four-layer architecture. The current build distinguishes a peer supervisor (one-for-one, owns peer workers and the per-connection budget) and a download supervisor (rest-for-one, owns the coordinator and its sibling children).
+The component responsible for a worker's lifecycle: detecting exits or crashes, deciding restart or drop, and enforcing the restart budget that bounds in-flight churn. Sits above the coordination layer in the four-layer architecture. The current build distinguishes a peer supervisor (one-for-one, owns peer workers and the per-connection budget) and a download supervisor (rest-for-one, owns the coordinator and its sibling children). The target adds a session supervisor above them: one download-supervisor subtree per torrent, so rest-for-one stays scoped per torrent and one flaky torrent never restarts its siblings. See [ADR-0012](docs/adr/0012-daemon-session.md).
 _Avoid_: parent thread, retry loop, watchdog (lives inside the supervisor)
 
 **Restart budget**:
@@ -59,7 +59,13 @@ The sliding-window bound on how often a supervisor may restart a child. Per-conn
 _Avoid_: retry counter, max retries, attempt limit
 
 **Clean shutdown**:
-A SIGINT-triggered orderly stop: peer connections close, in-progress state persists through `IDiskPort`, then the JVM exits. Without it, JVM-default SIGINT kills workers mid-piece-write and loses everything since the last save.
+A SIGINT-triggered orderly stop: peer connections close, in-progress state persists through `IDiskPort`, then the JVM exits. Without it, JVM-default SIGINT kills workers mid-piece-write and loses everything since the last save. The daemon target adds SIGTERM plus periodic per-torrent saves, so a crash loses only the window since the last save.
+
+**Daemon**:
+One long-lived session process that owns every torrent across CLI invocations: it loads all torrents plus resume state at start, accepts add/remove while running, and persists on a timer and on SIGTERM. A CLI invocation is a thin client against the running daemon, never a session itself. Transmission equivalent: `tr_session` plus `transmission-daemon`.
+
+**Session**:
+The daemon's in-memory ownership of N downloads: one download-supervisor subtree per torrent under a session supervisor, sharing one peer port, peer id, bandwidth, and queue instance. The current `orchestration.session` record (one map per blocking CLI call) is the stepping stone toward this, not the end state. See [ADR-0012](docs/adr/0012-daemon-session.md).
 
 **Re-announcer**:
 A child of the download supervisor that issues tracker announces on swarm exhaustion (issue #22). A re-announce failure triggers rest-for-one restart of the coordinator subtree.

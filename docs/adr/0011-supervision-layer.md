@@ -1,5 +1,7 @@
 # Crash-only supervision as an explicit layer
 
+> Superseded in part by [ADR-0012](0012-daemon-session.md): the "daemon mode: rejected" option below is reversed — the daemon session is the goal.
+
 The crash-only supervision principle from the constitution gets its own layer with two namespaces: `dev.cljtoc.supervision.peer-supervisor` (one-for-one, owns peer workers and the per-connection restart budget) and `dev.cljtoc.supervision.download-supervisor` (rest-for-one, owns the coordinator and its sibling children — re-announcer for #22, watchdog for #23). Both live inside one CLI invocation; cross-invocation recovery still goes through `torrent.resume` and the existing persistence seam. `retry-download` and `can-retry?` are deleted (were unreachable from `src/`; user-driven restart is now expressible as `pause-download` → `torrent.resume`, which the persistence seam wires through `run-download`). Randomness moves to a primitive `IRandomnessPort` consumed by a pure `domain.backoff` module that all three supervisor slices share. SIGINT triggers a clean shutdown: peer connections close, in-progress state persists, then the JVM exits cleanly.
 
 ## Considered Options
