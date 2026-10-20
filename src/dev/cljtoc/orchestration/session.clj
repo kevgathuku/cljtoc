@@ -4,8 +4,12 @@
    Transmission-style multi-torrent use: one CLI invocation starts many
    downloads and keeps acting on all of them. The session holds the
    downloads and the start failures, so a bad path never strands its
-   siblings. `run-downloads` gives every download its own thread, so one
-   torrent's stall or failure does not serialize the rest.
+   siblings.
+
+   The session is the value, not the running: the supervision layer
+   owns the running, one download-supervisor subtree per torrent (see
+   dev.cljtoc.supervision.session-supervisor). The daemon session this
+   record is a stepping stone toward lives across CLI invocations.
 
    Effects stay in the download manager's ports; this namespace only
    composes them."
@@ -151,60 +155,4 @@
   :args (s/cat :session ::session
                :torrent-paths (s/coll-of ::torrent-path)
                :output-dir string?)
-  :ret ::session)
-
-(defn- run-one
-  "Run one download on its own thread, folding an ordinary exception into a
-   failed record so one torrent cannot take the others down. Errors such as
-   OutOfMemoryError are not a torrent's failure and are left to propagate.
-   Calls `on-complete` with the terminal record on this thread, so the
-   caller can persist it while its siblings still run. A callback failure
-   lands on the record as :session/persist-error instead of failing the
-   future, so one unsaved torrent does not abort its siblings."
-  [manager download on-complete]
-  (future
-    (let [finished (try
-                     (download/run-download manager download)
-                     (catch Exception error
-                       (assoc download
-                              :state :failed
-                              :error {:reason :run-exception
-                                      :message (.getMessage error)})))
-          persist-error (try
-                          (on-complete finished)
-                          (catch Exception error
-                            {:reason :on-complete-exception
-                             :message (.getMessage error)}))]
-      (if persist-error
-        (assoc finished :session/persist-error persist-error)
-        finished))))
-
-(defn run-downloads
-  "Run every download to a terminal state, each on its own thread. Blocks
-   until all have finished and returns the session holding the final
-   records. `on-complete` sees each terminal record as it finishes,
-   independently of its siblings, so a result cannot sit unsaved behind a
-   stalled torrent. A failing `on-complete` lands on its record as
-   :session/persist-error and never aborts the other runs. Records already
-   :failed (a refused announce) are left untouched: only a later
-   `torrent.resume` re-announces them."
-  ([session]
-   (run-downloads session (fn [_])))
-  ([session on-complete]
-   (let [manager (:manager session)
-         runs (mapv (fn [download]
-                      (if (= :failed (:state download))
-                        [(:id download) nil]
-                        [(:id download) (run-one manager download on-complete)]))
-                    (downloads session))]
-     (assoc session :downloads
-            (into {} (map (fn [[id run]]
-                            [id (if run @run (get (:downloads session) id))]))
-                  runs)))))
-
-;; Excluded from stest/check: dials peers and blocks on the swarm, so the
-;; generator cannot produce the ports it runs against.
-(s/fdef run-downloads
-  :args (s/cat :session ::session
-               :on-complete (s/? (s/fspec :args (s/cat :download ::download-record))))
   :ret ::session)

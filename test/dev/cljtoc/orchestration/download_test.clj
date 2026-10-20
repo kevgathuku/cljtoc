@@ -1119,6 +1119,25 @@
       (is (re-find #"no space" (get-in result [:error :message])))
       (is (empty? @(:layouts-initialized disk))))))
 
+(deftest run-download-fails-on-output-prepare-error-test
+  (testing "a refused layout preparation fails the download before any peer is dialed"
+    (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
+          torrent {:info-hash (byte-array 20) :info info}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "prepare-fail")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          disk (mock-disk/create {:output-prepare-error {:error :alias-error
+                                                         :message "escapes the output dir"}})
+          result (download/run-download {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started)]
+      (is (= :failed (:state result)))
+      (is (= :disk-error (get-in result [:error :reason])))
+      (is (re-find #"Failed to prepare output layout" (get-in result [:error :message])))
+      (is (re-find #"escapes the output dir" (get-in result [:error :message]))))))
+
 (deftest run-download-initializes-layout-before-completing-test
   (testing "a zero-piece download materializes its output layout before completing"
     (let [info {:pieces [] :piece-length 4 :length 0 :name "empty.bin"}
@@ -1170,6 +1189,121 @@
       (is (= :completed (:state result)))
       (is (= [(:ok (torrent/compile-output-layout info))]
              (mapv :layout @(:layouts-initialized disk)))))))
+
+;; The run split (torrent-client-clj-0c9.13): preparing the run once and
+;; running the subtree as often as a supervisor needs is what keeps a
+;; restart from re-initializing the output files.
+
+(deftest prepare-run-returns-a-ready-plan-test
+  (testing "a download with peers is ready to run, and the plan carries what the run needs"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "plan-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "plan.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "plan")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          disk (mock-disk/create)
+          outcome (download/prepare-run {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started
+                                        nil)]
+      (is (= :ready (:status outcome)))
+      (let [plan (:plan outcome)]
+        (is (= "plan" (:id (:download plan))))
+        (is (= ["10.0.0.9:6881"] (:peer-addresses plan)))
+        (is (= 4 (:total (:layout plan))))
+        (is (= 1 (count @(:layouts-initialized disk)))
+            "the output layout is initialized once, at prepare time")))))
+
+(deftest prepare-run-finishes-a-download-with-nothing-to-dial-test
+  (testing "a download with no peers finishes before the run starts"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "no-peers-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "no-peers.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-peers")
+                         :state :downloading)
+          outcome (download/prepare-run {:network-port (mock-net/create)
+                                         :disk-port (mock-disk/create)
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started
+                                        nil)]
+      (is (= :finished (:status outcome)))
+      (is (= :failed (:state (:record outcome))))
+      (is (= :no-peers (get-in outcome [:record :error :reason]))))))
+
+(deftest prepare-run-finishes-a-complete-download-test
+  (testing "a download whose pieces are all verified completes without dialing"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "done-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "done.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "done")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}}
+                         :piece-state {:total-pieces 1
+                                       :needed #{}
+                                       :in-flight #{}
+                                       :verified #{0}})
+          ;; The materialization reads the verified piece from the cache:
+          ;; a verified piece the cache no longer holds goes back to
+          ;; :needed, and the download is no longer complete.
+          disk (mock-disk/create)
+          _ (disk/write-piece disk info-hash 0 piece-0-bytes)
+          outcome (download/prepare-run {:network-port (mock-net/create)
+                                         :disk-port disk
+                                         :time-port (mock-time/create)
+                                         :config {}}
+                                        started
+                                        nil)]
+      (is (= :finished (:status outcome)))
+      (is (= :completed (:state (:record outcome)))))))
+
+(deftest run-subtree-publishes-the-record-as-it-progresses-test
+  (testing "the run hands its record to the supervisor as the pieces land"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "publish-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "publish.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "publish")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])})
+          manager {:network-port net
+                   :disk-port (mock-disk/create)
+                   :time-port (mock-time/create)
+                   :config {}}
+          published (atom [])
+          plan (:plan (download/prepare-run manager started nil))
+          result (deref (future (download/run-subtree manager plan #(swap! published conj %)))
+                        15000 :timed-out)]
+      (is (not= :timed-out result))
+      (is (= :completed (:state result)))
+      (is (seq @published) "the run published its record")
+      (is (= 1 (pieces/verified-count (:piece-state (last @published))))
+          "the published record carries the verified piece, so a restart resumes from it"))))
 
 (deftest mock-init-refuses-uncompiled-layout-test
   (testing "the mock mirrors the real port: raw info or nil is :invalid-info, unrecorded"
@@ -2289,3 +2423,40 @@
       (is (= :completed (:state result)))
       (is (= 2 (pieces/verified-count (:piece-state result))))
       (is (= (seq (test-utils/to-bytes "abcdefgh")) on-disk)))))
+
+(deftest run-subtree-closes-its-peers-when-the-coordinator-crashes-test
+  (testing "a crashed coordinator closes the peer connections it held"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "crash-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "crash.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "crash")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])})
+          ;; The piece write throws: an unexpected error in a port
+          ;; implementation, which the crash-only design treats as a
+          ;; crash rather than an envelope.
+          disk (mock-disk/create {:write-throws true})
+          manager {:network-port net
+                   :disk-port disk
+                   :time-port (mock-time/create)
+                   :config {}}
+          plan (:plan (download/prepare-run manager started nil))
+          result (try
+                   (download/run-subtree manager plan nil)
+                   ::no-crash
+                   (catch Exception error error))]
+      (is (instance? Exception result)
+          "the crash travels to the supervisor instead of failing the download")
+      (is (= ["10.0.0.9:6881"] (map :address (mock-net/closed-peers net)))
+          "the restart opens new connections, so the crashed attempt's are closed"))))

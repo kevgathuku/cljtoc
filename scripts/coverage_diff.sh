@@ -42,12 +42,22 @@ if [[ ${#files[@]} -eq 0 ]]; then
   exit 2
 fi
 
-touch_target() {
-  sed -E 's|^src/||; s|\.clj$||; s|/|.|g' <<<"$1"
+# The namespace a source file declares, read from its ns form. The file
+# name is not the namespace: this repo spells a namespace with hyphens
+# in a file named with underscores (download_supervisor.clj holds
+# dev.cljtoc.supervision.download-supervisor), and cloverage selects
+# namespaces by the name the code declares, so a path-derived name
+# selects nothing.
+ns_of() {
+  sed -nE 's/^\(ns[[:space:]]+([A-Za-z0-9._-]+).*/\1/p' "$1" | head -n 1
 }
+
 ns_flags=()
 for f in "${files[@]}"; do
-  ns_flags+=(-n "$(touch_target "$f")")
+  ns=$(ns_of "$f")
+  if [[ -n "$ns" ]]; then
+    ns_flags+=(-n "$ns")
+  fi
 done
 
 target_dir="target/coverage-diff"
@@ -66,6 +76,7 @@ if ! lein cloverage \
     --no-colorize \
     -o "$target_dir" \
     "${ns_flags[@]}" \
+    "${ns_args[@]}" \
     --fail-threshold 0 \
     "${extra[@]}" 1>&2; then
   echo "cloverage failed" >&2

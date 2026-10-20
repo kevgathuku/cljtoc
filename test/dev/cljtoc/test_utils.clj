@@ -5,7 +5,8 @@
             [clojure.spec.test.alpha :as stest]
             [clojure.core.async.impl.protocols :as chan]
             [dev.cljtoc.domain.torrent :as torrent]
-            [dev.cljtoc.test-doubles.randomness :as mock-randomness]))
+            [dev.cljtoc.test-doubles.randomness :as mock-randomness]
+            [dev.cljtoc.test-doubles.time :as mock-time]))
 
 (defn temp-dir
   "A fresh directory under the system temp dir, returned as a path string.
@@ -100,3 +101,13 @@
    hostile input — production parsing needs its own guarded version."
   [ip-str]
   (mapv #(Integer/parseInt %) (string/split ip-str #"\.")))
+
+(defn download-manager
+  "A download manager over the given ports: the shape the orchestration
+   and supervision layers take. The clock is a mock, so a run against it
+   is deterministic."
+  [network-port disk-port]
+  {:network-port network-port
+   :disk-port disk-port
+   :time-port (mock-time/create)
+   :config {}})

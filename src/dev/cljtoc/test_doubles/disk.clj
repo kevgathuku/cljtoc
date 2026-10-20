@@ -45,11 +45,16 @@
   (write-piece [_ info-hash piece-index bytes]
     (if-let [err (:write-error config)]
       err
-      (if-let [scope (disk/cache-scope info-hash)]
-        (do
-          (swap! piece-cache assoc [scope piece-index] bytes)
-          {:ok :written})
-        disk/invalid-info-hash-error)))
+      (if (:write-throws config)
+        ;; An unexpected error in a port implementation. The crash-only
+        ;; design treats it as a crash rather than an envelope, so a test
+        ;; can drive the supervisor's restart path.
+        (throw (ex-info "disk exploded" {}))
+        (if-let [scope (disk/cache-scope info-hash)]
+          (do
+            (swap! piece-cache assoc [scope piece-index] bytes)
+            {:ok :written})
+          disk/invalid-info-hash-error))))
 
   (write-output-piece [_ layout _output-dir piece-index bytes]
     ;; Mirrors DiskPortImpl's per-piece gates exactly: span derivation,
@@ -100,8 +105,13 @@
     ;; carrying one resolved entry per declared path and an empty
     ;; parent-mtimes map (no filesystem to track), so orchestration tests
     ;; thread exactly what the real port hands the fast write path.
-    (if (not (disk/consistent-output-layout? layout))
-      disk/invalid-output-layout-error
+    ;; An :output-prepare-error knob forces the refusal the real port
+    ;; makes when a declared path escapes the output dir or aliases another
+    ;; one, so a test can drive a failed preparation without a filesystem.
+    (if-let [err (or (:output-prepare-error config)
+                     (when-not (disk/consistent-output-layout? layout)
+                       disk/invalid-output-layout-error))]
+      err
       {:ok {:layout layout
             :output-dir output-dir
             :parent-mtimes {}

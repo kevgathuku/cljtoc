@@ -82,7 +82,7 @@ Stops a download and cleans up resources.
 
 ## Session API
 
-A session owns several downloads in one process (see [download orchestration](download-orchestration.md#sessions-and-multiple-torrents)).
+A session owns several downloads in one process (see [download orchestration](download-orchestration.md#sessions-and-multiple-torrents)). The session is the value; the running lives in the supervision layer.
 
 ```clojure
 (session/session manager)
@@ -90,9 +90,6 @@ A session owns several downloads in one process (see [download orchestration](do
 
 (session/start-torrents session torrent-paths output-dir)
   → session                            ; good paths become downloads, bad ones failures
-
-(session/run-downloads session)
-  → session                            ; each download run to a terminal state
 
 (session/downloads session)
   → [download ...]                     ; ordered by id
@@ -102,6 +99,35 @@ A session owns several downloads in one process (see [download orchestration](do
 ```
 
 `start-torrents` keys `:downloads` by each torrent's id (its basename). A path that refuses to start lands in `:failures` with the error that `start-download` returned. A path whose id another path already claimed lands in `:failures` as `:error :duplicate-id`; a path whose declared output overlaps a download already started lands there as `:error :overlapping-output`. The rest still start.
+
+---
+
+## Supervision API
+
+The session supervisor owns one download-supervisor subtree per torrent (see [ADR-0012](../docs/adr/0012-daemon-session.md)).
+
+```clojure
+(session-supervisor/start manager downloads {:on-complete f})
+  → session-supervisor                 ; one child per download, started, not awaited
+
+(session-supervisor/await-all session-supervisor)
+  → session-supervisor                 ; blocks until every child finished
+
+(session-supervisor/records session-supervisor)
+  → [download ...]                     ; the records that landed, ordered by id
+
+(download-supervisor/supervise-download manager download {:opts opts})
+  → download                           ; the terminal record: finished, or failed
+                                       ; with :restart-budget-exhausted
+
+(restart/supervise child {:limit n :window-ms ms :now f})
+  → {:ok result}                       ; the child returned
+  | {:error :restart-budget-exhausted :restarts n :last-error e}
+```
+
+`session-supervisor/start` runs each download on its own thread, so one torrent's stall never serializes the rest. `on-complete` sees each terminal record as it finishes; a failing callback lands on the record as `:session/persist-error` instead of taking the session down. A download that already failed (a refused announce) is kept as it is and not run again — only a later `torrent.resume` re-announces it.
+
+`download-supervisor/supervise-download` prepares the run once and restarts the subtree when it crashes, while the restart budget holds. The subtree publishes its record as it progresses, so a restart resumes from the pieces already verified, and the pieces the crashed attempt left in flight are requeued.
 
 ---
 
