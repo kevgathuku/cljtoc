@@ -543,6 +543,10 @@
   (assoc download-record
          :piece-state (requeue-stranded-pieces (:piece-state download-record))))
 
+(s/fdef requeue-stranded
+  :args (s/cat :download-record map?)
+  :ret map?)
+
 (declare materialize-verified-pieces)
 
 (defn- reconcile-verified-pieces

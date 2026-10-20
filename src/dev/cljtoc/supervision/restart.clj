@@ -80,6 +80,10 @@
     (long (time/now time-port))
     0))
 
+(s/fdef now-ms
+  :args (s/cat :time-port (s/? any?))
+  :ret nat-int?)
+
 (defn budget-for
   "The restart budget a supervisor runs with: `limit` restarts inside
    `window-ms`, measured on the manager's clock."
@@ -87,6 +91,11 @@
   {:limit limit
    :window-ms window-ms
    :now (fn [] (now-ms (:time-port manager)))})
+
+(s/fdef budget-for
+  :args (s/cat :manager map?
+               :budget (s/keys :req-un [::limit ::window-ms]))
+  :ret ::budget)
 
 (defn supervise
   "Run `child` and restart it when it crashes, while the budget holds.

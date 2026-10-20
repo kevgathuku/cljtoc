@@ -31,6 +31,10 @@
     :message (str "The download's supervisor gave up after " restarts
                   " restarts within " window-ms "ms")}))
 
+(s/fdef budget-exhausted-record
+  :args (s/cat :download-record map? :restarts nat-int? :window-ms pos-int?)
+  :ret map?)
+
 (defn supervise-download
   "Run one download to a terminal state under the download supervisor.
 
