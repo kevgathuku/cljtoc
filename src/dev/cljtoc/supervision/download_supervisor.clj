@@ -19,12 +19,14 @@
    The subtree is the unit the re-announcer and watchdog children join
    (torrent-client-clj-0c9.10 and 0c9.11): they land inside it, and a
    failure in one restarts this download's subtree and nothing else."
-  (:require [clojure.spec.alpha :as s]
+  (:require [clojure.core.async :as async]
+            [clojure.spec.alpha :as s]
             [dev.cljtoc.coordination.peer-worker :as peer-worker]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.supervision.peer-supervisor :as peer-supervisor]
-            [dev.cljtoc.supervision.restart :as restart]))
+            [dev.cljtoc.supervision.restart :as restart]
+            [dev.cljtoc.supervision.watchdog :as watchdog]))
 
 (defn peer-supervisor-for
   "The peer supervisor a download's subtree runs on.
@@ -49,18 +51,6 @@
 (s/fdef peer-supervisor-for
   :args (s/cat :manager map? :plan map?)
   :ret map?)
-
-(defn- run-subtree-once
-  "Run the subtree once, on a peer supervisor of its own.
-
-   The peer supervisor is stopped when the run ends, so a finished
-   attempt leaves no worker behind for the next one."
-  [manager plan publish]
-  (let [peer-supervisor (peer-supervisor-for manager plan)]
-    (try
-      (download/run-subtree manager plan publish peer-supervisor)
-      (finally
-        ((:stop peer-supervisor))))))
 
 (defn budget-exhausted-record
   "The failed record a download gets when a supervisor gave up on it: the
@@ -93,7 +83,12 @@
   ([manager download-record opts]
    (let [outcome (download/prepare-run manager download-record opts)]
      (if (= :ready (:status outcome))
-       (run-subtree-once manager (:plan outcome) nil)
+       (let [plan (:plan outcome)
+             peer-supervisor (peer-supervisor-for manager plan)]
+         (try
+           (download/run-subtree manager plan nil peer-supervisor)
+           (finally
+             ((:stop peer-supervisor)))))
        (:record outcome)))))
 
 (s/fdef run-download
@@ -122,24 +117,45 @@
    Returns the download's terminal record: the finished download, or a
    failed one carrying :restart-budget-exhausted when the budget ran
    out."
-  [manager download-record {:keys [opts prepare run budget on-progress]
+  [manager download-record {:keys [opts prepare run budget on-progress watchdog]
                             :or {opts nil
                                  prepare download/prepare-run
-                                 run run-subtree-once
+                                 run download/run-subtree
                                  budget restart/default-budget}}]
   (let [outcome (prepare manager download-record opts)]
     (if (= :finished (:status outcome))
       (:record outcome)
       (let [plan (:plan outcome)
             published (atom (:download plan))
-            publish (fn [record]
-                      (reset! published record)
-                      (when on-progress (on-progress record)))
+            ;; The coordinator's state, for the watchdog: it watches the
+            ;; blocks the download receives, not the record it publishes.
+            observed (atom nil)
+            publish (fn [state]
+                      (reset! published (:download state))
+                      (reset! observed state)
+                      (when on-progress (on-progress (:download state))))
+            watchdog-opts (merge {:deadline-ms watchdog/default-stall-deadline-ms
+                                  :poll-ms watchdog/default-poll-ms}
+                                 watchdog)
             child (fn []
-                    (run manager
-                         (assoc plan :download
-                                (download/requeue-stranded @published))
-                         publish))
+                    (let [peer-supervisor (peer-supervisor-for manager plan)
+                          watchdog (watchdog/start
+                                    {:state observed
+                                     :now (fn [] (restart/now-ms (:time-port manager)))
+                                     :deadline-ms (:deadline-ms watchdog-opts)
+                                     :poll-ms (:poll-ms watchdog-opts)
+                                     :fire (fn []
+                                             (async/>!! (:events-ch peer-supervisor)
+                                                        {:type :watchdog-fired}))})]
+                      (try
+                        (run manager
+                             (assoc plan :download
+                                    (download/requeue-stranded @published))
+                             publish
+                             peer-supervisor)
+                        (finally
+                          (watchdog)
+                          ((:stop peer-supervisor))))))
             result (restart/supervise child (restart/budget-for manager budget))]
         (if (contains? result :ok)
           (:ok result)

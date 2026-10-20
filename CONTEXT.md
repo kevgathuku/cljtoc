@@ -72,7 +72,7 @@ _Avoid_: using "session" for a single `Download` (a `Download` is one torrent's 
 A child of the download supervisor that issues tracker announces on swarm exhaustion (issue #22). A re-announce failure triggers rest-for-one restart of the coordinator subtree.
 
 **Watchdog**:
-A child of the download supervisor that detects "connected but choking forever" (issue #23). Firing the watchdog triggers rest-for-one restart of the coordinator subtree.
+A child of the download supervisor that detects "connected but choking forever" (issue #23): the blocks the download receives and the peers it is connected to stop moving. Firing the watchdog crashes the coordinator subtree, so the download supervisor restarts it — rest-for-one, bounded by its restart budget. The deadline is fifteen seconds, well past a healthy peer's handshake.
 
 ## Peer exchange
 

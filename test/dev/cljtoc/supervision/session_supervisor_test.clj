@@ -103,7 +103,7 @@
                     (download-supervisor/supervise-download
                      manager
                      download-record
-                     {:run (fn [_manager _plan _publish]
+                     {:run (fn [_manager _plan _publish _peer-supervisor]
                              (swap! a-runs inc)
                              (if (= 1 @a-runs)
                                (throw (ex-info "coordinator crash" {}))

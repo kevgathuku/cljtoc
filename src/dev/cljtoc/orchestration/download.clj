@@ -1020,6 +1020,13 @@
                       (mark-suspended (assoc download :state :failed :error (:fatal outcome))
                                       (time/now time-port)))))
 
+                :watchdog-fired
+                ;; The watchdog fired: the download stood still for too
+                ;; long. The crash travels to the supervisor, which
+                ;; restarts the subtree while its restart budget holds.
+                (throw (ex-info "The watchdog fired: the download made no progress"
+                                {:type :cljtoc/watchdog-fired}))
+
                 :peer-disconnected
                 (let [{:keys [address reason]} event
                       [planned effects] (coordinator/on-disconnected state event)
@@ -1307,9 +1314,12 @@
         ;; The last coordinator state the run published: it carries the
         ;; peer connections a crash leaves open.
         last-state (atom nil)
+        ;; The supervisor gets the coordinator's state, not just the
+        ;; record: the watchdog watches the blocks the download receives,
+        ;; which the record does not carry.
         publish-state (fn [state]
                         (reset! last-state state)
-                        (when publish (publish (:download state))))]
+                        (when publish (publish state)))]
 
     (println (str "  Connecting to " total-attempted " peers..."))
     (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
@@ -1336,6 +1346,6 @@
 
 (s/fdef run-subtree
   :args (s/cat :manager ::download-manager :plan map?
-               :publish (s/? (s/fspec :args (s/cat :record map?)))
+               :publish (s/? (s/fspec :args (s/cat :state map?)))
                :peer-supervisor map?))
 

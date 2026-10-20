@@ -1305,9 +1305,9 @@
                         15000 :timed-out)]
       (is (not= :timed-out result))
       (is (= :completed (:state result)))
-      (is (seq @published) "the run published its record")
-      (is (= 1 (pieces/verified-count (:piece-state (last @published))))
-          "the published record carries the verified piece, so a restart resumes from it"))))
+      (is (seq @published) "the run published its state")
+      (is (= 1 (pieces/verified-count (:piece-state (:download (last @published)))))
+          "the published state carries the verified piece, so a restart resumes from it"))))
 
 (deftest mock-init-refuses-uncompiled-layout-test
   (testing "the mock mirrors the real port: raw info or nil is :invalid-info, unrecorded"

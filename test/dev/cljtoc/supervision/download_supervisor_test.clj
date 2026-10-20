@@ -11,6 +11,7 @@
             [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.test-doubles.network :as mock-net]
+            [dev.cljtoc.ports.time :as time]
             [dev.cljtoc.test-doubles.time :as mock-time]
             [dev.cljtoc.test-utils :as test-utils]))
 
@@ -114,6 +115,38 @@
       (is (= 4 (count (mock-net/closed-peers net)))
           "the initial worker plus the three restarts the budget allowed"))))
 
+(deftest a-stalled-download-is-restarted-by-the-watchdog-test
+  (testing "a download whose peers connect but never deliver is restarted, then fails on the budget"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "stall-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "stall.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "stall")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The peer connects and answers, but never delivers a block:
+          ;; the download stands still and the watchdog fires.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}})
+          disk (mock-disk/create)
+          ;; The real clock: the watchdog's deadline is measured on it,
+          ;; and a mock clock that never moves would never stall.
+          manager (assoc (test-utils/download-manager net disk)
+                         :time-port (time/->RealTimePort))
+          result (download-supervisor/supervise-download
+                  manager
+                  started
+                  {:watchdog {:deadline-ms 100 :poll-ms 10}})]
+      (is (= :failed (:state result)))
+      (is (= :restart-budget-exhausted (get-in result [:error :reason]))
+          "the watchdog kept restarting the subtree until the budget ran out")
+      (is (= 4 (count (mock-net/closed-peers net)))
+          "the initial attempt plus the three restarts the budget allowed"))))
+
 (deftest supervise-download-restarts-a-crashed-subtree-test
   (testing "a crashed subtree runs again while the budget holds"
     (let [calls (atom 0)
@@ -123,7 +156,7 @@
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan _publish]
+                   :run (fn [_manager _plan _publish _peer-supervisor]
                           (swap! calls inc)
                           (if (= 1 @calls)
                             (throw (ex-info "coordinator crash" {}))
@@ -145,10 +178,10 @@
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager plan publish]
+                   :run (fn [_manager plan publish _peer-supervisor]
                           (swap! plans conj (:download plan))
                           (if (= 1 (count @plans))
-                            (do (publish progressed)
+                            (do (publish {:download progressed})
                                 (throw (ex-info "coordinator crash" {})))
                             {:id "supervised" :state :completed}))})]
       (is (= :completed (:state result)))
@@ -168,7 +201,7 @@
                   {:budget {:limit 2 :window-ms 60000}
                    :prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan _publish]
+                   :run (fn [_manager _plan _publish _peer-supervisor]
                           (swap! calls inc)
                           (throw (ex-info "coordinator crash" {})))})]
       (is (= :failed (:state result)))
@@ -199,7 +232,7 @@
                   {:prepare (fn [_manager _record _opts]
                               (swap! prepares inc)
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan _publish]
+                   :run (fn [_manager _plan _publish _peer-supervisor]
                           (swap! runs inc)
                           (if (= 1 @runs)
                             (throw (ex-info "coordinator crash" {}))
@@ -223,10 +256,10 @@
                   record
                   {:prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager plan publish]
+                   :run (fn [_manager plan publish _peer-supervisor]
                           (swap! plans conj (:download plan))
                           (if (= 1 (count @plans))
-                            (do (publish stranded)
+                            (do (publish {:download stranded})
                                 (throw (ex-info "coordinator crash" {})))
                             {:id "supervised" :state :completed}))})]
       (is (= :completed (:state result)))
@@ -251,8 +284,8 @@
                   {:budget {:limit 1 :window-ms 60000}
                    :prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan publish]
-                          (publish progressed)
+                   :run (fn [_manager _plan publish _peer-supervisor]
+                          (publish {:download progressed})
                           (throw (ex-info "coordinator crash" {})))})]
       (is (= :failed (:state result)))
       (is (= :restart-budget-exhausted (get-in result [:error :reason])))
@@ -269,8 +302,8 @@
                   {:on-progress #(swap! seen conj %)
                    :prepare (fn [_manager _record _opts]
                               {:status :ready :plan {:download record}})
-                   :run (fn [_manager _plan publish]
-                          (publish (assoc record :state :downloading))
+                   :run (fn [_manager _plan publish _peer-supervisor]
+                          (publish {:download (assoc record :state :downloading)})
                           {:id "supervised" :state :completed})})]
       (is (= :completed (:state result)))
       (is (= 1 (count @seen)))
