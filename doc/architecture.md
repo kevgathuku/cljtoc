@@ -25,7 +25,7 @@ Domain Layer       → pure torrent logic (piece selection, state transitions, v
 | Coordination | `dev.cljtoc.coordination.*` | core.async flows connecting domain decisions to effects. No business rules. |
 | Orchestration | `dev.cljtoc.orchestration.*` | Download lifecycle: start, pause, resume, stop, progress. |
 | Ports | `dev.cljtoc.ports.*` | Effect protocols plus real implementations (network, disk, time). |
-| Supervision | `dev.cljtoc.supervision.peer-supervisor`, `dev.cljtoc.supervision.download-supervisor` (target adds a session supervisor) | Workers crash on envelope-bounded errors and clean-exit on port `:error` returns; supervisors own restart decisions and budgets. Peer supervisor is one-for-one; download supervisor is rest-for-one per torrent; the session supervisor owns one download-supervisor subtree per torrent so one flaky torrent never restarts its siblings. See [ADR-0011](../docs/adr/0011-supervision-layer.md) as reversed in part by [ADR-0012](../docs/adr/0012-daemon-session.md). |
+| Supervision | `dev.cljtoc.supervision.session-supervisor`, `dev.cljtoc.supervision.download-supervisor`, `dev.cljtoc.supervision.restart` (a peer supervisor is still to come) | Workers crash on envelope-bounded errors and clean-exit on port `:error` returns; supervisors own restart decisions and budgets. The download supervisor is rest-for-one per torrent; the session supervisor owns one download-supervisor subtree per torrent so one flaky torrent never restarts its siblings; `restart` holds the sliding-window budget both levels share. See [ADR-0011](../docs/adr/0011-supervision-layer.md) as reversed in part by [ADR-0012](../docs/adr/0012-daemon-session.md). |
 
 ## Effect ports
 
@@ -81,11 +81,11 @@ Six rules constrain every change. The authoritative wording lives in `AGENTS.md`
 
 ## Status and roadmap
 
-Done: bencode parsing, tracker protocol, peer wire protocol, piece management, download orchestration, CLI (`parse`, `download`, `pause`, `resume`, `status`, `stop`), multi-torrent session value (`0c9.6`).
+Done: bencode parsing, tracker protocol, peer wire protocol, piece management, download orchestration, CLI (`parse`, `download`, `pause`, `resume`, `status`, `stop`), multi-torrent session value (`0c9.6`), session supervisor over one download-supervisor subtree per torrent (`0c9.13`).
 
-Goal: Transmission-style daemon session — one long-lived process owns N torrents across CLI invocations (see [ADR-0012](../docs/adr/0012-daemon-session.md)). The current session record is the stepping stone, not the end state. Slices: session supervisor (`0c9.13`), RPC surface (`0c9.14`), periodic persistence plus SIGTERM shutdown (`0c9.18`), daemon shape (`0c9.12`).
+Goal: Transmission-style daemon session — one long-lived process owns N torrents across CLI invocations (see [ADR-0012](../docs/adr/0012-daemon-session.md)). The current session record is the stepping stone, not the end state. Slices: RPC surface (`0c9.14`), periodic persistence plus SIGTERM shutdown (`0c9.18`), daemon shape (`0c9.12`).
 
-Next: session supervisor, RPC surface, persistence, daemon — then seeding (`torrent.seed`), DHT, monitoring.
+Next: RPC surface, persistence, daemon — then seeding (`torrent.seed`), DHT, monitoring.
 
 ## Cross-cutting edge cases
 

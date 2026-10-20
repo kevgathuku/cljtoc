@@ -51,7 +51,7 @@ A concurrent unit whose lifecycle is owned by a supervisor. Workers exit cleanly
 _Avoid_: thread, goroutine, task ("daemon" alone always means the daemon process below, never a worker)
 
 **Supervisor**:
-The component responsible for a worker's lifecycle: detecting exits or crashes, deciding restart or drop, and enforcing the restart budget that bounds in-flight churn. Sits above the coordination layer in the four-layer architecture. The current build distinguishes a peer supervisor (one-for-one, owns peer workers and the per-connection budget) and a download supervisor (rest-for-one, owns the coordinator and its sibling children). The target adds a session supervisor above them: one download-supervisor subtree per torrent, so rest-for-one stays scoped per torrent and one flaky torrent never restarts its siblings. See [ADR-0012](docs/adr/0012-daemon-session.md).
+The component responsible for a worker's lifecycle: detecting exits or crashes, deciding restart or drop, and enforcing the restart budget that bounds in-flight churn. Sits above the coordination layer in the four-layer architecture. The build distinguishes a download supervisor (rest-for-one, owns the coordinator and its sibling children) and a session supervisor above it, which owns one download-supervisor subtree per torrent, so rest-for-one stays scoped per torrent and one flaky torrent never restarts its siblings. A peer supervisor (one-for-one, owns peer workers and the per-connection budget) is still to come. See [ADR-0012](docs/adr/0012-daemon-session.md).
 _Avoid_: parent thread, retry loop, watchdog (lives inside the supervisor)
 
 **Restart budget**:
@@ -108,5 +108,5 @@ One single-torrent download job: torrent description, piece state, peer connecti
 A point-in-time snapshot of a download's completion, transfer totals, rate, and connected-peer count.
 
 **Session**:
-One run of the client that owns several downloads: it starts every requested torrent together, runs each on its own thread, and keeps a failed start or a crashed run from taking the others down. In the blocking CLI the session lives for a single command; a long-lived, queryable session is the daemon's job.
+One run of the client that owns several downloads: it starts every requested torrent together and keeps a failed start from taking the others down. The running belongs to the session supervisor, which gives each download its own thread. In the blocking CLI the session lives for a single command; a long-lived, queryable session is the daemon's job.
 _Avoid_: using "session" for a single `Download` (a `Download` is one torrent's job; a `Session` is the set of them).
