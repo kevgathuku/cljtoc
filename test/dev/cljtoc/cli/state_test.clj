@@ -20,15 +20,15 @@
   (testing "returns the most recent record, read through the port"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
-      (disk/save-state port {:id "new" :state :downloading})
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= "new" (:id (state/load-most-recent port dir))))))
   (testing "a corrupt most-recent file reads as nil without falling through"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
+      (disk/save-state port (test-utils/saved-record "old" :paused))
       (spit (io/file dir "new.edn") "{broken edn")
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
@@ -36,5 +36,72 @@
   (testing "an empty dir reads as nil"
     (let [dir (test-utils/temp-dir "cli-state-recent-")
           port (temp-disk-port dir)]
+      (is (nil? (state/load-most-recent port dir))))))
+
+(deftest load-record-rejects-a-record-filed-under-another-id-test
+  (testing "a record whose :id differs from the requested id is not that download"
+    (let [dir (test-utils/temp-dir "cli-state-id-")
+          port (temp-disk-port dir)]
+      (spit (io/file dir "requested.edn") (pr-str (test-utils/saved-record "other" :paused)))
+      (is (nil? (state/load-record port "requested"))
+          "a named lookup must not show a record filed under another id")
+      (is (= [] (state/load-all port dir))
+          "the listing agrees: a mismatched file is not a download"))))
+
+(deftest fdef-specs-hold-generatively-test
+  ;; load-record is excluded from the check on principle: it reads through
+  ;; the injected disk port, so the generator cannot conjure the port it
+  ;; runs against.
+  (testing "the pure, total record predicate holds over generated values"
+    (is (= {}
+           (test-utils/check-fdefs
+            '[dev.cljtoc.cli.state/download-record?]
+            50)))))
+
+;; load-all carries an fdef but is excluded from the generative check on
+;; principle: it reads through the injected disk port, so the generator
+;; cannot conjure the port it runs against.
+(deftest load-all-test
+  (testing "returns every record, most recently modified first"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "new" :downloading))
+      (.setLastModified (io/file dir "old.edn") 1000)
+      (.setLastModified (io/file dir "new.edn") 2000)
+      (is (= ["new" "old"] (map :id (state/load-all port dir))))))
+  (testing "a corrupt record is skipped, not fatal: the rest stay listed"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (test-utils/saved-record "ok" :paused))
+      (spit (io/file dir "broken.edn") "{broken edn")
+      (.setLastModified (io/file dir "broken.edn") 2000)
+      (.setLastModified (io/file dir "ok.edn") 1000)
+      (is (= ["ok"] (map :id (state/load-all port dir))))))
+  (testing "a missing dir reads as empty"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (is (= [] (state/load-all port (str dir "/absent"))))))
+  (testing "valid EDN of the wrong shape is corrupt too, not listed"
+    (let [dir (test-utils/temp-dir "cli-state-all-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (test-utils/saved-record "ok" :paused))
+      (spit (io/file dir "empty.edn") "{}")
+      (spit (io/file dir "number.edn") "42")
+      (spit (io/file dir "half.edn") "{:id \"half\" :state :paused}")
+      (doseq [name ["empty.edn" "number.edn" "half.edn"]]
+        (.setLastModified (io/file dir name) 3000))
+      (.setLastModified (io/file dir "ok.edn") 1000)
+      (is (= ["ok"] (map :id (state/load-all port dir)))
+          "a wrong-shape record would throw in progress and hide the rest"))))
+
+(deftest load-most-recent-ignores-a-wrong-shape-record-test
+  (testing "a newest file that decodes to a non-record reads as nil, like a syntax error"
+    (let [dir (test-utils/temp-dir "cli-state-recent-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (spit (io/file dir "empty.edn") "{}")
+      (.setLastModified (io/file dir "old.edn") 1000)
+      (.setLastModified (io/file dir "empty.edn") 2000)
       (is (nil? (state/load-most-recent port dir))))))
 

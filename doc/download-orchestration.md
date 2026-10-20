@@ -23,6 +23,14 @@ A download moves through explicit states: `:idle → :starting → :downloading`
 
 Corrupt pieces requeue automatically onto a different peer. Dead peers trigger reconnects to alternatives. When nothing can proceed — no peers, poisoned data, full disk — the download reports an error instead of hanging.
 
+## Sessions and multiple torrents
+
+A **session** (`dev.cljtoc.orchestration.session`) owns several downloads in one process. `torrent.download` takes one or more torrent paths, starts them together through `start-torrents`, and drives them to a terminal state with `run-downloads`. `torrent.status` with no id lists every saved download, most recent first; a named id lists that one.
+
+A path that refuses to start lands in the session's failures and the rest still run, so one bad path never strands the others. A torrent whose tracker announce fails is a failed download, not a refused start: it stays in the session and is saved, so `torrent.resume` can retry it. Two paths whose torrents share a basename derive the same id — the map entry and on-disk state file key — so the later one is reported as a `:duplicate-id` failure instead of silently replacing the first. Two torrents that declare the same output path would overwrite each other's verified bytes, so the later one is reported as `:overlapping-output`. `run-downloads` gives each download its own thread, hands each terminal record to the caller as it finishes (so a result cannot sit unsaved behind a stalled sibling), and folds an ordinary exception in one into a `:failed` record, so one torrent's crash leaves its siblings' final records intact; JVM errors such as `OutOfMemoryError` are left to propagate.
+
+The session record is the stepping stone, not the end state: today it lives for a single blocking command. The goal is a Transmission-style daemon where one long-lived session process owns N torrents across CLI invocations — loads all torrents plus resume state at start, accepts add/remove while running, persists periodically and on SIGTERM — and each CLI call is a thin client against it (see [ADR-0012](../docs/adr/0012-daemon-session.md)). Querying a running session, pausing it, and removing the blocking CLI are the daemon's job (`torrent-client-clj-0c9.12`, via `0c9.13` supervisor scope, `0c9.14` RPC surface, `0c9.18` persistence).
+
 ## Concurrency and supervision
 
 The supervision layer lives in `dev.cljtoc.supervision.*` and sits above the coordination layer in the four-layer architecture. See [ADR-0011](../adr/0011-supervision-layer.md) for the design rationale.

@@ -80,6 +80,31 @@ Stops a download and cleans up resources.
 
 ---
 
+## Session API
+
+A session owns several downloads in one process (see [download orchestration](download-orchestration.md#sessions-and-multiple-torrents)).
+
+```clojure
+(session/session manager)
+  → session                            ; {:manager ... :downloads {} :failures []}
+
+(session/start-torrents session torrent-paths output-dir)
+  → session                            ; good paths become downloads, bad ones failures
+
+(session/run-downloads session)
+  → session                            ; each download run to a terminal state
+
+(session/downloads session)
+  → [download ...]                     ; ordered by id
+
+(session/failures session)
+  → [{:torrent-path ... :error ... :message ...} ...]
+```
+
+`start-torrents` keys `:downloads` by each torrent's id (its basename). A path that refuses to start lands in `:failures` with the error that `start-download` returned. A path whose id another path already claimed lands in `:failures` as `:error :duplicate-id`; a path whose declared output overlaps a download already started lands there as `:error :overlapping-output`. The rest still start.
+
+---
+
 ## Internal coordination API
 
 ### handle-piece-data

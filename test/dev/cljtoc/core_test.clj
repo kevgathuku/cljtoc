@@ -186,7 +186,7 @@
   (testing "by id loads the record the port saved"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (is (= {:ok :saved} (disk/save-state port {:id "cmd-1" :state :paused})))
+      (is (= {:ok :saved} (disk/save-state port (test-utils/saved-record "cmd-1" :paused))))
       (let [loaded (#'core/load-command-state port dir ["cmd-1"])]
         (is (= "cmd-1" (:id loaded)))
         (is (= :paused (:state loaded))))))
@@ -202,21 +202,21 @@
   (testing "no id falls back to the most recent record"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "old" :state :paused})
-      (disk/save-state port {:id "new" :state :downloading})
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "new" :downloading))
       (.setLastModified (io/file dir "old.edn") 1000)
       (.setLastModified (io/file dir "new.edn") 2000)
       (is (= "new" (:id (#'core/load-command-state port dir []))))))
   (testing "a torrent path resolves to the id the download was saved under"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "path" :state :paused})
+      (disk/save-state port (test-utils/saved-record "path" :paused))
       (is (= "path" (:id (#'core/load-command-state port dir ["./tmp/path.torrent"]))))
       (is (= "path" (:id (#'core/load-command-state port dir ["./tmp/path"]))))))
   (testing "an exact id wins over path derivation, so dotted ids are not mangled"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "archive.v2" :state :paused})
+      (disk/save-state port (test-utils/saved-record "archive.v2" :paused))
       (is (= "archive.v2" (:id (#'core/load-command-state port dir ["archive.v2"]))))))
   (testing "no id with an empty dir reads as nil"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
@@ -227,9 +227,29 @@
   (testing "a missing dotted id does not resolve to another download's state"
     (let [dir (test-utils/temp-dir "core-cmd-state-")
           port (temp-disk-port dir)]
-      (disk/save-state port {:id "archive" :state :paused})
+      (disk/save-state port (test-utils/saved-record "archive" :paused))
       (is (nil? (#'core/load-command-state port dir ["archive.v2"]))
           "archive.v2 is a bare id, not a torrent path — no fallback, no wrong download"))))
+
+(deftest status-records-test
+  (testing "no id lists every saved download, most recent first"
+    (let [dir (test-utils/temp-dir "core-status-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (test-utils/saved-record "old" :paused))
+      (disk/save-state port (test-utils/saved-record "new" :downloading))
+      (.setLastModified (io/file dir "old.edn") 1000)
+      (.setLastModified (io/file dir "new.edn") 2000)
+      (is (= ["new" "old"] (map :id (#'core/status-records port dir []))))))
+  (testing "a named id lists only that download"
+    (let [dir (test-utils/temp-dir "core-status-")
+          port (temp-disk-port dir)]
+      (disk/save-state port (test-utils/saved-record "cmd-1" :paused))
+      (disk/save-state port (test-utils/saved-record "cmd-2" :paused))
+      (is (= ["cmd-2"] (map :id (#'core/status-records port dir ["cmd-2"]))))))
+  (testing "an unknown id lists nothing"
+    (let [dir (test-utils/temp-dir "core-status-")
+          port (temp-disk-port dir)]
+      (is (= [] (#'core/status-records port dir ["nope"]))))))
 
 (deftest split-global-flags-test
   (testing "--config <path> is pulled out wherever it sits"
@@ -265,14 +285,17 @@
 ;; ---------------------------------------------------------------------------
 ;; Coverage residue for this namespace, recorded rather than papered over:
 ;; the command bodies (cmd-torrent-download/pause/resume/status/stop),
-;; print-usage, and -main's dispatch are not covered, before or after the
-;; settings work. Each calls System/exit on its failure path, and the repo
-;; forbids with-redefs, so driving one from a test would kill the test JVM
-;; when the wiring regressed — a failure mode worse than no test. The wiring
-;; they call is covered at its own seam instead: make-ports (settings reach
-;; the ports and the manager), state-dir (load-command-state), and
-;; try-load-settings (config errors), which is where a regression would
-;; actually land.
+;; save-or-exit, print-usage, and -main's dispatch are not covered, before
+;; or after the settings and multi-torrent work. Each calls System/exit on its failure
+;; path — including the multi-torrent exits (no path started, a failed
+;; start, a sibling that ended :failed) — and the repo forbids with-redefs,
+;; so driving one from a test would kill the test JVM when the wiring
+;; regressed — a failure mode worse than no test. The wiring they call is
+;; covered at its own seam instead: make-ports (settings reach the ports and the manager), state-dir
+;; (load-command-state), status-records (the one-or-all listing the status
+;; command prints), and session/start-torrents + run-downloads (the
+;; multi-torrent run the download command drives), which is where a
+;; regression would actually land.
 ;; ---------------------------------------------------------------------------
 
 (deftest dangling-config-flag-is-detected-test

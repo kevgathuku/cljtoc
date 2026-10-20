@@ -35,6 +35,16 @@
   [^String s]
   (.getBytes s "UTF-8"))
 
+(defn saved-record
+  "A record shaped like the ones the client persists. Progress and status
+   read piece state and stats, so a fixture without them is not a download.
+   Shared so the CLI and command tests validate the same record shape."
+  [id state]
+  {:id id
+   :state state
+   :piece-state {:total-pieces 1 :needed #{} :in-flight #{} :verified #{}}
+   :stats {:bytes-downloaded 0}})
+
 (defn scripted-randomness
   "Build a `MockRandomness` whose next draw is `bytes-seqs`. Each draw
    pulls one entry off the queue and returns it as a byte array of the
