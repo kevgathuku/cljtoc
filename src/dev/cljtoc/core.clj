@@ -197,6 +197,16 @@
       (println "  " (:message save-result))
       (System/exit 1))))
 
+(defn- persist
+  "Save one record from a worker thread. Returns nil on success, or an error
+   map the session surfaces after every run joins: the worker must not exit
+   the JVM while its siblings still run."
+  [disk-port download]
+  (let [save-result (disk/save-state disk-port download)]
+    (when (:error save-result)
+      {:reason :persist-error
+       :message (or (:message save-result) (str (:error save-result)))})))
+
 (defn- cmd-torrent-download
   [settings args]
   (if (empty? args)
@@ -229,12 +239,21 @@
         (println "Starting download to: " output-dir)
         (let [finished (session/run-downloads
                         started
-                        (fn [download] (save-or-exit (:disk-port manager) download)))]
-          (doseq [download (session/downloads finished)]
+                        (fn [download] (persist (:disk-port manager) download)))
+              finished-downloads (session/downloads finished)
+              persist-failures (keep #(when-let [error (:session/persist-error %)]
+                                        [(:id %) error])
+                                     finished-downloads)]
+          (doseq [download finished-downloads]
             (println)
             (print-progress (download/progress time-port download)))
+          (doseq [[download-id error] persist-failures]
+            (println)
+            (println (str "Failed to save download state for " download-id ": "
+                          (:message error))))
           (when (or (seq (session/failures finished))
-                    (some #(= :failed (:state %)) (session/downloads finished)))
+                    (seq persist-failures)
+                    (some #(= :failed (:state %)) finished-downloads))
             (System/exit 1)))))))
 
 (defn- cmd-torrent-pause

@@ -36,13 +36,27 @@
        (integer? (get-in value [:piece-state :total-pieces]))
        (map? (:stats value))))
 
+(s/fdef download-record?
+  :args (s/cat :value any?)
+  :ret boolean?)
+
 (defn load-record
   "Load one state file through the port, keeping it only when it decodes to
-   a download record. Nil means absent, unreadable, or the wrong shape —
-   the CLI's single missing-state story."
+   a download record filed under this id. A record whose :id disagrees with
+   its filename is corrupt too — returning it would let a named lookup show
+   or act on another download. Nil means absent, unreadable, the wrong
+   shape, or the wrong id — the CLI's single missing-state story."
   [disk-port id]
-  (let [result (disk/load-state disk-port id)]
-    (when (download-record? (:ok result)) (:ok result))))
+  (let [result (disk/load-state disk-port id)
+        record (:ok result)]
+    (when (and (download-record? record)
+               (= id (:id record)))
+      record)))
+
+(s/fdef load-record
+  :args (s/cat :disk-port any? :id string?)
+  :ret (s/nilable map?)
+  :fn #(let [ret (:ret %)] (or (nil? ret) (download-record? ret))))
 
 (defn load-most-recent
   "Load the most recently started download. Dir-scanning by recency lives

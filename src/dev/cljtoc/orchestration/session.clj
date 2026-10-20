@@ -158,7 +158,9 @@
    failed record so one torrent cannot take the others down. Errors such as
    OutOfMemoryError are not a torrent's failure and are left to propagate.
    Calls `on-complete` with the terminal record on this thread, so the
-   caller can persist it while its siblings still run."
+   caller can persist it while its siblings still run. A callback failure
+   lands on the record as :session/persist-error instead of failing the
+   future, so one unsaved torrent does not abort its siblings."
   [manager download on-complete]
   (future
     (let [finished (try
@@ -167,17 +169,25 @@
                        (assoc download
                               :state :failed
                               :error {:reason :run-exception
-                                      :message (.getMessage error)})))]
-      (on-complete finished)
-      finished)))
+                                      :message (.getMessage error)})))
+          persist-error (try
+                          (on-complete finished)
+                          (catch Exception error
+                            {:reason :on-complete-exception
+                             :message (.getMessage error)}))]
+      (if persist-error
+        (assoc finished :session/persist-error persist-error)
+        finished))))
 
 (defn run-downloads
   "Run every download to a terminal state, each on its own thread. Blocks
    until all have finished and returns the session holding the final
    records. `on-complete` sees each terminal record as it finishes,
    independently of its siblings, so a result cannot sit unsaved behind a
-   stalled torrent. Records already :failed (a refused announce) are left
-   untouched: only a later `torrent.resume` re-announces them."
+   stalled torrent. A failing `on-complete` lands on its record as
+   :session/persist-error and never aborts the other runs. Records already
+   :failed (a refused announce) are left untouched: only a later
+   `torrent.resume` re-announces them."
   ([session]
    (run-downloads session (fn [_])))
   ([session on-complete]

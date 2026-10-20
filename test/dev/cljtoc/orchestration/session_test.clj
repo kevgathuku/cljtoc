@@ -230,6 +230,49 @@
       (deliver release-b true)
       (.join runner 10000))))
 
+(deftest run-downloads-records-a-persister-failure-test
+  (testing "an on-complete exception is recorded on its download, not raised to the caller"
+    (let [disk (mock-disk/create
+                {:torrent-data {"/x.torrent" {:info-hash (byte-array 20)
+                                              :announce "http://x.test/announce"
+                                              :info {:pieces ["h1"]
+                                                     :piece-length 4
+                                                     :name "x.bin"
+                                                     :length 4}}}})
+          net (mock-net/create
+               {:mock-peers []
+                :announce-to-url-responses {"http://x.test/announce"
+                                            {:ok #{"10.0.0.1:6881"}}}
+                :connect-response {:error :connect-failed :message "down"}})
+          run (session/run-downloads
+               (session/start-torrents (session/session (manager net disk))
+                                       ["/x.torrent"] "/out")
+               (fn [_] (throw (ex-info "persister exploded" {}))))
+          record (first (session/downloads run))]
+      (is (= :on-complete-exception (get-in record [:session/persist-error :reason])))
+      (is (= :failed (:state record))
+          "the download's own outcome survives a failing persister")))
+  (testing "a persister that returns an error envelope is surfaced on the record"
+    (let [disk (mock-disk/create
+                {:torrent-data {"/x.torrent" {:info-hash (byte-array 20)
+                                              :announce "http://x.test/announce"
+                                              :info {:pieces ["h1"]
+                                                     :piece-length 4
+                                                     :name "x.bin"
+                                                     :length 4}}}})
+          net (mock-net/create
+               {:mock-peers []
+                :announce-to-url-responses {"http://x.test/announce"
+                                            {:ok #{"10.0.0.1:6881"}}}
+                :connect-response {:error :connect-failed :message "down"}})
+          run (session/run-downloads
+               (session/start-torrents (session/session (manager net disk))
+                                       ["/x.torrent"] "/out")
+               (fn [_] {:reason :persist-error :message "disk full"}))
+          record (first (session/downloads run))]
+      (is (= :persist-error (get-in record [:session/persist-error :reason])))
+      (is (= "disk full" (get-in record [:session/persist-error :message]))))))
+
 (deftest run-one-folds-an-unexpected-throw-test
   (testing "a throwing run becomes a failed record instead of taking the session down"
     (let [torrent {:info-hash (byte-array 20)

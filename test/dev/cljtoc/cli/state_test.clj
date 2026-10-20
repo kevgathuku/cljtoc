@@ -47,6 +47,26 @@
           port (temp-disk-port dir)]
       (is (nil? (state/load-most-recent port dir))))))
 
+(deftest load-record-rejects-a-record-filed-under-another-id-test
+  (testing "a record whose :id differs from the requested id is not that download"
+    (let [dir (test-utils/temp-dir "cli-state-id-")
+          port (temp-disk-port dir)]
+      (spit (io/file dir "requested.edn") (pr-str (saved-record "other" :paused)))
+      (is (nil? (state/load-record port "requested"))
+          "a named lookup must not show a record filed under another id")
+      (is (= [] (state/load-all port dir))
+          "the listing agrees: a mismatched file is not a download"))))
+
+(deftest fdef-specs-hold-generatively-test
+  ;; load-record is excluded from the check on principle: it reads through
+  ;; the injected disk port, so the generator cannot conjure the port it
+  ;; runs against.
+  (testing "the pure, total record predicate holds over generated values"
+    (is (= {}
+           (test-utils/check-fdefs
+            '[dev.cljtoc.cli.state/download-record?]
+            50)))))
+
 ;; load-all carries an fdef but is excluded from the generative check on
 ;; principle: it reads through the injected disk port, so the generator
 ;; cannot conjure the port it runs against.
