@@ -10,6 +10,8 @@ Work the beads queue with minimal supervision. You pull ready work, implement it
 
 ## Setup (once per run)
 
+0. Scope (optional). If the run was given a scope — bead ids, an epic, or a topic — resolve it to an ordered bead list up front (`bd show` each id to confirm it exists and is open) and work only that list, in order. Flag any listed bead still blocked by an open prerequisite and continue with the rest.
+
 1. Create a branch: `git checkout -b sweep/<date>-<topic>`.
 2. Confirm authority with the human if unclear: you may commit (one commit per bead, message references the bead id) but never push.
 
@@ -17,7 +19,7 @@ Work the beads queue with minimal supervision. You pull ready work, implement it
 
 Repeat until `bd ready` is empty or a stop condition fires:
 
-1. **Pull.** Run `bd ready --json`, take the top issue, `bd update <id> --claim`. Refresh the lease with `bd heartbeat <id>` every 2 minutes while it is yours (well inside the 5-minute default lease; use a shorter interval if your Beads lease is configured shorter).
+1. **Pull.** Take the next bead — the next unclosed item on the scope list if scoped, else the top issue from `bd ready --json` — then `bd update <id> --claim`. Refresh the lease with `bd heartbeat <id>` every 2 minutes while it is yours (well inside the 5-minute default lease; use a shorter interval if your Beads lease is configured shorter).
 2. **Implement.** One issue, one minimal diff. Run the `issue-to-pr` skill per issue for the implementation discipline (validate claims, TDD in vertical slices, gates, self-review, docs) — with three sweep adaptations: the bead replaces the GitHub issue number throughout, you skip `issue-to-pr`'s branch step (sweep already created the working branch in Setup — stay on it), and you stop at a validated commit, never opening a PR. Respect the repo's review gates: co-located fdefs, `stest/check` pins for pure fns, CHANGELOG entry under `[Unreleased]` for behavior changes.
 3. **Gate.** `cljfmt fix` on touched files, `clj-kondo` clean, then `lein test` for the touched namespace; full `lein test` before closing.
 4. **Close.** `bd close <id> --reason="..."`. File discovered follow-ups as beads with `--deps discovered-from:<id>`; never markdown TODOs.
@@ -27,7 +29,7 @@ Repeat until `bd ready` is empty or a stop condition fires:
 
 Stop the loop and hand off when any one holds:
 
-- `bd ready` is empty.
+- Scope list exhausted (unscoped: `bd ready` is empty).
 - 5 beads closed this run.
 - Same failure twice on one issue: `bd human <id>` with the error, unclaim, continue to the next ready issue (or hand off if none).
 - An issue's scope contradicts its acceptance criteria.
