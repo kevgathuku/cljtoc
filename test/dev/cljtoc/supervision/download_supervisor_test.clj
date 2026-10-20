@@ -198,3 +198,20 @@
       (is (= :restart-budget-exhausted (get-in result [:error :reason])))
       (is (= 1 (pieces/verified-count (:piece-state result)))
           "the verified piece survives the supervisor's give-up"))))
+
+(deftest supervise-download-reports-progress-to-its-caller-test
+  (testing "the caller sees the record as the download progresses"
+    (let [seen (atom [])
+          record (download-record)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager (mock-net/create) (mock-disk/create))
+                  record
+                  {:on-progress #(swap! seen conj %)
+                   :prepare (fn [_manager _record _opts]
+                              {:status :ready :plan {:download record}})
+                   :run (fn [_manager _plan publish]
+                          (publish (assoc record :state :downloading))
+                          {:id "supervised" :state :completed})})]
+      (is (= :completed (:state result)))
+      (is (= 1 (count @seen)))
+      (is (= :downloading (:state (first @seen)))))))

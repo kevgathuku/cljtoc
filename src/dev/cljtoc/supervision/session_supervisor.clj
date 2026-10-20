@@ -33,10 +33,15 @@
   "Run one download under its download supervisor, then persist the
    terminal record. A failing persister lands on the record as
    :session/persist-error instead of taking the session down, so one
-   unsaved torrent does not abort its siblings."
+   unsaved torrent does not abort its siblings. `publish` carries the
+   record as the download progresses, so the session keeps the progress
+   even if the download supervisor itself crashes."
   [manager on-complete]
-  (fn [download-record]
-    (let [finished (download-supervisor/supervise-download manager download-record {})
+  (fn [download-record publish]
+    (let [finished (download-supervisor/supervise-download
+                    manager
+                    download-record
+                    {:on-progress publish})
           persist-error (try
                           (on-complete finished)
                           (catch Exception error
@@ -53,13 +58,17 @@
    The download's own subtree restarts happen inside the download
    supervisor, so they never reach this level. What reaches it is a
    child that crashed outright — the download supervisor could not even
-   prepare its run — and the session restarts that download alone."
+   prepare its run — and the session restarts that download alone.
+
+   The record the child published is what a give-up fails from, so the
+   pieces the download verified before the crash survive it."
   [manager child download-record budget]
-  (let [outcome (restart/supervise (fn [] (child download-record))
+  (let [published (atom nil)
+        outcome (restart/supervise (fn [] (child download-record #(reset! published %)))
                                    (restart/budget-for manager budget))]
     (if (contains? outcome :ok)
       (:ok outcome)
-      (download-supervisor/budget-exhausted-record download-record
+      (download-supervisor/budget-exhausted-record (or @published download-record)
                                                    (:restarts outcome)
                                                    (:window-ms budget)))))
 
@@ -70,10 +79,14 @@
    `on-complete` sees each download's terminal record as it finishes, so
    a result cannot sit unsaved behind a stalled torrent.
 
+   A download that already reached a terminal state is kept as it is: it
+   is neither run nor persisted again. A refused announce leaves a
+   :failed record, and only a later `torrent.resume` re-announces it.
+
    `child` is the seam that runs one download: it takes the download
-   record and returns its terminal record. It defaults to the download
-   supervisor, and a test drives the session's own restart path through
-   it."
+   record and a publish fn, and returns its terminal record. It defaults
+   to the download supervisor, and a test drives the session's own
+   restart path through it."
   [manager downloads {:keys [on-complete budget child]
                       :or {on-complete (fn [_])
                            budget restart/default-budget}}]

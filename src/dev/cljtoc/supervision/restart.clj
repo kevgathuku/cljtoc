@@ -116,10 +116,10 @@
                     (catch Exception error {:crashed error}))]
       (if (contains? outcome :returned)
         {:ok (:returned outcome)}
-        (let [now-ms (long (now))
-              window-times (prune restart-times window-ms now-ms)]
+        (let [crashed-at (long (now))
+              window-times (prune restart-times window-ms crashed-at)]
           (if (restart-allowed? window-times limit)
-            (recur (conj window-times now-ms))
+            (recur (conj window-times crashed-at))
             {:error :restart-budget-exhausted
              :restarts (count window-times)
              :last-error (:crashed outcome)}))))))

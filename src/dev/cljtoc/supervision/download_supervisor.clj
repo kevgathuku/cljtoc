@@ -50,10 +50,14 @@
    itself is prepared once, so a restart does not resolve the output
    layout against the filesystem again.
 
+   `on-progress` receives that record as it moves, so a supervisor
+   above this one keeps the download's progress even when this
+   supervisor itself crashes.
+
    Returns the download's terminal record: the finished download, or a
    failed one carrying :restart-budget-exhausted when the budget ran
    out."
-  [manager download-record {:keys [opts prepare run budget]
+  [manager download-record {:keys [opts prepare run budget on-progress]
                             :or {opts nil
                                  prepare download/prepare-run
                                  run download/run-subtree
@@ -63,7 +67,9 @@
       (:record outcome)
       (let [plan (:plan outcome)
             published (atom (:download plan))
-            publish (fn [record] (reset! published record))
+            publish (fn [record]
+                      (reset! published record)
+                      (when on-progress (on-progress record)))
             child (fn []
                     (run manager
                          (assoc plan :download

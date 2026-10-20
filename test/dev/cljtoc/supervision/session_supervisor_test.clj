@@ -32,7 +32,7 @@
   (testing "the session restarts the child that crashed and leaves its sibling alone"
     (let [a-calls (atom 0)
           b-calls (atom 0)
-          child (fn [download-record]
+          child (fn [download-record _publish]
                   (if (= "a" (:id download-record))
                     (do (swap! a-calls inc)
                         (if (< @a-calls 3)
@@ -96,7 +96,7 @@
                                           "/out")
           downloads (into {} (map (juxt :id identity) (session/downloads started)))
           a-runs (atom 0)
-          child (fn [download-record]
+          child (fn [download-record _publish]
                   (if (= "a" (:id download-record))
                     ;; A's coordinator crashes; its download supervisor
                     ;; restarts the subtree.
@@ -129,7 +129,7 @@
 (deftest a-child-that-keeps-crashing-fails-alone-test
   (testing "a child that crashes past its budget fails without taking the session down"
     (let [calls (atom 0)
-          child (fn [download-record]
+          child (fn [download-record _publish]
                   (if (= "a" (:id download-record))
                     (do (swap! calls inc)
                         (throw (ex-info "download supervisor crash" {})))
@@ -338,7 +338,7 @@
 (deftest session-supervisor-lists-only-finished-downloads-test
   (testing "a download still running has no record yet"
     (let [release (promise)
-          child (fn [download-record]
+          child (fn [download-record _publish]
                   (deref release 5000 false)
                   {:id (:id download-record) :state :completed})
           supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
@@ -353,7 +353,7 @@
 (deftest session-supervisor-leaves-a-failed-download-alone-test
   (testing "a refused announce is kept as it is; only a later torrent.resume re-announces it"
     (let [calls (atom 0)
-          child (fn [download-record]
+          child (fn [download-record _publish]
                   (swap! calls inc)
                   {:id (:id download-record) :state :completed})
           supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
@@ -363,3 +363,28 @@
       (await-bounded supervisor)
       (is (= 0 @calls) "the download already failed; running it again would re-announce it")
       (is (= [:failed] (map :state (session-supervisor/records supervisor)))))))
+
+(deftest a-child-that-keeps-crashing-keeps-its-progress-test
+  (testing "a child that crashes past its budget fails with the progress it made"
+    (let [calls (atom 0)
+          child (fn [download-record publish]
+                  (swap! calls inc)
+                  (publish (assoc download-record
+                                  :state :downloading
+                                  :piece-state {:total-pieces 1
+                                                :needed #{}
+                                                :in-flight #{}
+                                                :verified #{0}}))
+                  (throw (ex-info "download supervisor crash" {})))
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:budget {:limit 1 :window-ms 60000}
+                                                :child child})]
+      (await-bounded supervisor)
+      (let [record (first (session-supervisor/records supervisor))]
+        (is (= 2 @calls) "the initial attempt plus the one restart the budget allowed")
+        (is (= :failed (:state record)))
+        (is (= :restart-budget-exhausted (get-in record [:error :reason])))
+        (is (= 1 (count (:verified (:piece-state record))))
+            "the piece the child verified before it crashed survives the give-up")))))
