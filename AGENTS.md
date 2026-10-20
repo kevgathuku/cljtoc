@@ -73,6 +73,9 @@ lein uberjar
 # Run the application
 lein run
 java -jar target/uberjar/dev.cljtoc-0.1.0-SNAPSHOT-standalone.jar
+
+# Advisory: public fns without a co-located fdef (always exits 0)
+bb scripts/fdef_lint.clj
 ```
 
 ## Clojure REPL Evaluation
@@ -220,6 +223,7 @@ Each feature has a dedicated page under `doc/` (overview plus contract pages):
 - Extract shared test helpers (e.g., `to-bytes`) to `test/dev/cljtoc/test_utils.clj` rather than duplicating across test namespaces
 - Co-locate function specs: `(s/fdef NAME ...)` directly after its `defn`, never in a trailing section. Data `s/def` specs must be defined before any fdef referencing them (the spec registry resolves at load time)
 - Edge effects must handle port result envelopes: after planning moved state forward, a failed send/write strands it — unwind (requeue + drop bookkeeping) or fail explicitly, never discard `{:error ...}`
+- Code that runs on a worker thread (a `future`, a session callback, a supervised go block) must return its failure, never call `System/exit`: exiting there kills the process under its siblings and loses every result they had not yet persisted. Let the failure land on that worker's record (or crash the worker for its supervisor) and exit only at the CLI entry point, after every worker has joined. The session layer follows this; `core/torrent.download` prints persistence failures and exits after the run returns
 - Test doubles must mirror the real ports' error envelopes (e.g., `MockDiskPort` `:write-error`) so edge failure paths stay drivable; success-only mocks leave failure handling untestable
 - Filesystem writes must containment-check the canonical path: lexical component validation does not stop a pre-existing symlink inside the target dir from redirecting the write outside it — check containment *before* `mkdirs`, create the parents, then check again (`DiskPortImpl/resolve-contained`). Checking only afterwards is too late: `mkdirs` follows a symlinked component and creates the directory outside the dir first, so the write is refused but the directory is not. Append the separator only when missing: a canonical dir that is itself the filesystem root already ends in one, and doubling it yields `//`, which no child can start with
 - Policy refusals are not containment checks: keep them separate and say which is which. Refusing a filesystem root (`DiskPortImpl/declined-output-dir`) is ergonomics — containment already holds there — and it turns a `:write-error` that depends on whether the process may write there into a deterministic, actionable error. Detect a root by shape (a canonical path with no parent), never by comparing against `File/separator`: that matches the Unix `/` only, and lets a Windows drive root through
