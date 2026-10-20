@@ -54,6 +54,66 @@
       (is (= :completed (:state result)))
       (is (= 1 (pieces/verified-count (:piece-state result)))))))
 
+(deftest a-crashed-peer-worker-is-restarted-test
+  (testing "a peer worker that crashes is restarted and the download still completes"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "crash-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "crash.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "crash")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; The first read fails the way a broken socket does: an
+          ;; exception, not an envelope. The peer worker crashes on it,
+          ;; and the peer supervisor restarts that worker alone.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-responses (atom [{:throw true}
+                                          {:ok (peer/->Bitfield
+                                                (byte-array [(unchecked-byte 0x80)]))}
+                                          {:ok (peer/->Unchoke)}
+                                          {:ok (peer/->Piece 0 0 piece-0-bytes)}])})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :completed (:state result)))
+      (is (= 1 (pieces/verified-count (:piece-state result)))))))
+
+(deftest a-flapping-peer-is-dropped-when-its-budget-runs-out-test
+  (testing "a peer whose worker keeps crashing is dropped instead of restarted forever"
+    (let [piece-0-bytes (test-utils/to-bytes "abcd")
+          info-hash (bencode/sha1-hash (test-utils/to-bytes "flap-info"))
+          torrent {:info-hash info-hash
+                   :info {:pieces [(bencode/sha1-hash piece-0-bytes)]
+                          :piece-length 4
+                          :name "flap.bin"
+                          :length 4}}
+          started (assoc (download/initial-download (mock-time/create) torrent "/out" "flap")
+                         :state :downloading
+                         :peers #{{:address "10.0.0.9:6881"}})
+          ;; Every read fails, so the worker keeps crashing and the
+          ;; per-connection budget runs out.
+          net (mock-net/create
+               {:handshake-response {:ok {:info-hash info-hash
+                                          :peer-id (byte-array 20)}}
+                :receive-default {:throw true}})
+          disk (mock-disk/create)
+          result (download-supervisor/supervise-download
+                  (test-utils/download-manager net disk)
+                  started
+                  {})]
+      (is (= :failed (:state result)))
+      (is (= :no-peers (get-in result [:error :reason]))
+          "the dropped peer left the swarm without peers")
+      (is (= 4 (count (mock-net/closed-peers net)))
+          "the initial worker plus the three restarts the budget allowed"))))
+
 (deftest supervise-download-restarts-a-crashed-subtree-test
   (testing "a crashed subtree runs again while the budget holds"
     (let [calls (atom 0)

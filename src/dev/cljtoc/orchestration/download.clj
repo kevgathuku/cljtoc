@@ -23,8 +23,7 @@
             [dev.cljtoc.orchestration.coordinator :as coordinator]
             [dev.cljtoc.ports.network :as network]
             [dev.cljtoc.ports.disk :as disk]
-            [dev.cljtoc.ports.time :as time]
-            [dev.cljtoc.coordination.peer-worker :as peer-worker]))
+            [dev.cljtoc.ports.time :as time]))
 
 ;; Byte arrays flow through every piece write here; fail the compile on
 ;; reflective calls so boxing never hides in the hot path.
@@ -942,21 +941,6 @@
            :error {:reason :no-peers
                    :message (str "No peers available (" connected "/" total-attempted " connected)")})))
 
-(defn watch-workers!
-  "Close events-ch once every worker channel has closed.
-   run-peer returns its thread channel, which closes when the worker
-   exits — so all-closed means every worker is done. With zero workers
-   the channel closes immediately instead of parking the coordinator."
-  [worker-chs events-ch]
-  (async/thread
-    (doseq [worker-ch worker-chs]
-      (async/<!! worker-ch))
-    (async/close! events-ch)))
-
-(s/fdef watch-workers!
-  :args (s/cat :worker-chs coll? :events-ch any?)
-  :ret any?)
-
 (defn run-event-loop
   "Drive one download from events-ch to completion or swarm exhaustion.
    Handlers plan state transitions, the edge performs effects.
@@ -1291,34 +1275,33 @@
   :ret map?)
 
 (defn run-subtree
-  "Run the download's child subtree: dial the capped peers and drive the
-   coordinator until the download reaches a terminal state. Returns the
-   final Download record.
+  "Run the download's child subtree: drive the coordinator over the peer
+   supervisor's workers until the download reaches a terminal state.
+   Returns the final Download record.
 
    `publish` is called with the download record as the run progresses.
    A supervisor uses it to resume a restarted subtree from the pieces
    already verified instead of re-fetching them. It is optional: a
    caller that runs the subtree once passes nil.
 
-   The subtree owns its event channel: it creates the channel and hands
-   it to the peer workers, whose exit closes it. It also owns its peer
-   connections: a crashed coordinator leaves them open, and the restart
-   opens new ones to the same peers, so the crash closes them before it
-   travels to the supervisor."
-  [manager plan publish]
+   The peer supervisor owns the event channel and the peer workers: this
+   subtree reads the channel the supervisor owns, and the workers write
+   their events to it. The subtree owns the peer connections: a crashed
+   coordinator leaves them open, and the restart opens new ones to the
+   same peers, so the crash closes them before it travels to the
+   supervisor."
+  [manager plan publish peer-supervisor]
   (let [{:keys [network-port disk-port time-port]} manager
         {:keys [download layout prepared peer-addresses]} plan
         torrent (:torrent download)
         info (:info torrent)
-        info-hash (:info-hash torrent)
-        total-pieces (count (:pieces info))
         piece-hashes (:pieces info)
         piece-length (:piece-length info)
         ;; The compiled layout already carries the content length:
         ;; one derivation, no second walk of the declared files.
         total-length (:total layout)
-        peer-id (network/peer-id network-port)
-        events-ch (async/chan 256)
+        total-pieces (count (:pieces info))
+        events-ch (:events-ch peer-supervisor)
         total-attempted (count peer-addresses)
         conn-stats (atom {:connected 0 :failed 0})
         ;; The last coordinator state the run published: it carries the
@@ -1330,14 +1313,6 @@
 
     (println (str "  Connecting to " total-attempted " peers..."))
     (println (str "  First 5 peer addresses: " (vec (take 5 peer-addresses))))
-
-    ;; Spawn peer workers; their channels close on worker exit,
-    ;; so watching them tells the coordinator when all peers are gone.
-    (let [worker-chs (mapv (fn [addr]
-                             (peer-worker/run-peer network-port info-hash peer-id
-                                                   addr total-pieces events-ch))
-                           peer-addresses)]
-      (watch-workers! worker-chs events-ch))
 
     ;; Hand the event channel to the coordinator loop
     (try
@@ -1361,32 +1336,6 @@
 
 (s/fdef run-subtree
   :args (s/cat :manager ::download-manager :plan map?
-               :publish (s/? (s/fspec :args (s/cat :record map?)))))
-
-(defn run-download
-  "Run the download to completion. Blocking call.
-   Connects to peers, requests pieces, writes verified pieces.
-   The output layout is compiled once up front and handed to the port
-   and the coordinator; a layout that cannot be compiled fails the
-   download before any peer is dialed or file created.
-   opts is optional: {:materialized? true :layout layout} carries a
-   materialization resume-download already completed into this run, so
-   the cached pieces are not read, verified, and written a second time.
-   The caller guarantees the layout was compiled from this download's
-   own info and the materialization ran after its last piece-state
-   change -- only resume-and-run sets this, immediately after its own
-   reconcile, over the untouched record. Anything else (missing flag,
-   missing or invalid layout) runs the full pass exactly as before.
-   Returns the final Download record."
-  ([manager download]
-   (run-download manager download nil))
-  ([manager download opts]
-   (let [outcome (prepare-run manager download opts)]
-     (if (= :ready (:status outcome))
-       (run-subtree manager (:plan outcome) nil)
-       (:record outcome)))))
-
-(s/fdef run-download
-  :args (s/cat :manager ::download-manager :download map? :opts (s/? map?))
-  :ret map?)
+               :publish (s/? (s/fspec :args (s/cat :record map?)))
+               :peer-supervisor map?))
 

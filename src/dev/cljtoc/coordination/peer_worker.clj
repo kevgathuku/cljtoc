@@ -7,6 +7,7 @@
 
    Uses async/thread for blocking socket reads."
   (:require [clojure.core.async :as async]
+            [clojure.spec.alpha :as s]
             [dev.cljtoc.coordination.peer-connection :as peer-connection]
             [dev.cljtoc.ports.network :as net]))
 
@@ -22,7 +23,12 @@
      total-pieces - number of pieces in the torrent
      events-ch    - shared channel for coordinator events
 
-   Returns a channel that closes when the peer worker exits."
+   Returns a channel that yields the worker's exit outcome: {:exit :clean}
+   when the peer disconnected or the handshake failed, and {:exit :crash
+   :error e} when the worker hit an unexpected failure. The peer
+   supervisor reads that outcome to decide between a restart and a drop,
+   so a crashed worker leaves the disconnect to the supervisor: only the
+   supervisor knows whether the address will be dialed again."
   [network-port info-hash our-peer-id address total-pieces events-ch]
   (net/log! network-port (str "[run-peer] Starting peer worker for address: " address))
   (async/thread
@@ -32,9 +38,11 @@
       (let [connect-result (peer-connection/connect
                             network-port info-hash our-peer-id address total-pieces)]
         (if (:error connect-result)
-          (async/>!! events-ch {:type :peer-disconnected
-                                :address address
-                                :reason (:message connect-result)})
+          (do
+            (async/>!! events-ch {:type :peer-disconnected
+                                  :address address
+                                  :reason (:message connect-result)})
+            {:exit :clean})
           (let [{:keys [peer-data peer-state]} (:ok connect-result)]
             (try
               ;; Notify coordinator of successful connection
@@ -50,18 +58,30 @@
                       (peer-connection/close network-port peer-data)
                       (async/>!! events-ch {:type :peer-disconnected
                                             :address address
-                                            :reason (or (:message msg-result) "connection closed")}))
+                                            :reason (or (:message msg-result) "connection closed")})
+                      {:exit :clean})
                     (do
                       (async/>!! events-ch {:type :peer-message
                                             :address address
                                             :message (:ok msg-result)})
                       (recur)))))
               (catch Exception e
+                ;; An unexpected failure: close the connection and report
+                ;; the crash. The supervisor decides whether the worker is
+                ;; restarted, and it is the one that tells the coordinator
+                ;; the peer is gone.
                 (peer-connection/close network-port peer-data)
-                (async/>!! events-ch {:type :peer-disconnected
-                                      :address address
-                                      :reason (.getMessage e)}))))))
+                {:exit :crash :error e})))))
       (catch Exception e
-        (async/>!! events-ch {:type :peer-disconnected
-                              :address address
-                              :reason (.getMessage e)})))))
+        {:exit :crash :error e}))))
+
+;; Excluded from stest/check: the worker rides the network port and a
+;; channel, so no generator can conjure either.
+(s/fdef run-peer
+  :args (s/cat :network-port any?
+               :info-hash any?
+               :our-peer-id any?
+               :address string?
+               :total-pieces pos-int?
+               :events-ch any?)
+  :ret any?)

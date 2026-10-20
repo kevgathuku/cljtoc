@@ -96,6 +96,22 @@
     (is (not (re-find #"test\.check" coordinator-source))
         "coordinator.clj must not require clojure.test.check.generators")))
 
+(deftest a-redial-disconnect-keeps-the-address-dialed-test
+  (testing "a peer that will be dialed again stays pending, so the swarm is not exhausted"
+    (let [download {:piece-state (one-piece-state)}
+          state (coordinator/initial-state download ["peer-a"])
+          [connected _] (coordinator/on-connected state {:address "peer-a"
+                                                         :peer-data :pd
+                                                         :peer-state {}})
+          [redialed effects] (coordinator/on-disconnected connected {:address "peer-a"
+                                                                     :redial true})]
+      (is (= [] effects))
+      (is (empty? (:active-peers redialed)))
+      (is (= #{"peer-a"} (:pending-dials redialed))
+          "the address stays dialed: the peer supervisor is about to dial it again")
+      (is (false? (coordinator/swarm-exhausted? redialed))
+          "the swarm is not exhausted while the redial is pending"))))
+
 (deftest disconnect-accepts-address-only-event-test
   (testing "on-disconnected accepts events with only :address (refused dials carry no :peer-state)"
     (is (s/valid?
