@@ -187,8 +187,10 @@
     {:ok (disk/decode-state (get @state-files id))})
 
   (delete-state [_ id]
-    (swap! state-files dissoc id)
-    {:ok :deleted})
+    (if-let [err (:delete-error config)]
+      err
+      (do (swap! state-files dissoc id)
+          {:ok :deleted})))
 
   (evict-piece-cache [_ info-hash]
     (if-let [scope (disk/cache-scope info-hash)]
@@ -206,6 +208,7 @@
    - :torrent-data - map of path -> torrent metadata to return
    - :write-error - error map returned from write-piece instead of storing
    - :read-error - error map returned from read-piece (an unreadable cache)
+   - :delete-error - error map returned from delete-state instead of deleting
    - :output-write-error - error map from write-output-piece (falls back to :write-error)"
   ([]
    (create {}))

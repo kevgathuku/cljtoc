@@ -640,8 +640,8 @@
                (if (:error announce-result)
                  announce-result
                   ;; :layout travels at the envelope level (never inside
-                  ;; the record): resume-and-run hands it to run-download
-                  ;; so the reconciled materialization is not repeated.
+                  ;; the record) for callers that can hand it to the run;
+                  ;; a run without it re-derives the layout from the cache.
                  {:ok (assoc reconciled
                              :peers (build-peers (:ok announce-result)))
                   :layout layout}))))
@@ -1209,8 +1209,9 @@
    the cached pieces are not read, verified, and written a second time.
    The caller guarantees the layout was compiled from this download's
    own info and the materialization ran after its last piece-state
-   change -- only resume-and-run sets this, immediately after its own
-   reconcile, over the untouched record. Anything else (missing flag,
+   change -- only the daemon's resume handler sets this, immediately
+   after its own reconcile, over the untouched record. Anything else
+   (missing flag,
    missing or invalid layout) prepares the full layout as before."
   [manager download opts]
   (let [{:keys [disk-port time-port config]} manager
