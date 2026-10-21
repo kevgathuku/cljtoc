@@ -140,12 +140,12 @@ already achieved by the Elixir tree.
 The spike lived in a scratch rebar3 project (`/tmp/lfe-spike`), not in this
 tree. It ported two slices:
 
-- `dev.cljtoc.domain.pieces` to `src/torrent_pieces.lfe` (263 lines), with
+- `dev.cljtoc.domain.pieces` to `src/torrent_pieces.lfe` (276 lines), with
   the Clojure example cases as 19 `ltest` tests and 12 PropEr properties.
   `verify-piece` calls the existing Elixir `Torrent.verify_hash?/2` through
   the `'Elixir.Torrent` atom; the tests use `Utils.sha_sum/1` the same way.
-- The session supervisor stop path to `src/download_worker.lfe` (87 lines)
-  and `src/session_sup.lfe` (80 lines), with 6 `ltest` cases covering
+- The session supervisor stop path to `src/download_worker.lfe` (85 lines)
+  and `src/session_sup.lfe` (74 lines), with 6 `ltest` cases covering
   `stop`, `stop_child`, `remove_child`, transient crash restart, and the
   terminal-download rule.
 
@@ -350,6 +350,31 @@ test the one remaining hypothesis, and the tooling and contract costs are
 already higher than the taste benefit. The Clojure tree is unchanged except
 for this report.
 
+### Review follow-up (2026-10-21)
+
+Three findings from the PR review were checked against the port and fixed in
+the scratch source; the appendix carries the fixed versions.
+
+- `piece-blocks/3` accepted a negative index and returned blocks with a
+  negative `piece-index`. The Clojure source has the same upper-bound-only
+  check (`src/dev/cljtoc/domain/pieces.clj:421`), but its `::piece-index`
+  spec is `nat-int?`, so the domain excludes negatives. The port has no
+  spec layer, so it now checks the lower bound explicitly. This is a
+  deliberate divergence from the Clojure function body, not a port defect.
+- `assemble-piece/2` sorted blocks before validating them. A block that was
+  not a map, or a map without `offset`, crashed in the sort comparator
+  instead of returning `invalid-block`; Clojure's destructuring returns
+  `nil` for those shapes, so the LFE port had introduced a real regression.
+  The port now validates every block first and rejects non-maps in
+  `block-shape-error/2`.
+- Both test helpers hard-coded the author's Elixir BEAM path. They now read
+  `ELIXIR_EBIN` and fall back to that path, so another machine can point
+  them at its own build.
+
+The fixes kept the mutation table unchanged: 25 `ltest` cases, 12
+properties, and the same 12 mutants with 0 missed by the final property
+suite.
+
 ## Appendix: full spike source
 
 The scratch project lived outside this tree. These files are the
@@ -521,7 +546,7 @@ complete port; the paths match the scratch layout.
 
 (defun piece-blocks (piece-index standard-piece-length total-length)
   (let ((total-pieces (total-piece-count total-length standard-piece-length)))
-    (if (>= piece-index total-pieces)
+    (if (or (< piece-index 0) (>= piece-index total-pieces))
       (piece-error 'invalid-input
                    (lists:flatten
                      (io_lib:format
@@ -570,27 +595,34 @@ complete port; the paths match the scratch layout.
             (io_lib:format "Piece ~p hash mismatch" (list piece-index)))))))
 
 (defun block-shape-error (block expected-length)
-  (let* ((offset (maps:get 'offset block 'undefined))
-          (data (maps:get 'data block 'undefined)))
-    (cond
-      ((not (and (is_integer offset) (>= offset 0)))
-       (piece-error 'invalid-block
-                    (lists:flatten
-                      (io_lib:format
-                        "Block offset must be a non-negative integer, got ~p"
-                        (list offset)))))
-      ((not (is_binary data))
-       (piece-error 'invalid-block
-                    (lists:flatten
-                      (io_lib:format "Block at offset ~p carries no byte array"
-                                     (list offset)))))
-      ((> (+ offset (byte_size data)) expected-length)
-       (piece-error 'block-overflow
-                    (lists:flatten
-                      (io_lib:format
-                        "Block at offset ~p with ~p bytes runs past piece length ~p"
-                        (list offset (byte_size data) expected-length)))))
-      ('true 'ok))))
+  (cond
+    ((not (is_map block))
+     (piece-error 'invalid-block
+                  (lists:flatten
+                    (io_lib:format "Block is not a map: ~p" (list block)))))
+    ('true
+     (let* ((offset (maps:get 'offset block 'undefined))
+             (data (maps:get 'data block 'undefined)))
+       (cond
+         ((not (and (is_integer offset) (>= offset 0)))
+          (piece-error 'invalid-block
+                       (lists:flatten
+                         (io_lib:format
+                           "Block offset must be a non-negative integer, got ~p"
+                           (list offset)))))
+         ((not (is_binary data))
+          (piece-error 'invalid-block
+                       (lists:flatten
+                         (io_lib:format
+                           "Block at offset ~p carries no byte array"
+                           (list offset)))))
+         ((> (+ offset (byte_size data)) expected-length)
+          (piece-error 'block-overflow
+                       (lists:flatten
+                         (io_lib:format
+                           "Block at offset ~p with ~p bytes runs past piece length ~p"
+                           (list offset (byte_size data) expected-length)))))
+         ('true 'ok))))))
 
 (defun first-shape-error (blocks expected-length)
   (case blocks
@@ -604,14 +636,14 @@ complete port; the paths match the scratch layout.
 (defun assemble-piece (blocks expected-length)
   (if (or (not (is_list blocks)) (== 0 (length blocks)))
     (piece-error 'invalid-input "No blocks to assemble")
-    (let ((sorted
-            (lists:sort
-              (lambda (a b) (< (maps:get 'offset a) (maps:get 'offset b)))
-              blocks)))
-      (case (first-shape-error sorted expected-length)
-        ('none
-         (assemble-loop sorted expected-length 0 '()))
-        (error error)))))
+    (case (first-shape-error blocks expected-length)
+      ('none
+       (let ((sorted
+               (lists:sort
+                 (lambda (a b) (< (maps:get 'offset a) (maps:get 'offset b)))
+                 blocks)))
+         (assemble-loop sorted expected-length 0 '())))
+      (error error))))
 
 (defun assemble-loop (blocks expected-length expected-offset acc)
   (case blocks
@@ -825,7 +857,9 @@ complete port; the paths match the scratch layout.
 (include-lib "ltest/include/ltest-macros.lfe")
 
 (defun elixir-ebin ()
-  "/Users/kevin/code/elixir/torrent_client/_build/dev/lib/torrent_client/ebin")
+  (case (os:getenv "ELIXIR_EBIN")
+    ('false "/Users/kevin/code/elixir/torrent_client/_build/dev/lib/torrent_client/ebin")
+    (path path)))
 
 (defun ensure-elixir-domain ()
   (case (code:which 'Elixir.Torrent)
@@ -992,7 +1026,9 @@ complete port; the paths match the scratch layout.
 (deftest piece-blocks-out-of-range
   (let ((result (torrent_pieces:piece-blocks 5 524288 1048576)))
     (is-equal 'invalid-input (maps:get 'error result))
-    (is (is_list (maps:get 'message result)))))
+    (is (is_list (maps:get 'message result))))
+  (let ((result (torrent_pieces:piece-blocks -1 524288 1048576)))
+    (is-equal 'invalid-input (maps:get 'error result))))
 
 (deftest piece-blocks-last-piece-past-two-to-53
   (let* ((total-length 9007199254740993)
@@ -1039,6 +1075,12 @@ complete port; the paths match the scratch layout.
 (deftest assemble-piece-malformed
   (is-equal 'invalid-block
             (maps:get 'error (torrent_pieces:assemble-piece (list (map 'offset 0)) 4)))
+  (is-equal 'invalid-block
+            (maps:get 'error (torrent_pieces:assemble-piece (list 42) 4)))
+  (is-equal 'invalid-block
+            (maps:get 'error
+                      (torrent_pieces:assemble-piece
+                       (list (map 'data (list_to_binary (list 1)))) 4)))
   (is-equal 'invalid-block
             (maps:get 'error
                       (torrent_pieces:assemble-piece
@@ -1446,5 +1488,8 @@ running_offsets(Lengths) ->
     lists:reverse(Reversed).
 
 elixir_ebin() ->
-    "/Users/kevin/code/elixir/torrent_client/_build/dev/lib/torrent_client/ebin".
+    case os:getenv("ELIXIR_EBIN") of
+        false -> "/Users/kevin/code/elixir/torrent_client/_build/dev/lib/torrent_client/ebin";
+        Path -> Path
+    end.
 ```
