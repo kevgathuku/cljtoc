@@ -2,19 +2,14 @@
   (:require [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.orchestration.download :as download]
-            [dev.cljtoc.orchestration.session :as session]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
-            [dev.cljtoc.ports.disk :as disk]
             [dev.cljtoc.ports.network-impl :as network-impl]
             [dev.cljtoc.ports.randomness-impl :as randomness-impl]
             [dev.cljtoc.ports.time :as time-port]
-            [dev.cljtoc.supervision.download-supervisor :as download-supervisor]
-            [dev.cljtoc.supervision.session-supervisor :as session-supervisor]
-            [dev.cljtoc.cli.state :as cli-state]
             [dev.cljtoc.cli.config :as cli-config]
+            [dev.cljtoc.rpc :as rpc]
             [clojure.java.io :as io]
-            [clojure.pprint :as pp]
-            [clojure.string :as str])
+            [clojure.pprint :as pp])
   (:gen-class))
 
 (defn- read-torrent-file [path]
@@ -83,11 +78,11 @@
    settings that do nothing."
   [:max-peers])
 
-(defn- make-ports
-  "Build the ports both torrent.download and torrent.resume run with.
+(defn make-ports
+  "Build the ports the CLI and the daemon run with.
 
-   Both commands read the same state dir and the same piece cache: resume
-   loads the record cmd-torrent-download saved and materializes the pieces
+   The daemon and any local run read the same state dir and the same piece
+   cache: resume loads the record a start saved and materializes the pieces
    its cache holds, so a drifting path here would resume against a cache
    that is not the one the download wrote.
 
@@ -145,246 +140,89 @@
   [rest-args]
   (boolean (some #{"--config"} rest-args)))
 
-(defn- torrent-path-arg?
-  "True when a command argument looks like a torrent path rather than a
-   bare download id: it carries a `.torrent` suffix or a path separator.
-   A bare id never ends in `.torrent` (ids derive from torrent filenames
-   minus the extension) and never carries a separator, so gating the
-   `id-from-path` fallback on this keeps a missing dotted id from
-   resolving to another download's state."
-  [arg]
-  (or (str/ends-with? arg ".torrent")
-      (str/includes? arg "/")))
-
-(defn- load-command-state
-  "Load the record a command should act on: the named id, else the most
-   recent. Returns the record or nil when nothing is there. A corrupt file
-   reads as nil — the CLI's long-standing missing-state story (commands
-   print not-found); the port still reports :load-error in its own contract.
-
-   A torrent path resolves too: download derives its id from the torrent
-   path, so users mirror `torrent.download <path>` when they resume. The
-   exact id is tried first, and the path fallback runs only for arguments
-   that look like torrent paths (a `.torrent` suffix or a path separator)
-   — deriving unconditionally would mangle a bare id that carries dots
-   (`archive.v2` would re-derive as `archive` and return the wrong
-   download, so `torrent.stop archive.v2` could delete `archive`)."
-  [disk-port state-dir args]
-  (if (seq args)
-    (let [arg (first args)]
-      (or (cli-state/load-record disk-port arg)
-          (when (torrent-path-arg? arg)
-            (cli-state/load-record disk-port (disk/id-from-path arg)))))
-    (cli-state/load-most-recent disk-port state-dir)))
-
-(defn- status-records
-  "The records a status command prints: the named download, else every
-   saved record, most recent first. Always a vector, so the caller can
-   test for an empty listing without distinguishing nil from []."
-  [disk-port state-dir args]
-  (if (seq args)
-    (if-let [record (load-command-state disk-port state-dir args)]
-      [record]
-      [])
-    (cli-state/load-all disk-port state-dir)))
-
-(defn- save-or-exit
-  "Persist one download record, or stop the command if the write fails: a
-   run whose state cannot be saved cannot be resumed, so continuing would
-   only lose it."
-  [disk-port download]
-  (let [save-result (disk/save-state disk-port download)]
-    (when (:error save-result)
-      (println "Failed to save download state:")
-      (println "  " (:message save-result))
-      (System/exit 1))))
-
-(defn- persist
-  "Save one record from a worker thread. Returns nil on success, or an error
-   map the session surfaces after every run joins: the worker must not exit
-   the JVM while its siblings still run."
-  [disk-port download]
-  (let [save-result (disk/save-state disk-port download)]
-    (when (:error save-result)
-      {:reason :persist-error
-       :message (or (:message save-result) (str (:error save-result)))})))
-
-(defn- cmd-torrent-download
+(defn- cmd-torrent-start
   [settings args]
   (if (empty? args)
     (do
-      (println "Usage: lein run torrent.download <path-to-torrent-file> [more.torrent ...]")
+      (println "Usage: lein run torrent.start <path-to-torrent-file> [more.torrent ...]")
       (System/exit 1))
-    (let [output-dir (:output-dir settings)
-          {:keys [manager time-port]} (make-ports settings)
-          started (session/start-torrents (session/session manager) args output-dir)]
-      (doseq [{:keys [torrent-path error message]} (session/failures started)]
-        (println (str "Failed to start " torrent-path ": " (or message (name error)))))
-      (let [started-downloads (session/downloads started)]
-        (when (empty? started-downloads)
+    (let [response (rpc/request (:rpc-port settings) :start {:paths (vec args)})]
+      (if (:error response)
+        (do
+          (println (str "Failed to start: " (:message response)))
           (System/exit 1))
-        (doseq [download started-downloads]
-          (let [info (get-in download [:torrent :info])
-                required-size (torrent/total-size info)
-                space-check (disk-impl/check-disk-space (:output-dir download) required-size)]
-            (println (str "Torrent: " (:name info)))
-            (println (str "Size: " (format-bytes required-size)))
-            (println (str "Piece length: " (:piece-length info)))
-            (println (str "Pieces: " (count (:pieces info))))
-            (when (:error space-check)
-              (println "WARNING: " (:message space-check))
-              (println "Continuing anyway..."))
-            ;; Save the started record before the run blocks, so a crash
-            ;; mid-download leaves a resumable record and a status listing
-            ;; sees every torrent the session owns.
-            (save-or-exit (:disk-port manager) download)))
-        (println "Starting download to: " output-dir)
-        (let [supervisor (session-supervisor/start
-                          manager
-                          (session/downloads started)
-                          {:on-complete (fn [download]
-                                          (persist (:disk-port manager) download))})
-              _ (session-supervisor/await-all supervisor)
-              finished-downloads (session-supervisor/records supervisor)
-              persist-failures (keep #(when-let [error (:session/persist-error %)]
-                                        [(:id %) error])
-                                     finished-downloads)]
-          (doseq [download finished-downloads]
-            (println)
-            (print-progress (download/progress time-port download)))
-          (doseq [[download-id error] persist-failures]
-            (println)
-            (println (str "Failed to save download state for " download-id ": "
-                          (:message error))))
-          (when (or (seq (session/failures started))
-                    (seq persist-failures)
-                    (some #(= :failed (:state %)) finished-downloads))
+        (let [{:keys [downloads failures]} (:ok response)]
+          (doseq [{:keys [torrent-path error message]} failures]
+            (println (str "Failed to start " torrent-path ": " (or message (name error)))))
+          (doseq [id downloads]
+            (println (str "Started: " id)))
+          (when (or (empty? downloads) (seq failures))
             (System/exit 1)))))))
 
 (defn- cmd-torrent-pause
   [settings args]
-  (let [{:keys [manager]} (make-ports settings)
-        state (load-command-state (:disk-port manager)
-                                  (:state-dir settings)
-                                  args)]
-    (if (nil? state)
-      (do
-        (println "No active download found.")
-        (System/exit 1))
-      (let [result (download/pause-download (time-port/->RealTimePort) nil state)]
-        (if (:error result)
-          (do
-            (println "Failed to pause: " (get-in result [:error :message]))
-            (System/exit 1))
-          (let [save-result (disk/save-state (:disk-port manager) (get result :ok))]
-            (when (:error save-result)
-              (println "Failed to save download state:")
-              (println "  " (:message save-result))
-              (System/exit 1))
-            (println "Download paused.")
-            (print-progress (download/progress (time-port/->RealTimePort) (get result :ok)))))))))
-
-(defn- resume-and-run
-  "Resume a saved record, then run the download to completion.
-
-   Hands the record to run-download rather than returning the resumed
-   record: a resumed record is peerless until the announce fills it in, and
-   would otherwise be saved and printed as :downloading with nothing
-   downloading it. A record the cache already completes skips the run: the
-   swarm has nothing to fetch, and re-running it would only redo the
-   materialization run-download just proved unnecessary -- its stats are
-   finalized here instead, since the skipped run never finalizes them.
-   The dead gap since the last verified byte (pause, failure, or crash)
-   is folded out of the rate denominator on every resume, so the average
-   below measures active time. Otherwise the reconciled materialization
-   travels into the run, so the cached pieces are not read, verified,
-   and written a second time before the swarm is dialed. Returns the
-   refusal envelope when the record cannot be resumed, else the final
-   Download record.
-
-   The run goes through the download supervisor, so a coordinator crash
-   restarts the run instead of failing the download."
-  [manager state]
-  (let [{:keys [disk-port network-port time-port]} manager
-        resumed (download/resume-download disk-port network-port state)]
-    (if (:error resumed)
-      resumed
-      (let [revived (download/accumulate-downtime time-port (:ok resumed))]
-        (if (= :completed (:state revived))
-          (download/complete-download time-port revived)
-          (download-supervisor/supervise-download
-           manager
-           revived
-           {:opts {:materialized? true
-                   :layout (:layout resumed)}}))))))
-
-(defn- refusal?
-  "True when result is a refusal envelope rather than a Download record.
-
-   resume-and-run returns either: a refusal carries :error but no :state,
-   while even a :failed record carries both. Testing :error alone mistook
-   failed records for refusals and returned without saving them."
-  [result]
-  (boolean (and (:error result) (nil? (:state result)))))
+  (if (empty? args)
+    (do
+      (println "Usage: lein run torrent.pause <download-id>")
+      (System/exit 1))
+    (let [response (rpc/request (:rpc-port settings) :pause {:id (first args)})]
+      (if (:error response)
+        (do
+          (println (str "Failed to pause: " (:message response)))
+          (System/exit 1))
+        (do
+          (println "Download paused.")
+          (print-progress (get-in response [:ok :record])))))))
 
 (defn- cmd-torrent-resume
   [settings args]
-  (let [{:keys [manager time-port]} (make-ports settings)
-        state (load-command-state (:disk-port manager)
-                                  (:state-dir settings)
-                                  args)]
-    (if (nil? state)
-      (do
-        (println "No paused download found.")
-        (System/exit 1))
-      (let [result (resume-and-run manager state)]
-        (if (refusal? result)
-          (do
-            (println "Failed to resume: " (:message result))
-            (System/exit 1))
-          (let [save-result (disk/save-state (:disk-port manager) result)]
-            (when (:error save-result)
-              (println "Failed to save download state:")
-              (println "  " (:message save-result))
-              (System/exit 1))
-            (println (if (= :failed (:state result))
-                       (str "Download failed: " (get-in result [:error :message]))
-                       "Download resumed."))
-            (print-progress (download/progress time-port result))))))))
+  (if (empty? args)
+    (do
+      (println "Usage: lein run torrent.resume <download-id>")
+      (System/exit 1))
+    (let [response (rpc/request (:rpc-port settings) :resume {:id (first args)})]
+      (if (:error response)
+        (do
+          (println (str "Failed to resume: " (:message response)))
+          (System/exit 1))
+        (do
+          (println "Download resumed.")
+          (print-progress (get-in response [:ok :record])))))))
 
 (defn- cmd-torrent-status
   [settings args]
-  (let [{:keys [manager]} (make-ports settings)
-        records (status-records (:disk-port manager) (:state-dir settings) args)]
-    (if (empty? records)
+  (let [response (rpc/request (:rpc-port settings) :status
+                              (if (seq args) {:id (first args)} {}))]
+    (if (:error response)
       (do
-        (println "No download found.")
+        (println (str "Failed to get status: " (:message response)))
         (System/exit 1))
-      (doseq [state records]
-        (println (str "Download: " (:id state)))
-        (when (:torrent-path state)
-          (println (str "Torrent: " (:torrent-path state))))
-        (print-progress (download/progress (time-port/->RealTimePort) state))
-        (println)))))
+      (let [records (get-in response [:ok :records])]
+        (if (empty? records)
+          (do
+            (println "No download found.")
+            (System/exit 1))
+          (doseq [record records]
+            (println (str "Download: " (:id record)))
+            (when (:torrent-path record)
+              (println (str "Torrent: " (:torrent-path record))))
+            (print-progress record)
+            (println)))))))
 
 (defn- cmd-torrent-stop
   [settings args]
-  (let [{:keys [manager]} (make-ports settings)
-        state (load-command-state (:disk-port manager)
-                                  (:state-dir settings)
-                                  args)]
-    (if (nil? state)
-      (do
-        (println "No download found.")
-        (System/exit 1))
-      (let [stopped (download/stop-download state)
-            delete-result (disk/delete-state (:disk-port manager) (:id state))]
-        (when (:error delete-result)
-          (println "Failed to delete download state:")
-          (println "  " (:message delete-result))
+  (if (empty? args)
+    (do
+      (println "Usage: lein run torrent.stop <download-id>")
+      (System/exit 1))
+    (let [response (rpc/request (:rpc-port settings) :stop {:id (first args)})]
+      (if (:error response)
+        (do
+          (println (str "Failed to stop: " (:message response)))
           (System/exit 1))
-        (println "Download stopped.")
-        (print-progress (download/progress (time-port/->RealTimePort) stopped))))))
+        (do
+          (println "Download stopped.")
+          (print-progress (get-in response [:ok :record])))))))
 
 (defn- cmd-torrent-seed
   [_settings _args]
@@ -395,8 +233,8 @@
 (def ^:private commands
   {"torrent.parse" {:fn cmd-torrent-parse
                     :desc "Parse and display torrent file metadata"}
-   "torrent.download" {:fn cmd-torrent-download
-                       :desc "Download one or more torrents"}
+   "torrent.start" {:fn cmd-torrent-start
+                    :desc "Start one or more torrents via the daemon"}
    "torrent.pause" {:fn cmd-torrent-pause
                     :desc "Pause an active download"}
    "torrent.resume" {:fn cmd-torrent-resume
@@ -418,7 +256,7 @@
   (println "  --config <path>        Use this settings file instead of ~/.config/cljtoc/config.edn")
   (println "\nExamples:")
   (println "  lein run torrent.parse path/to/file.torrent")
-  (println "  lein run torrent.download path/to/file.torrent [more.torrent ...]")
+  (println "  lein run torrent.start path/to/file.torrent [more.torrent ...]")
   (println "  lein run --config ./my.edn torrent.status"))
 
 (defn -main
@@ -428,7 +266,7 @@
 
    Available commands:
      torrent.parse <file>     Parse and display torrent metadata
-     torrent.download <file>... Download one or more torrents in one session
+     torrent.start <file>...    Start one or more torrents via the daemon
      torrent.pause [id]     Pause an active download
      torrent.resume [id]    Resume a paused download
      torrent.status [id]    Show one download, or list every download

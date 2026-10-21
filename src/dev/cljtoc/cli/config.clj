@@ -145,17 +145,20 @@
 (s/def ::piece-cache-dir string?)
 (s/def ::output-dir string?)
 (s/def ::peer-port (s/int-in 1 65536))
+(s/def ::rpc-port (s/int-in 1 65536))
 (s/def ::max-peers pos-int?)
 (s/def ::settings
   (s/keys :req-un [::state-dir ::piece-cache-dir ::output-dir
-                   ::peer-port ::max-peers]))
+                   ::peer-port ::rpc-port ::max-peers]))
 
 (defn default-settings
   "Build the knobs a user can actually change, with Transmission's values:
    port 51413 (TrDefaultPeerPort), 50 peers per torrent
    (TrDefaultPeerLimitTorrent), downloads in ~/Downloads
    (tr_getDefaultDownloadDir), resume state under the config home, the
-   piece cache under the cache home. Pure: takes the user-dirs.dirs
+   piece cache under the cache home, and the RPC port the daemon listens
+   on. The port is deliberately not Transmission's 9091: a real
+   Transmission daemon on the same host would clash with it. Pure: takes the user-dirs.dirs
    content instead of reading it, so no file is touched at load time or
    on require — the read happens once, in load-settings. Knobs the manager
    reserves but does not enforce (:min-peers, :piece-timeout-ms, and friends)
@@ -169,6 +172,7 @@
                  :user-dirs-content user-dirs-content
                  :separator file-separator})
    :peer-port 51413
+   :rpc-port 24891
    :max-peers (:max-peers download/default-config)})
 
 (s/fdef default-settings
@@ -201,6 +205,7 @@
    :piece-cache-dir absolute-path?
    :output-dir absolute-path?
    :peer-port #(s/valid? ::peer-port %)
+   :rpc-port #(s/valid? ::rpc-port %)
    :max-peers pos-int?})
 
 (defn- invalid-value-message

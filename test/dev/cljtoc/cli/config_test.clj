@@ -30,6 +30,9 @@
       (is (string? (:message result)))))
   (testing "an out-of-range peer port is an error"
     (let [result (config/parse-settings "{:peer-port 99999}" (config/default-settings nil))]
+      (is (= :invalid-config (:error result)))))
+  (testing "an out-of-range RPC port is an error"
+    (let [result (config/parse-settings "{:rpc-port 99999}" (config/default-settings nil))]
       (is (= :invalid-config (:error result))))))
 
 (deftest parse-settings-ignores-unknown-keys-test

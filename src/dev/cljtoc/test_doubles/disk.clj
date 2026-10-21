@@ -177,18 +177,34 @@
     ;; Mirrors DiskPortImpl: an encode refusal (e.g. an invalid pre-existing
     ;; {:cljtoc/bytes ...} tag) comes back as {:error :save-error}, never an
     ;; uncaught throw — fail fast at the write, identically on both ports.
-    (try
-      (swap! state-files assoc (:id download) (disk/encode-state download))
-      {:ok :saved}
-      (catch Exception error
-        {:error :save-error :message (.getMessage error)})))
+    ;; :save-error forces that refusal, :save-throws an unexpected throw
+    ;; (for every record, or for the ids named in :save-throws-for), and
+    ;; :save-delay-ms slows a save, so every save-failure and in-flight
+    ;; shape stays drivable.
+    (cond
+      (or (:save-throws config)
+          (contains? (set (:save-throws-for config)) (:id download)))
+      (throw (ex-info "disk exploded" {}))
+
+      (:save-error config) (:save-error config)
+
+      :else
+      (try
+        (when-let [delay (:save-delay-ms config)]
+          (Thread/sleep (long delay)))
+        (swap! state-files assoc (:id download) (disk/encode-state download))
+        {:ok :saved}
+        (catch Exception error
+          {:error :save-error :message (.getMessage error)}))))
 
   (load-state [_ id]
     {:ok (disk/decode-state (get @state-files id))})
 
   (delete-state [_ id]
-    (swap! state-files dissoc id)
-    {:ok :deleted})
+    (if-let [err (:delete-error config)]
+      err
+      (do (swap! state-files dissoc id)
+          {:ok :deleted})))
 
   (evict-piece-cache [_ info-hash]
     (if-let [scope (disk/cache-scope info-hash)]
@@ -206,6 +222,11 @@
    - :torrent-data - map of path -> torrent metadata to return
    - :write-error - error map returned from write-piece instead of storing
    - :read-error - error map returned from read-piece (an unreadable cache)
+   - :delete-error - error map returned from delete-state instead of deleting
+   - :save-error - error map returned from save-state instead of storing
+   - :save-throws - unexpected throw from save-state (a crashing port)
+   - :save-throws-for - unexpected throw only for these download ids
+   - :save-delay-ms - how long a save takes, for in-flight shutdown tests
    - :output-write-error - error map from write-output-piece (falls back to :write-error)"
   ([]
    (create {}))

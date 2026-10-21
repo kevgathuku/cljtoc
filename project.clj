@@ -14,6 +14,8 @@
                                   :init (do (require 'user) (user/welcome))}
                    :dependencies [[org.clojure/test.check "1.1.3"]
                                   [rewrite-clj/rewrite-clj "1.2.50"]
-                                  [org.clojure/tools.namespace "1.5.1"]]}
+                                  [org.clojure/tools.namespace "1.5.1"]
+                                  [expound "0.9.0"]
+                                  [io.aviso/pretty "1.1.1"]]}
              :uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})

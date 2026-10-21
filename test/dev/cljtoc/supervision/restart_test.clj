@@ -28,6 +28,16 @@
       (is (= {:ok :done} result))
       (is (= 1 @calls) "the child ran once"))))
 
+(deftest supervise-reraises-interrupt-instead-of-restarting-test
+  (testing "an interrupt passes through: it is a stop, never a crash"
+    (let [calls (atom 0)]
+      (is (thrown? InterruptedException
+                   (restart/supervise (fn []
+                                        (swap! calls inc)
+                                        (throw (InterruptedException. "stop")))
+                                      (budget 3))))
+      (is (= 1 @calls) "the child ran once: no restart, no budget spent"))))
+
 (deftest supervise-restarts-a-crashing-child-test
   (testing "a crashed child runs again while the budget holds"
     (let [calls (atom 0)

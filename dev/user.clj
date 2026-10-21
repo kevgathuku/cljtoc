@@ -6,7 +6,10 @@
   Requires nothing project-specific: pull in only the namespaces you
   need, with :reload so edits are picked up."
   (:require [clojure.repl :refer [doc find-doc source]]
-            [clojure.tools.namespace.repl :as repl]))
+            [clojure.spec.alpha :as s]
+            [clojure.tools.namespace.repl :as repl]
+            [expound.alpha :as expound]
+            [io.aviso.repl :as pretty-repl]))
 
 ;; Real vars (not :refer mappings) so both bare use in this namespace
 ;; and qualified user/refresh use from anywhere else resolve.
@@ -15,9 +18,27 @@
 (def refresh-dirs repl/refresh-dirs)
 (def clear repl/clear)
 
+(defn install-explain-printer!
+  "Make spec failures print through expound, both where a REPL evaluates
+   and in the worker threads it starts.
+
+   `set!` alone is not enough: a thread without a binding reads the root,
+   and a REPL thread's binding shadows the root. `alter-var-root` alone is
+   not enough either: the REPL has the var bound, so evaluations keep the
+   old printer. Do both, and tolerate a thread that never established a
+   binding."
+  []
+  (alter-var-root #'s/*explain-out* (constantly expound/printer))
+  (try
+    (set! s/*explain-out* expound/printer)
+    (catch IllegalStateException _ nil))
+  nil)
+
 (defn welcome
   "Print the require cheat sheet for interactive probing."
   []
+  (install-explain-printer!)
+  (pretty-repl/install-pretty-exceptions)
   (println)
   (println "  cljtoc REPL — require what you need, with :reload:")
   (println)
@@ -43,6 +64,9 @@
   (println "  Spec probes (fully-qualified — this ns has no aliases):")
   (println "    (s/valid? :dev.cljtoc.protocol.tracker/port 70000)")
   (println "    (stest/instrument `dev.cljtoc.protocol.tracker/tracker-error)")
+  (println "  Readable errors (wired above on startup):")
+  (println "    spec failures print through expound automatically")
+  (println "    (pretty-repl/pretty-pst *e) ; demunged stacktrace of last error")
   (println "  Private fns (specs are the interface; helpers stay defn-):")
   (println "    (@#'tracker/valid-ipv4? \"10.0.0.9\") ; deref the var, then call")
   (println "  Stale session? :reload refreshes only named namespaces —")

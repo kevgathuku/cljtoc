@@ -213,11 +213,11 @@ The torrent parser uses `decode-bencode-raw` to preserve binary data (piece hash
 | Command | Description | Status |
 |---------|-------------|--------|
 | `torrent.parse <file>` | Parse and display torrent metadata | ✅ Implemented |
-| `torrent.download <file>` | Download files from a torrent | ✅ Implemented |
-| `torrent.pause [id]` | Pause an active download | ✅ Implemented |
-| `torrent.resume [id]` | Resume a paused download | ✅ Implemented |
+| `torrent.start <file>` | Start one or more torrents via the daemon | ✅ Implemented |
+| `torrent.pause <id>` | Pause an active download | ✅ Implemented |
+| `torrent.resume <id>` | Resume a paused download | ✅ Implemented |
 | `torrent.status [id]` | Show download status | ✅ Implemented |
-| `torrent.stop [id]` | Stop a download | ✅ Implemented |
+| `torrent.stop <id>` | Stop a download | ✅ Implemented |
 | `torrent.seed <file>` | Seed a torrent | 🚧 Not implemented |
 
 Download destinations and limits come from the settings file, never from

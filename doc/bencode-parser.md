@@ -213,7 +213,7 @@ lein run
 | Command | Description | Status |
 |---------|-------------|--------|
 | `torrent.parse` | Parse and display torrent file metadata | ✅ Implemented |
-| `torrent.download` | Download files from a torrent | 🚧 Not yet implemented |
+| `torrent.start` | Start one or more torrents via the daemon | ✅ Implemented |
 | `torrent.seed` | Seed a torrent | 🚧 Not yet implemented |
 
 **Example:** Parse a torrent file and print its metadata in a readable format:
