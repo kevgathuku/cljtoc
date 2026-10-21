@@ -137,8 +137,7 @@ already achieved by the Elixir tree.
 
 ### What was ported and how it was checked
 
-The spike lived in a scratch rebar3 project (`/tmp/lfe-spike`), not in this
-tree. It ported two slices:
+The spike lives in `spikes/lfe` in this tree. It ported two slices:
 
 - `dev.cljtoc.domain.pieces` to `src/torrent_pieces.lfe` (276 lines), with
   the Clojure example cases as 19 `ltest` tests and 12 PropEr properties.
@@ -149,7 +148,7 @@ tree. It ported two slices:
   `stop`, `stop_child`, `remove_child`, transient crash restart, and the
   terminal-download rule.
 
-Commands:
+Run them from `spikes/lfe`:
 
 ```bash
 rebar3 as test lfe ltest          # 25 tests, ~1 s warm
@@ -347,13 +346,13 @@ in the ported modules needed it.
 Recommendation: **stay in Elixir; do not adopt LFE.** Do not run a second
 spike on this evidence. A second spike would need a macro-heavy module to
 test the one remaining hypothesis, and the tooling and contract costs are
-already higher than the taste benefit. The Clojure tree is unchanged except
-for this report.
+already higher than the taste benefit. The Clojure source is unchanged; this
+report and `spikes/lfe` are the only additions.
 
 ### Review follow-up (2026-10-21)
 
 Three findings from the PR review were checked against the port and fixed in
-the scratch source; the appendix carries the fixed versions.
+`spikes/lfe`; the appendix carries the fixed versions.
 
 - `piece-blocks/3` accepted a negative index and returned blocks with a
   negative `piece-index`. The Clojure source has the same upper-bound-only
@@ -377,18 +376,14 @@ suite.
 
 ## Appendix: full spike source
 
-The scratch project lived outside this tree. These files are the
-complete port; the paths match the scratch layout.
+The spike project lives in `spikes/lfe`. These files are the complete port,
+and the appendix mirrors that directory.
 
 ### `rebar.config`
 
 ```erlang
 {erl_opts, [debug_info]}.
-{plugins, [rebar3_lfe]}.
-{provider_hooks, [
-  {pre, [{compile, {lfe, compile}}]},
-  {post, [{eunit, {lfe, eunit}}]}
-]}.
+{plugins, [{rebar3_lfe, "~> 0.5"}, {lfe, "2.2.2"}]}.
 {deps, [{lfe, "2.2.2"}, {proper, "~> 1.4"}, {ltest, "~> 0.13"}]}.
 {profiles, [
   {test, [
@@ -396,6 +391,11 @@ complete port; the paths match the scratch layout.
   ]}
 ]}.
 ```
+
+`lfe` is both a plugin and an app dependency. Without the plugin entry, a
+fresh build compiles `ltest`'s LFE sources before `lfe_comp` is on the code
+path and fails with `undef`. The spike's first build happened to reuse an
+already-compiled `_build`, which hid this until the port moved into the repo.
 
 ### `src/torrent_pieces.lfe`
 
