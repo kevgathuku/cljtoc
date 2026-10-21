@@ -177,11 +177,17 @@
     ;; Mirrors DiskPortImpl: an encode refusal (e.g. an invalid pre-existing
     ;; {:cljtoc/bytes ...} tag) comes back as {:error :save-error}, never an
     ;; uncaught throw — fail fast at the write, identically on both ports.
-    (try
-      (swap! state-files assoc (:id download) (disk/encode-state download))
-      {:ok :saved}
-      (catch Exception error
-        {:error :save-error :message (.getMessage error)})))
+    ;; :save-error forces that refusal and :save-throws an unexpected
+    ;; throw, so both shapes of save failure stay drivable.
+    (cond
+      (:save-throws config) (throw (ex-info "disk exploded" {}))
+      (:save-error config) (:save-error config)
+      :else
+      (try
+        (swap! state-files assoc (:id download) (disk/encode-state download))
+        {:ok :saved}
+        (catch Exception error
+          {:error :save-error :message (.getMessage error)}))))
 
   (load-state [_ id]
     {:ok (disk/decode-state (get @state-files id))})
@@ -209,6 +215,8 @@
    - :write-error - error map returned from write-piece instead of storing
    - :read-error - error map returned from read-piece (an unreadable cache)
    - :delete-error - error map returned from delete-state instead of deleting
+   - :save-error - error map returned from save-state instead of storing
+   - :save-throws - unexpected throw from save-state (a crashing port)
    - :output-write-error - error map from write-output-piece (falls back to :write-error)"
   ([]
    (create {}))

@@ -355,3 +355,57 @@
       ((:stop daemon-instance))
       (is (= rpc/no-daemon
              (rpc/request (:rpc-port daemon-instance) :status {}))))))
+
+(deftest stopping-the-daemon-persists-every-torrent-test
+  (testing "a stop saves the records still in flight, not only finished ones"
+    (let [{:keys [manager settings]} (daemon-fixture "persist-stop")
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :shutdown-hook (fn [_] nil)})]
+      (records/put (:records daemon-instance)
+                   (test-utils/saved-record "live" :downloading))
+      ((:stop daemon-instance))
+      (let [saved (cli-state/load-all (:disk-port manager) (:state-dir settings))]
+        (is (= #{"live"} (into #{} (map :id) saved)))))))
+
+(deftest the-shutdown-hook-is-the-daemons-stop-test
+  (testing "the registered hook stops the session and persists every torrent"
+    (let [captured (atom nil)
+          {:keys [manager settings]} (daemon-fixture "shutdown-hook")
+          daemon-instance (daemon/start settings
+                                        {:manager manager
+                                         :shutdown-hook (fn [stop]
+                                                          (reset! captured stop)
+                                                          ::installed)})]
+      (records/put (:records daemon-instance)
+                   (test-utils/saved-record "sig" :downloading))
+      (is (= ::installed (:shutdown-hook daemon-instance)))
+      (is (fn? @captured) "the daemon hands its stop to the hook installer")
+      (@captured)
+      (is (= rpc/no-daemon (rpc/request (:rpc-port daemon-instance) :status {}))
+          "the RPC is closed, as a signal leaves the process")
+      (is (some #(= "sig" (:id %))
+                (cli-state/load-all (:disk-port manager) (:state-dir settings)))
+          "the in-flight torrent was persisted before exit")
+      (testing "a second signal after an explicit stop is a no-op"
+        ((:stop daemon-instance))))))
+
+(deftest the-daemon-saves-in-flight-progress-periodically-test
+  (testing "a running torrent is written before it finishes"
+    (let [{:keys [manager settings]} (daemon-fixture "periodic")
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :persist-interval-ms 10
+                                                  :shutdown-hook (fn [_] nil)})]
+      (try
+        (records/put (:records daemon-instance)
+                     (test-utils/saved-record "mid" :downloading))
+        (is (loop [deadline (+ (System/currentTimeMillis) 2000)]
+              (let [saved (cli-state/load-all (:disk-port manager)
+                                              (:state-dir settings))
+                    found? (some #(= "mid" (:id %)) saved)]
+                (cond
+                  found? true
+                  (> (System/currentTimeMillis) deadline) false
+                  :else (do (Thread/sleep 10) (recur deadline)))))
+            "the periodic pass saved a torrent that has not finished")
+        (finally
+          ((:stop daemon-instance)))))))

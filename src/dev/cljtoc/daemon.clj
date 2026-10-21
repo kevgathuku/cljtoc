@@ -13,6 +13,7 @@
   (:require [clojure.spec.alpha :as s]
             [dev.cljtoc.cli.state :as cli-state]
             [dev.cljtoc.core :as core]
+            [dev.cljtoc.daemon.persistence :as persistence]
             [dev.cljtoc.daemon.records :as records]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.orchestration.session :as session]
@@ -48,6 +49,27 @@
   (assoc (download/progress time-port record)
          :id (:id record)
          :torrent-path (:torrent-path record)))
+
+(defn- freshest
+  "The daemon's freshest view of its torrents: every record it owns with
+   the session's published progress overlaid, because a running
+   download's newest state is the one it last published. Records are
+   merged by id, so the live view wins over a stale owned copy."
+  [owned live]
+  (->> (concat owned live)
+       (reduce (fn [by-id record] (assoc by-id (:id record) record)) {})
+       vals
+       (into [])))
+
+(defn- install-shutdown-hook!
+  "Wire `stop` to JVM shutdown, so SIGTERM (and SIGINT) stops the session,
+   persists every torrent, and only then lets the process exit. The stop
+   is idempotent, so a signal after an explicit stop is a no-op. Returns
+   the registered hook thread."
+  [stop]
+  (let [hook (Thread. ^Runnable (fn [] (stop)) "cljtoc-shutdown")]
+    (.addShutdownHook (Runtime/getRuntime) hook)
+    hook))
 
 (defn handle
   "The RPC handler over a live daemon session.
@@ -166,10 +188,18 @@
    The daemon keeps one live record per torrent, so the RPC sees a
    download before it finishes.
 
-   Returns {:stop (fn [])}: the stop ends the RPC server and the session,
-   which is how a signal leaves the process (0c9.18 wires the signal to
-   it)."
-  [settings {:keys [manager]}]
+   Returns {:stop (fn [])}: the stop ends the RPC server, the persister
+   and the session, which is how a signal leaves the process — the daemon
+   registers that stop as a JVM shutdown hook, so SIGTERM persists every
+   torrent before exiting. The stop is idempotent.
+
+   Options:
+   - :manager - ports to run with (default: built from the settings)
+   - :persist-interval-ms - how often in-flight state is re-saved
+     (default: persistence/default-interval-ms)
+   - :shutdown-hook - installs the stop fn (default: a real JVM hook)
+     and returns whatever it likes; a test injects a capture."
+  [settings {:keys [manager shutdown-hook] :as options}]
   (let [manager (or manager (:manager (core/make-ports settings)))
         {:keys [disk-port]} manager
         saved (load-torrents disk-port (:state-dir settings))
@@ -186,15 +216,34 @@
                                   {:manager manager
                                    :session-supervisor supervisor
                                    :records records
-                                   :settings settings})})]
+                                   :settings settings})})
+        persisted-records (fn []
+                            (freshest (records/all records)
+                                      (session-supervisor/live-records (deref supervisor))))
+        persister (persistence/start disk-port
+                                     persisted-records
+                                     (or (:persist-interval-ms options)
+                                         persistence/default-interval-ms))
+        stopped (atom false)
+        hook-installer (or shutdown-hook install-shutdown-hook!)
+        stop (fn []
+               (when (compare-and-set! stopped false true)
+                 ;; Close the RPC first so no new work lands, then the
+                 ;; persister, then unwind the runs — their last published
+                 ;; records are what the final save writes.
+                 ((:stop server))
+                 ((:stop persister))
+                 (session-supervisor/stop (deref supervisor))
+                 (persistence/report-failures
+                  (persistence/save-all disk-port (persisted-records)))))
+        hook (hook-installer stop)]
     {:manager manager
      :session-supervisor supervisor
      :records records
      :settings settings
      :rpc-port (:rpc-port settings)
-     :stop (fn []
-             ((:stop server))
-             (session-supervisor/stop (deref supervisor)))}))
+     :shutdown-hook hook
+     :stop stop}))
 
 ;; Excluded from stest/check: the daemon owns ports, threads and sockets,
 ;; and no generator can conjure a settings map that builds them.
