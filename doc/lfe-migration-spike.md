@@ -137,28 +137,35 @@ already achieved by the Elixir tree.
 
 ### What was ported and how it was checked
 
-The spike lives in `spikes/lfe` in this tree. It ported three slices:
+The spike lives in `spikes/lfe` in this tree. It ported four slices:
 
 - `dev.cljtoc.domain.pieces` to `src/torrent_pieces.lfe` (276 lines), with
   the Clojure example cases as 19 `ltest` tests and 12 PropEr properties.
   `verify-piece` calls the existing Elixir `Torrent.verify_hash?/2` through
   the `'Elixir.Torrent` atom; the tests use `Utils.sha_sum/1` the same way.
-- The session supervisor stop path to `src/download_worker.lfe` (85 lines)
-  and `src/session_sup.lfe` (67 lines), with 6 `ltest` cases covering
-  `stop`, `stop_child`, `remove_child`, transient crash restart, and the
-  terminal-download rule.
+- The session supervisor stop path to `src/download_worker.lfe` (87 lines)
+  and `src/session_sup.lfe` (113 lines), with 8 `ltest` cases covering
+  `stop`, `stop_child`, `remove_child`, transient crash restart, the
+  terminal-download rule, and a stalled download restarting.
 - The daemon's record view to `src/records.lfe` (42 lines; `b77.1`), with 5
   more `ltest` cases. It mirrors `dev.cljtoc.daemon.records`: `download_worker`
   and `session_sup` publish and read through it, and no module outside it
   touches the ETS table.
+- The stall watchdog to `src/watchdog.lfe` (106 lines; `b77.4`), with 9
+  `ltest` cases and 5 PropEr properties. It mirrors
+  `dev.cljtoc.supervision.watchdog`: the marker, deadline, clock, and fire
+  callback are injected, and `session_sup` starts one beside each running
+  worker.
 
 Run them from `spikes/lfe`:
 
 ```bash
-rebar3 as test lfe ltest          # 30 tests, ~1 s warm
+rebar3 as test lfe ltest          # 41 tests, ~1 s warm
 rebar3 lfe format                 # in-place formatter
-erl -noshell -pa _build/test/lib/*/ebin \
-  -eval 'io:format("~p~n",[proper:module(prop_torrent_pieces,[{numtests,300}])]), halt().'
+erl -noshell -pa _build/test/lib/*/ebin -eval '\
+  io:format("pieces ~p~n", [proper:module(prop_torrent_pieces, [{numtests, 300}])]),\
+  io:format("watchdog ~p~n", [proper:module(prop_watchdog, [{numtests, 300}])]),\
+  halt().'
 ```
 
 The full source is in the appendix. The port is not a proposal; it is the
@@ -223,12 +230,15 @@ caught a real `(char b)` throw in `bencode/decode-value`. LFE has no spec
 equivalent. Dialyzer type specs are separate and do not generate tests, so
 the equivalent is a hand-written PropEr property per function or behavior.
 
-The spike wrote 12 properties, with oracles computed from the declared
+The spike wrote 17 properties, with oracles computed from the declared
 inputs rather than by calling the implementation again: the partition
 invariant, initial state, `complete?`, `endgame?`, selection safety and
 rarest-first tie-break, endgame selection, piece lengths, block coverage,
-hash acceptance, bad hash lengths, and invalid transitions. Each ran 300
-cases.
+hash acceptance, bad hash lengths, invalid transitions, and five laws for
+the watchdog's stall decision (a moved marker is never a stall, time below
+the deadline is never a stall, the deadline is reached exactly, a stall
+holds while the marker stands still, and the marker counts blocks and
+peers). Each ran 300 cases.
 
 The missed-bug rate used 12 hand-written mutants:
 
@@ -278,9 +288,9 @@ would have to be rebuilt, not ported.
 
 ### (c) rebar3 and mix workflow fit
 
-Build and test work. `rebar3 as test lfe ltest` ran 25 tests in about 1 s
-warm; the 12 properties ran in about 0.6 s. `rebar3 lfe format` rewrote the
-three modules (reordered exports and reindented; `torrent_pieces.lfe` alone
+Build and test work. `rebar3 as test lfe ltest` ran 41 tests in about 1.7 s
+warm; the 17 properties ran in about 0.5 s. `rebar3 lfe format` rewrote the
+modules (reordered exports and reindented; `torrent_pieces.lfe` alone
 showed a 286-line diff) and the tests stayed green. `dlct` was not used; `ltest` was enough for this slice.
 
 The workflow gaps matter more than the speed:
@@ -395,11 +405,6 @@ and the appendix mirrors that directory.
   ]}
 ]}.
 ```
-
-`lfe` is both a plugin and an app dependency. Without the plugin entry, a
-fresh build compiles `ltest`'s LFE sources before `lfe_comp` is on the code
-path and fails with `undef`. The spike's first build happened to reuse an
-already-compiled `_build`, which hid this until the port moved into the repo.
 
 ### `src/torrent_pieces.lfe`
 
@@ -741,6 +746,8 @@ already-compiled `_build`, which hid this until the port moved into the repo.
    (tuple 'reply 'ok state)))
 
 (defun handle_cast
+  (('watchdog-fired state)
+   (tuple 'stop 'watchdog-fired state))
   (((tuple 'progress record) state)
    (publish (maps:get 'live state)
             (maps:get 'sink state)
@@ -778,11 +785,18 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 ;;;; Session supervisor, ported from the stop path of
 ;;;; dev.cljtoc.supervision.session-supervisor.
 ;;;;
-;;;; One child per download. stop/2 terminates every child; the supervisor
-;;;; calls each worker's terminate/2 and waits for it, so the paused record
-;;;; is already in the records view when stop returns. The supervisor's
-;;;; one_for_one budget replaces the Clojure restart budget, and the child's
-;;;; shutdown timeout replaces the shared join deadline.
+;;;; Each running download gets a worker child and a watchdog child beside
+;;;; it, both flat under this supervisor. stop/2 terminates every child; the
+;;;; supervisor calls each worker's terminate/2 and waits for it, so the
+;;;; paused record is already in the records view when stop returns. The
+;;;; supervisor's one_for_one budget replaces the Clojure restart budget, and
+;;;; the child's shutdown timeout replaces the shared join deadline.
+;;;;
+;;;; In the Clojure tree the watchdog is a sibling of the coordinator inside
+;;;; one download's subtree, so a restart replaces the whole subtree. This
+;;;; spike has no per-download subtree yet, so the watchdog fires directly at
+;;;; the worker and both are flat children; the watchdog is one-shot, and a
+;;;; restarted worker has no watchdog until the subtree lands.
 
 (defmodule session_sup
   (behaviour supervisor)
@@ -799,27 +813,51 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 (defun init (opts)
   (let* ((live (maps:get 'live opts))
           (sink (maps:get 'sink opts))
-          (specs (child-specs (maps:get 'downloads opts) live sink)))
+          (watchdog-opts (maps:get 'watchdog opts (map)))
+          (specs
+            (child-specs (maps:get 'downloads opts)
+                         live
+                         sink
+                         (self)
+                         watchdog-opts)))
     (tuple 'ok (tuple (tuple 'one_for_one 10 10) specs))))
 
-(defun child-specs (downloads live sink)
-  (lists:filtermap
-    (lambda (download) (child-spec download live sink))
-    downloads))
+(defun child-specs (downloads live sink sup watchdog-opts)
+  (lists:append
+    (lists:map
+      (lambda (download) (child-spec download live sink sup watchdog-opts))
+      downloads)))
 
-(defun child-spec (download live sink)
+(defun child-spec (download live sink sup watchdog-opts)
   (let ((id (maps:get 'id download)))
     (case (maps:get 'state download)
       ('completed
        (download_worker:publish live sink id download)
-       'false)
+       (list))
       ('failed
        (download_worker:publish live sink id download)
-       'false)
+       (list))
       (_
-       (tuple 'true
-              (download_worker:child_spec
-                (map 'id id 'download download 'live live 'sink sink)))))))
+       (list
+         (download_worker:child_spec
+           (map 'id id 'download download 'live live 'sink sink))
+         (watchdog:child_spec
+           (maps:merge
+             (map 'id (tuple id 'watchdog)
+                  'marker
+                  (lambda ()
+                    (watchdog:progress-marker (records:record-for live id)))
+                  'fire (lambda () (fire sup id)))
+             watchdog-opts)))))))
+
+(defun fire (sup id)
+  (case (lists:keyfind id 1 (supervisor:which_children sup))
+    ('false 'ok)
+    (child
+     (case (element 2 child)
+       (pid (when (is_pid pid))
+        (gen_server:cast pid 'watchdog-fired))
+       (_other 'ok)))))
 
 (defun stop (sup live)
   (lists:foreach
@@ -831,6 +869,7 @@ already-compiled `_build`, which hid this until the port moved into the repo.
   (case (lists:keyfind id 1 (supervisor:which_children sup))
     ('false 'nil)
     (_child
+     (terminate-child sup (tuple id 'watchdog))
      (supervisor:terminate_child sup id)
      (records:record-for live id))))
 
@@ -838,18 +877,25 @@ already-compiled `_build`, which hid this until the port moved into the repo.
   (case (lists:keyfind id 1 (supervisor:which_children sup))
     ('false 'ok)
     (_child
-     (supervisor:terminate_child sup id)
-     (supervisor:delete_child sup id)
+     (delete-child sup (tuple id 'watchdog))
+     (delete-child sup id)
      (records:forget live id)
      'ok)))
+
+(defun terminate-child (sup child-id)
+  (case (lists:keyfind child-id 1 (supervisor:which_children sup))
+    ('false 'ok)
+    (_child
+     (supervisor:terminate_child sup child-id))))
+
+(defun delete-child (sup child-id)
+  (case (lists:keyfind child-id 1 (supervisor:which_children sup))
+    ('false 'ok)
+    (_child
+     (supervisor:terminate_child sup child-id)
+     (supervisor:delete_child sup child-id)
+     'ok)))
 ```
-
-### `test/torrent-pieces-tests.lfe`
-
-```lfe
-(defmodule torrent-pieces-tests
-  (behaviour ltest-unit)
-  (export all))
 
 ### `src/records.lfe`
 
@@ -897,6 +943,124 @@ already-compiled `_build`, which hid this until the port moved into the repo.
     (lambda (left right) (=< (maps:get 'id left) (maps:get 'id right)))
     (lists:map (lambda (pair) (element 2 pair)) (ets:tab2list table))))
 ```
+
+### `src/watchdog.lfe`
+
+```lfe
+;;;; Watchdog for one download, ported from
+;;;; dev.cljtoc.supervision.watchdog.
+;;;;
+;;;; The Clojure watchdog poller runs inside a download's supervised
+;;;; subtree: when the download's progress marker stops moving for the
+;;;; stall deadline it fires, which crashes the subtree so the download
+;;;; supervisor restarts it. The port keeps the same decision, the same
+;;;; marker, the same deadline, and the same injected clock and fire
+;;;; callback; it is a gen_server so a supervisor owns it like any other
+;;;; child.
+;;;;
+;;;; The Clojure poller returns nil after firing, so one stall ends the
+;;;; watchdog. The port does the same: it stops normally after a fire, and
+;;;; restarting the download is the supervisor's job, not the watchdog's.
+
+(defmodule watchdog
+  (behaviour gen_server)
+  (export
+   (child_spec 1)
+   (deadline 0)
+   (handle_info 2)
+   (init 1)
+   (poll-interval 0)
+   (progress-marker 1)
+   (stalled? 5)
+   (start_link 1)))
+
+(defun deadline () 60000)
+
+(defun poll-interval () 1000)
+
+(defun start_link (args)
+  (gen_server:start_link 'watchdog args (list)))
+
+(defun child_spec (args)
+  (map 'id (maps:get 'id args)
+       'start (tuple 'watchdog 'start_link (list args))
+       'restart 'transient
+       'shutdown 5000
+       'type 'worker))
+
+(defun progress-marker
+  (('nil)
+   (list 0 0))
+  ((record)
+   (let ((blocks-received (maps:get 'blocks-received record (map)))
+          (verified (maps:get 'verified record (list)))
+          (active-peers (maps:get 'active-peers record (list))))
+     (list (+ (received-blocks blocks-received) (length verified))
+           (length active-peers)))))
+
+(defun received-blocks (blocks-received)
+  (maps:fold (lambda (_peer blocks total) (+ total (length blocks)))
+             0
+             blocks-received))
+
+;; ponytail: verified and active-peers are counted as lists; the coordinator
+;; (b77.3) is what starts publishing them, and if it publishes sets this
+;; becomes sets:size.
+(defun stalled? (current previous last-progress-ms now-ms deadline-ms)
+  (and (== current previous) (>= (- now-ms last-progress-ms) deadline-ms)))
+
+(defun init (args)
+  (let* ((now
+           (maps:get 'now args (lambda () (erlang:monotonic_time 'millisecond))))
+          (poll-ms (maps:get 'poll-ms args (poll-interval)))
+          (state
+            (map 'marker (maps:get 'marker args)
+                 'now now
+                 'deadline-ms (maps:get 'deadline-ms args (deadline))
+                 'poll-ms poll-ms
+                 'fire (maps:get 'fire args)
+                 'previous 'undefined
+                 'last-progress-ms (now))))
+    (schedule-poll poll-ms)
+    (tuple 'ok state)))
+
+(defun handle_info
+  (('poll state)
+   (let* ((now (funcall (maps:get 'now state)))
+           (current (funcall (maps:get 'marker state)))
+           (previous (maps:get 'previous state))
+           (last-progress
+             (if (== current previous)
+               (maps:get 'last-progress-ms state)
+               now)))
+     (if (stalled? current
+                   previous
+                   last-progress
+                   now
+                   (maps:get 'deadline-ms state))
+       (progn
+         (funcall (maps:get 'fire state))
+         (tuple 'stop 'normal state))
+       (progn
+         (schedule-poll (maps:get 'poll-ms state))
+         (tuple 'noreply
+                (maps:put 'previous
+                          current
+                          (maps:put 'last-progress-ms last-progress state)))))))
+  ((_message state)
+   (tuple 'noreply state)))
+
+(defun schedule-poll (poll-ms)
+  (erlang:send_after poll-ms (self) 'poll)
+  'ok)
+```
+
+### `test/torrent-pieces-tests.lfe`
+
+```lfe
+(defmodule torrent-pieces-tests
+  (behaviour ltest-unit)
+  (export all))
 
 (include-lib "ltest/include/ltest-macros.lfe")
 
@@ -1170,6 +1334,19 @@ already-compiled `_build`, which hid this until the port moved into the repo.
                                'live live
                                'sink 'undefined)))
 
+(defun start-session-with-watchdog (downloads live watchdog-opts)
+  (session_sup:start_link (map 'downloads downloads
+                               'live live
+                               'sink 'undefined
+                               'watchdog watchdog-opts)))
+
+(defun watchdog-id (id) (tuple id 'watchdog))
+
+(defun has-child? (sup child-id)
+  (case (lists:keyfind child-id 1 (supervisor:which_children sup))
+    ('false 'false)
+    (child (is_pid (element 2 child)))))
+
 (defun pid-for (sup id)
   (case (lists:keyfind id 1 (supervisor:which_children sup))
     ('false 'undefined)
@@ -1212,6 +1389,8 @@ already-compiled `_build`, which hid this until the port moved into the repo.
          (record (session_sup:stop_child sup "a" live)))
     (is-equal 'paused (maps:get 'state record))
     (is-equal 'undefined (pid-for sup "a"))
+    (is (not (has-child? sup (watchdog-id "a"))))
+    (is (has-child? sup (watchdog-id "b")))
     (is-equal pid-b (pid-for sup "b"))
     (is (is_process_alive pid-b))))
 
@@ -1253,20 +1432,40 @@ already-compiled `_build`, which hid this until the port moved into the repo.
                                                (download "live" 'downloading))
                                          live))
          (children (supervisor:which_children sup))
+         (keeps-live-only? (and (has-child? sup "live")
+                                (has-child? sup (watchdog-id "live"))
+                                (not (has-child? sup "done"))))
          ((tuple 'ok records) (session_sup:stop sup live)))
-    (is-equal 1 (length children))
-    (is-equal "live" (element 1 (lists:nth 1 children)))
+    (is-equal 2 (length children))
+    (is keeps-live-only?)
     (is-equal 'completed (maps:get 'state (records:record-for live "done")))
     (is-equal (list 'completed 'paused) (states records))))
+
+(deftest a-stalled-download-restarts
+  (let* ((live (records:create '()))
+         ((tuple 'ok sup) (start-session-with-watchdog
+                            (list (download "a" 'downloading))
+                            live
+                            (map 'deadline-ms 20 'poll-ms 5)))
+         (old-pid (pid-for sup "a")))
+    (let ((new-pid (wait-for-new-pid sup "a" old-pid 100)))
+      (is (is_pid new-pid))
+      (is (/= old-pid new-pid))
+      (is-equal 'running (maps:get 'state (records:record-for live "a"))))
+    (session_sup:stop sup live)))
+
+(deftest remove-child-removes-the-watchdog-too
+  (let* ((live (records:create '()))
+         ((tuple 'ok sup) (start-session (list (download "a" 'downloading)
+                                               (download "b" 'downloading))
+                                         live)))
+    (is-equal 'ok (session_sup:remove_child sup "a" live))
+    (is (not (has-child? sup "a")))
+    (is (not (has-child? sup (watchdog-id "a"))))
+    (is (has-child? sup "b"))
+    (is (has-child? sup (watchdog-id "b")))
+    (session_sup:stop sup live)))
 ```
-
-### `test/prop_torrent_pieces.erl`
-
-```erlang
-%% PropEr properties for the LFE piece module.
-%%
-%% Oracles are computed from the declared inputs (lengths, peer sets,
-%% index ranges), never by calling the function under test again.
 
 ### `test/records-tests.lfe`
 
@@ -1310,6 +1509,93 @@ already-compiled `_build`, which hid this until the port moved into the repo.
     (is-equal 'nil (records:record-for table "a"))
     (is-equal 1 (length (records:all table)))))
 ```
+
+### `test/watchdog-tests.lfe`
+
+```lfe
+(defmodule watchdog-tests
+  (behaviour ltest-unit)
+  (export all))
+
+(include-lib "ltest/include/ltest-macros.lfe")
+
+(defun progress-record (blocks-received verified active-peers)
+  (map 'blocks-received blocks-received
+       'verified verified
+       'active-peers active-peers))
+
+(defun start-watchdog (args)
+  (watchdog:start_link (maps:merge (map 'id 'test)
+                                   args)))
+
+(defun receive-fired (timeout)
+  (receive
+    ('fired 'fired)
+    (after timeout 'quiet)))
+
+(deftest progress-marker-counts-blocks-and-peers
+  (is-equal (list 6 2)
+            (watchdog:progress-marker
+              (progress-record (map "peer-1" (list 'a 'b 'c) "peer-2" (list 'a))
+                      (list 'piece-1 'piece-2)
+                      (list "peer-1" "peer-2")))))
+
+(deftest progress-marker-of-a-missing-record-is-zero
+  (is-equal (list 0 0) (watchdog:progress-marker 'nil)))
+
+(deftest inactive-state-is-never-a-stall
+  (is (not (watchdog:stalled? (list 1 1) 'undefined 0 100000 100))))
+
+(deftest a-moved-marker-is-never-a-stall
+  (is (not (watchdog:stalled? (list 2 1) (list 1 1) 0 100000 100))))
+
+(deftest time-below-the-deadline-is-never-a-stall
+  (is (not (watchdog:stalled? (list 1 1) (list 1 1) 0 99 100))))
+
+(deftest the-deadline-is-reached-exactly
+  (is (watchdog:stalled? (list 1 1) (list 1 1) 0 100 100)))
+
+(deftest a-watchdog-fires-when-the-marker-never-moves
+  (let* ((parent (self))
+         ((tuple 'ok pid) (start-watchdog
+                            (map 'marker (lambda () (list 0 0))
+                                 'fire (lambda () (erlang:send parent 'fired))
+                                 'deadline-ms 20
+                                 'poll-ms 5))))
+    (is-equal 'fired (receive-fired 1000))
+    (timer:sleep 20)
+    (is (not (is_process_alive pid)))))
+
+(deftest a-watchdog-stays-quiet-while-the-marker-moves
+  (let* ((parent (self))
+         ((tuple 'ok pid) (start-watchdog
+                            (map 'marker (lambda () (erlang:unique_integer))
+                                 'fire (lambda () (erlang:send parent 'fired))
+                                 'deadline-ms 20
+                                 'poll-ms 5))))
+    (is-equal 'quiet (receive-fired 200))
+    (is (is_process_alive pid))
+    (gen_server:stop pid)))
+
+(deftest a-frozen-clock-never-fires
+  (let* ((parent (self))
+         ((tuple 'ok pid) (start-watchdog
+                            (map 'marker (lambda () (list 0 0))
+                                 'now (lambda () 1000)
+                                 'fire (lambda () (erlang:send parent 'fired))
+                                 'deadline-ms 20
+                                 'poll-ms 5))))
+    (is-equal 'quiet (receive-fired 100))
+    (gen_server:stop pid)))
+```
+
+### `test/prop_torrent_pieces.erl`
+
+```erlang
+%% PropEr properties for the LFE piece module.
+%%
+%% Oracles are computed from the declared inputs (lengths, peer sets,
+%% index ranges), never by calling the function under test again.
 %%
 %% PropEr generators are size-parameterised: choose(1, 1048576) draws from
 %% the current size, which starts at 1. Large domains are resized explicitly
@@ -1571,4 +1857,81 @@ elixir_ebin() ->
         false -> "/Users/kevin/code/elixir/torrent_client/_build/dev/lib/torrent_client/ebin";
         Path -> Path
     end.
+```
+
+### `test/prop_watchdog.erl`
+
+```erlang
+%% PropEr properties for the LFE watchdog's stall decision.
+%%
+%% The oracles are laws, not a rerun of the function under test: a marker
+%% that moved is never a stall whatever the clock says, elapsed time below
+%% the deadline is never a stall, a stall holds while the marker stands
+%% still, and the deadline is reached at exactly the deadline. The marker
+%% count is checked against the declared inputs.
+%%
+%% PropEr generators are size-parameterised: choose(1, 100000) draws from
+%% the current size, which starts at 1. Deadlines are resized explicitly
+%% where a law needs a value above the deadline.
+-module(prop_watchdog).
+
+-include_lib("proper/include/proper.hrl").
+
+-export([prop_moving_marker_is_never_a_stall/0,
+         prop_time_below_the_deadline_is_never_a_stall/0,
+         prop_the_deadline_is_reached_exactly/0,
+         prop_a_stall_holds_while_the_marker_stands_still/0,
+         prop_marker_counts_blocks_and_peers/0]).
+
+marker() ->
+    ?LET({Blocks, Peers}, {integer(), integer()}, [Blocks, Peers]).
+
+deadline() ->
+    ?LET(Deadline, choose(1, 100000), Deadline).
+
+prop_moving_marker_is_never_a_stall() ->
+    ?FORALL({Marker, Previous, LastProgress, Now, Deadline},
+            {marker(), marker(), nat(), nat(), deadline()},
+            Marker =:= Previous orelse
+                not watchdog:'stalled?'(Marker, Previous, LastProgress, Now, Deadline)).
+
+prop_time_below_the_deadline_is_never_a_stall() ->
+    ?FORALL({Marker, LastProgress, Gap, Deadline},
+            {marker(), nat(), nat(), deadline()},
+            Gap >= Deadline orelse
+                not watchdog:'stalled?'(Marker, Marker, LastProgress,
+                                        LastProgress + Gap, Deadline)).
+
+prop_the_deadline_is_reached_exactly() ->
+    ?FORALL({Marker, LastProgress, Deadline},
+            {marker(), nat(), deadline()},
+            watchdog:'stalled?'(Marker, Marker, LastProgress,
+                                LastProgress + Deadline, Deadline)).
+
+prop_a_stall_holds_while_the_marker_stands_still() ->
+    ?FORALL({Marker, LastProgress, Offset, Later, Deadline},
+            {marker(), nat(), nat(), nat(), deadline()},
+            Offset < Deadline orelse
+                begin
+                    Now = LastProgress + Offset,
+                    watchdog:'stalled?'(Marker, Marker, LastProgress, Now, Deadline)
+                        =:= watchdog:'stalled?'(Marker, Marker, LastProgress,
+                                                Now + Later, Deadline)
+                end).
+
+prop_marker_counts_blocks_and_peers() ->
+    ?FORALL({PeerBlocks, Verified},
+            {list({choose(1, 100), choose(0, 5)}), list(choose(0, 20))},
+            begin
+                Pairs = lists:ukeysort(1, PeerBlocks),
+                Blocks = maps:from_list([{Peer, lists:duplicate(Count, block)}
+                                         || {Peer, Count} <- Pairs]),
+                Record = #{'blocks-received' => Blocks,
+                           'verified' => Verified,
+                           'active-peers' => [Peer || {Peer, _} <- Pairs]},
+                [BlocksTotal, PeersSeen] = watchdog:'progress-marker'(Record),
+                BlocksTotal =:= lists:sum([Count || {_, Count} <- Pairs])
+                    + length(Verified)
+                    andalso PeersSeen =:= length(Pairs)
+            end).
 ```

@@ -12,6 +12,19 @@
                                'live live
                                'sink 'undefined)))
 
+(defun start-session-with-watchdog (downloads live watchdog-opts)
+  (session_sup:start_link (map 'downloads downloads
+                               'live live
+                               'sink 'undefined
+                               'watchdog watchdog-opts)))
+
+(defun watchdog-id (id) (tuple id 'watchdog))
+
+(defun has-child? (sup child-id)
+  (case (lists:keyfind child-id 1 (supervisor:which_children sup))
+    ('false 'false)
+    (child (is_pid (element 2 child)))))
+
 (defun pid-for (sup id)
   (case (lists:keyfind id 1 (supervisor:which_children sup))
     ('false 'undefined)
@@ -54,6 +67,8 @@
          (record (session_sup:stop_child sup "a" live)))
     (is-equal 'paused (maps:get 'state record))
     (is-equal 'undefined (pid-for sup "a"))
+    (is (not (has-child? sup (watchdog-id "a"))))
+    (is (has-child? sup (watchdog-id "b")))
     (is-equal pid-b (pid-for sup "b"))
     (is (is_process_alive pid-b))))
 
@@ -95,8 +110,36 @@
                                                (download "live" 'downloading))
                                          live))
          (children (supervisor:which_children sup))
+         (keeps-live-only? (and (has-child? sup "live")
+                                (has-child? sup (watchdog-id "live"))
+                                (not (has-child? sup "done"))))
          ((tuple 'ok records) (session_sup:stop sup live)))
-    (is-equal 1 (length children))
-    (is-equal "live" (element 1 (lists:nth 1 children)))
+    (is-equal 2 (length children))
+    (is keeps-live-only?)
     (is-equal 'completed (maps:get 'state (records:record-for live "done")))
     (is-equal (list 'completed 'paused) (states records))))
+
+(deftest a-stalled-download-restarts
+  (let* ((live (records:create '()))
+         ((tuple 'ok sup) (start-session-with-watchdog
+                            (list (download "a" 'downloading))
+                            live
+                            (map 'deadline-ms 20 'poll-ms 5)))
+         (old-pid (pid-for sup "a")))
+    (let ((new-pid (wait-for-new-pid sup "a" old-pid 100)))
+      (is (is_pid new-pid))
+      (is (/= old-pid new-pid))
+      (is-equal 'running (maps:get 'state (records:record-for live "a"))))
+    (session_sup:stop sup live)))
+
+(deftest remove-child-removes-the-watchdog-too
+  (let* ((live (records:create '()))
+         ((tuple 'ok sup) (start-session (list (download "a" 'downloading)
+                                               (download "b" 'downloading))
+                                         live)))
+    (is-equal 'ok (session_sup:remove_child sup "a" live))
+    (is (not (has-child? sup "a")))
+    (is (not (has-child? sup (watchdog-id "a"))))
+    (is (has-child? sup "b"))
+    (is (has-child? sup (watchdog-id "b")))
+    (session_sup:stop sup live)))

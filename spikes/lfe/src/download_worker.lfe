@@ -54,6 +54,8 @@
    (tuple 'reply 'ok state)))
 
 (defun handle_cast
+  (('watchdog-fired state)
+   (tuple 'stop 'watchdog-fired state))
   (((tuple 'progress record) state)
    (publish (maps:get 'live state)
             (maps:get 'sink state)
