@@ -3,7 +3,7 @@
 ;;;;
 ;;;; One child per download. stop/2 terminates every child; the supervisor
 ;;;; calls each worker's terminate/2 and waits for it, so the paused record
-;;;; is already in the live table when stop returns. The supervisor's
+;;;; is already in the records view when stop returns. The supervisor's
 ;;;; one_for_one budget replaces the Clojure restart budget, and the child's
 ;;;; shutdown timeout replaces the shared join deadline.
 
@@ -48,16 +48,14 @@
   (lists:foreach
     (lambda (child) (supervisor:terminate_child sup (element 1 child)))
     (supervisor:which_children sup))
-  (tuple 'ok (records live)))
+  (tuple 'ok (records:all live)))
 
 (defun stop_child (sup id live)
   (case (lists:keyfind id 1 (supervisor:which_children sup))
     ('false 'nil)
     (_child
      (supervisor:terminate_child sup id)
-     (case (ets:lookup live id)
-       ((list (tuple _id record)) record)
-       (_ 'nil)))))
+     (records:record-for live id))))
 
 (defun remove_child (sup id live)
   (case (lists:keyfind id 1 (supervisor:which_children sup))
@@ -65,10 +63,5 @@
     (_child
      (supervisor:terminate_child sup id)
      (supervisor:delete_child sup id)
-     (ets:delete live id)
+     (records:forget live id)
      'ok)))
-
-(defun records (live)
-  (lists:sort
-    (lambda (left right) (=< (maps:get 'id left) (maps:get 'id right)))
-    (lists:map (lambda (pair) (element 2 pair)) (ets:tab2list live))))

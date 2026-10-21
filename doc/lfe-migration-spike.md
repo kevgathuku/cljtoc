@@ -137,21 +137,25 @@ already achieved by the Elixir tree.
 
 ### What was ported and how it was checked
 
-The spike lives in `spikes/lfe` in this tree. It ported two slices:
+The spike lives in `spikes/lfe` in this tree. It ported three slices:
 
 - `dev.cljtoc.domain.pieces` to `src/torrent_pieces.lfe` (276 lines), with
   the Clojure example cases as 19 `ltest` tests and 12 PropEr properties.
   `verify-piece` calls the existing Elixir `Torrent.verify_hash?/2` through
   the `'Elixir.Torrent` atom; the tests use `Utils.sha_sum/1` the same way.
 - The session supervisor stop path to `src/download_worker.lfe` (85 lines)
-  and `src/session_sup.lfe` (74 lines), with 6 `ltest` cases covering
+  and `src/session_sup.lfe` (67 lines), with 6 `ltest` cases covering
   `stop`, `stop_child`, `remove_child`, transient crash restart, and the
   terminal-download rule.
+- The daemon's record view to `src/records.lfe` (42 lines; `b77.1`), with 5
+  more `ltest` cases. It mirrors `dev.cljtoc.daemon.records`: `download_worker`
+  and `session_sup` publish and read through it, and no module outside it
+  touches the ETS table.
 
 Run them from `spikes/lfe`:
 
 ```bash
-rebar3 as test lfe ltest          # 25 tests, ~1 s warm
+rebar3 as test lfe ltest          # 30 tests, ~1 s warm
 rebar3 lfe format                 # in-place formatter
 erl -noshell -pa _build/test/lib/*/ebin \
   -eval 'io:format("~p~n",[proper:module(prop_torrent_pieces,[{numtests,300}])]), halt().'
@@ -714,7 +718,7 @@ already-compiled `_build`, which hid this until the port moved into the repo.
        'type 'worker))
 
 (defun publish (live sink id record)
-  (ets:insert live (tuple id record))
+  (records:put live record)
   (case (is_pid sink)
     ('true
      (erlang:send sink (tuple 'record id record)))
@@ -776,7 +780,7 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 ;;;;
 ;;;; One child per download. stop/2 terminates every child; the supervisor
 ;;;; calls each worker's terminate/2 and waits for it, so the paused record
-;;;; is already in the live table when stop returns. The supervisor's
+;;;; is already in the records view when stop returns. The supervisor's
 ;;;; one_for_one budget replaces the Clojure restart budget, and the child's
 ;;;; shutdown timeout replaces the shared join deadline.
 
@@ -821,16 +825,14 @@ already-compiled `_build`, which hid this until the port moved into the repo.
   (lists:foreach
     (lambda (child) (supervisor:terminate_child sup (element 1 child)))
     (supervisor:which_children sup))
-  (tuple 'ok (records live)))
+  (tuple 'ok (records:all live)))
 
 (defun stop_child (sup id live)
   (case (lists:keyfind id 1 (supervisor:which_children sup))
     ('false 'nil)
     (_child
      (supervisor:terminate_child sup id)
-     (case (ets:lookup live id)
-       ((list (tuple _id record)) record)
-       (_ 'nil)))))
+     (records:record-for live id))))
 
 (defun remove_child (sup id live)
   (case (lists:keyfind id 1 (supervisor:which_children sup))
@@ -838,13 +840,8 @@ already-compiled `_build`, which hid this until the port moved into the repo.
     (_child
      (supervisor:terminate_child sup id)
      (supervisor:delete_child sup id)
-     (ets:delete live id)
+     (records:forget live id)
      'ok)))
-
-(defun records (live)
-  (lists:sort
-    (lambda (left right) (=< (maps:get 'id left) (maps:get 'id right)))
-    (lists:map (lambda (pair) (element 2 pair)) (ets:tab2list live))))
 ```
 
 ### `test/torrent-pieces-tests.lfe`
@@ -853,6 +850,53 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 (defmodule torrent-pieces-tests
   (behaviour ltest-unit)
   (export all))
+
+### `src/records.lfe`
+
+```lfe
+;;;; The daemon's live view of its torrents: one record per download id.
+;;;; Ported from dev.cljtoc.daemon.records.
+;;;;
+;;;; The Clojure view is an atom, because the RPC handlers and the session's
+;;;; progress both update it from their own threads. The Erlang equivalent of
+;;;; that shared, concurrently-written view is a public ETS table, so the
+;;;; table handle plays the atom's role and travels the same way: created
+;;;; once and passed to the session supervisor and the workers.
+
+(defmodule records
+  (export
+   (all 1)
+   (create 1)
+   (forget 2)
+   (put 2)
+   (record-for 2)))
+
+(defun create (records)
+  (let ((table (ets:new 'records (list 'set 'public))))
+    (lists:foreach
+      (lambda (record) (ets:insert table (tuple (maps:get 'id record) record)))
+      records)
+    table))
+
+(defun record-for (table id)
+  (case (ets:lookup table id)
+    ((list (tuple _id record)) record)
+    (_ 'nil)))
+
+(defun put (table record)
+  (ets:insert table (tuple (maps:get 'id record) record))
+  'ok)
+
+(defun forget (table id)
+  (ets:delete table id)
+  'ok)
+
+;; Sorted by id for a stable listing; the Clojure view is unordered.
+(defun all (table)
+  (lists:sort
+    (lambda (left right) (=< (maps:get 'id left) (maps:get 'id right)))
+    (lists:map (lambda (pair) (element 2 pair)) (ets:tab2list table))))
+```
 
 (include-lib "ltest/include/ltest-macros.lfe")
 
@@ -1121,9 +1165,6 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 (defun download (id state)
   (map 'id id 'state state))
 
-(defun live-table ()
-  (ets:new 'live (list 'set 'public)))
-
 (defun start-session (downloads live)
   (session_sup:start_link (map 'downloads downloads
                                'live live
@@ -1137,11 +1178,6 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 (defun states (records)
   (lists:map (lambda (record) (maps:get 'state record)) records))
 
-(defun live-record (live id)
-  (case (ets:lookup live id)
-    ((list (tuple _id record)) record)
-    (_ 'undefined)))
-
 (defun wait-for-new-pid
   ((_sup _id _old 0) 'undefined)
   ((sup id old attempts)
@@ -1153,7 +1189,7 @@ already-compiled `_build`, which hid this until the port moved into the repo.
          (wait-for-new-pid sup id old (- attempts 1)))))))
 
 (deftest stop-pauses-every-child
-  (let* ((live (live-table))
+  (let* ((live (records:create '()))
          ((tuple 'ok sup) (start-session (list (download "a" 'downloading)
                                                (download "b" 'downloading))
                                          live))
@@ -1168,7 +1204,7 @@ already-compiled `_build`, which hid this until the port moved into the repo.
     (is-equal (list 'paused 'paused) (states records))))
 
 (deftest stop-child-pauses-only-that-child
-  (let* ((live (live-table))
+  (let* ((live (records:create '()))
          ((tuple 'ok sup) (start-session (list (download "a" 'downloading)
                                                (download "b" 'downloading))
                                          live))
@@ -1180,24 +1216,24 @@ already-compiled `_build`, which hid this until the port moved into the repo.
     (is (is_process_alive pid-b))))
 
 (deftest stop-child-unknown-id-is-nil
-  (let* ((live (live-table))
+  (let* ((live (records:create '()))
          ((tuple 'ok sup) (start-session (list (download "a" 'downloading)) live)))
     (is-equal 'nil (session_sup:stop_child sup "missing" live))))
 
 (deftest remove-child-forgets-the-record
-  (let* ((live (live-table))
+  (let* ((live (records:create '()))
          ((tuple 'ok sup) (start-session (list (download "a" 'downloading)
                                                (download "b" 'downloading))
                                          live))
          (pid-b (pid-for sup "b")))
     (is-equal 'ok (session_sup:remove_child sup "a" live))
     (is-equal 'undefined (pid-for sup "a"))
-    (is-equal [] (ets:lookup live "a"))
+    (is-equal 'nil (records:record-for live "a"))
     (is-equal pid-b (pid-for sup "b"))
     (is (is_process_alive pid-b))))
 
 (deftest crashed-child-restarts-alone
-  (let* ((live (live-table))
+  (let* ((live (records:create '()))
          ((tuple 'ok sup) (start-session (list (download "a" 'downloading)
                                                (download "b" 'downloading))
                                          live))
@@ -1209,10 +1245,10 @@ already-compiled `_build`, which hid this until the port moved into the repo.
       (is (/= old-pid new-pid))
       (is-equal sibling (pid-for sup "b"))
       (is (is_process_alive sibling))
-      (is-equal 'running (maps:get 'state (live-record live "a"))))))
+      (is-equal 'running (maps:get 'state (records:record-for live "a"))))))
 
 (deftest terminal-download-is-kept-but-not-run
-  (let* ((live (live-table))
+  (let* ((live (records:create '()))
          ((tuple 'ok sup) (start-session (list (download "done" 'completed)
                                                (download "live" 'downloading))
                                          live))
@@ -1220,7 +1256,7 @@ already-compiled `_build`, which hid this until the port moved into the repo.
          ((tuple 'ok records) (session_sup:stop sup live)))
     (is-equal 1 (length children))
     (is-equal "live" (element 1 (lists:nth 1 children)))
-    (is-equal 'completed (maps:get 'state (live-record live "done")))
+    (is-equal 'completed (maps:get 'state (records:record-for live "done")))
     (is-equal (list 'completed 'paused) (states records))))
 ```
 
@@ -1231,6 +1267,49 @@ already-compiled `_build`, which hid this until the port moved into the repo.
 %%
 %% Oracles are computed from the declared inputs (lengths, peer sets,
 %% index ranges), never by calling the function under test again.
+
+### `test/records-tests.lfe`
+
+```lfe
+(defmodule records-tests
+  (behaviour ltest-unit)
+  (export all))
+
+(include-lib "ltest/include/ltest-macros.lfe")
+
+(defun download (id state)
+  (map 'id id 'state state))
+
+(deftest create-seeds-the-view
+  (let ((table (records:create (list (download "a" 'paused)))))
+    (is-equal 'paused (maps:get 'state (records:record-for table "a")))))
+
+(deftest record-for-unknown-id-is-nil
+  (let ((table (records:create '())))
+    (is-equal 'nil (records:record-for table "missing"))))
+
+(deftest put-adds-then-replaces
+  (let ((table (records:create '())))
+    (is-equal 'ok (records:put table (download "a" 'running)))
+    (is-equal 'running (maps:get 'state (records:record-for table "a")))
+    (records:put table (download "a" 'paused))
+    (is-equal 'paused (maps:get 'state (records:record-for table "a")))
+    (is-equal 1 (length (records:all table)))))
+
+(deftest all-is-sorted-by-id
+  (let ((table (records:create (list (download "b" 'running)
+                                     (download "a" 'paused)))))
+    (is-equal (list "a" "b")
+              (lists:map (lambda (record) (maps:get 'id record))
+                         (records:all table)))))
+
+(deftest forget-drops-one
+  (let ((table (records:create (list (download "a" 'running)
+                                     (download "b" 'running)))))
+    (is-equal 'ok (records:forget table "a"))
+    (is-equal 'nil (records:record-for table "a"))
+    (is-equal 1 (length (records:all table)))))
+```
 %%
 %% PropEr generators are size-parameterised: choose(1, 1048576) draws from
 %% the current size, which starts at 1. Large domains are resized explicitly

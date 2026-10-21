@@ -31,7 +31,7 @@
        'type 'worker))
 
 (defun publish (live sink id record)
-  (ets:insert live (tuple id record))
+  (records:put live record)
   (case (is_pid sink)
     ('true
      (erlang:send sink (tuple 'record id record)))
