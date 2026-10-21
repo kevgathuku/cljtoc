@@ -28,13 +28,23 @@
 
 (defn save-all
   "Persist every record. Returns the failures only, each carrying the id
-   it belongs to, so the caller reports them and the next tick retries."
+   it belongs to, so the caller reports them and the next tick retries.
+
+   A save that throws is caught per record: the failure becomes data like
+   any other, and the records after it still get their turn. Letting the
+   throw escape would leave every later record unsaved on every pass."
   [disk-port records]
   (into []
         (keep (fn [record]
-                (let [saved (disk/save-state disk-port record)]
-                  (when (:error saved)
-                    (assoc saved :id (:id record))))))
+                (try
+                  (let [saved (disk/save-state disk-port record)]
+                    (when (:error saved)
+                      (assoc saved :id (:id record))))
+                  (catch Exception error
+                    {:id (:id record)
+                     :error :save-error
+                     :message (or (.getMessage error)
+                                  (.getName (class error)))}))))
         records))
 
 (s/fdef save-all
@@ -65,28 +75,52 @@
        (doto (Thread. ^Runnable runnable "cljtoc-persist")
          (.setDaemon true))))))
 
+(def default-stop-timeout-ms
+  "How long stop waits for an in-flight save to finish, in milliseconds.
+   The final shutdown save runs after this, so waiting is what keeps a
+   slow tick from overwriting newer state; the bound keeps a wedged disk
+   from holding the process open."
+  10000)
+
 (defn start
   "Save every record `records` returns once per `interval-ms`, until the
    returned stop fn is called.
 
-   Returns {:stop (fn [])}; the stop is idempotent and waits for no tick:
-   a save already in flight finishes, and nothing starts after it."
-  [disk-port records interval-ms]
-  (let [executor (scheduler)
-        stopped (atom false)
-        tick (fn []
-               (when-not @stopped
-                 (try
-                   (report-failures (save-all disk-port (records)))
-                   (catch Exception error
-                     (println (str "[persist] WARNING: save pass failed: "
-                                   (.getMessage error)))))))]
-    (.scheduleWithFixedDelay executor ^Runnable tick
-                             (long interval-ms) (long interval-ms)
-                             TimeUnit/MILLISECONDS)
-    {:stop (fn []
-             (when (compare-and-set! stopped false true)
-               (.shutdownNow executor)))}))
+   Returns {:stop (fn [])}; the stop is idempotent and waits for a save
+   already in flight, so a caller that saves once more afterwards (the
+   daemon's shutdown path) cannot race a slower write onto the same file.
+   A save that will not finish inside `stop-timeout-ms` is abandoned with
+   a warning rather than blocking exit forever.
+
+   Options:
+   - :scheduler - creates the executor (a test injects a fake one)
+   - :report - where warnings go (default: shell) "
+  ([disk-port records interval-ms]
+   (start disk-port records interval-ms {}))
+  ([disk-port records interval-ms {:keys [scheduler report]
+                                   :or {scheduler scheduler
+                                        report report-failures}}]
+   (let [executor (scheduler)
+         stopped (atom false)
+         warn (fn [message] (report [{:id "(persistence)"
+                                      :error :save-error
+                                      :message message}]))
+         tick (fn []
+                (when-not @stopped
+                  (try
+                    (report (save-all disk-port (records)))
+                    (catch Exception error
+                      (warn (str "save pass failed: " (.getMessage error)))))))]
+     (.scheduleWithFixedDelay ^ScheduledExecutorService executor ^Runnable tick
+                              (long interval-ms) (long interval-ms)
+                              TimeUnit/MILLISECONDS)
+     {:stop (fn []
+              (when (compare-and-set! stopped false true)
+                (.shutdown ^ScheduledExecutorService executor)
+                (when-not (.awaitTermination ^ScheduledExecutorService executor
+                                             (long default-stop-timeout-ms)
+                                             TimeUnit/MILLISECONDS)
+                  (warn "a save did not finish before shutdown; abandoning it"))))})))
 
 ;; Excluded from stest/check: owns a scheduler thread and drives a port,
 ;; and a generator cannot conjure either.

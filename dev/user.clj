@@ -18,10 +18,26 @@
 (def refresh-dirs repl/refresh-dirs)
 (def clear repl/clear)
 
+(defn install-explain-printer!
+  "Make spec failures print through expound, both where a REPL evaluates
+   and in the worker threads it starts.
+
+   `set!` alone is not enough: a thread without a binding reads the root,
+   and a REPL thread's binding shadows the root. `alter-var-root` alone is
+   not enough either: the REPL has the var bound, so evaluations keep the
+   old printer. Do both, and tolerate a thread that never established a
+   binding."
+  []
+  (alter-var-root #'s/*explain-out* (constantly expound/printer))
+  (try
+    (set! s/*explain-out* expound/printer)
+    (catch IllegalStateException _ nil))
+  nil)
+
 (defn welcome
   "Print the require cheat sheet for interactive probing."
   []
-  (alter-var-root #'s/*explain-out* (constantly expound/printer))
+  (install-explain-printer!)
   (pretty-repl/install-pretty-exceptions)
   (println)
   (println "  cljtoc REPL — require what you need, with :reload:")

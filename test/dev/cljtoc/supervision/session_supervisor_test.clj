@@ -483,3 +483,87 @@
         (is (= :restart-budget-exhausted (get-in record [:error :reason])))
         (is (= 1 (count (:verified (:piece-state record))))
             "the piece the child verified before it crashed survives the give-up")))))
+
+(deftest add-rejects-an-id-that-is-already-running-test
+  (testing "a second run for the same download does not replace the first"
+    (let [blocker (promise)
+          started (promise)
+          child (fn [download-record _publish]
+                  (deliver started true)
+                  @blocker
+                  download-record)
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:child child})]
+      (try
+        (is (not= :timed-out (deref started 5000 :timed-out)))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo
+                              #"already running"
+                              (session-supervisor/add (test-utils/download-manager (mock-net/create)
+                                                                                   (mock-disk/create))
+                                                      supervisor
+                                                      {:id "a"}
+                                                      {:child child}))
+            "the shared add refuses a duplicate instead of orphaning a run")
+        (finally
+          (deliver blocker nil)
+          (session-supervisor/stop supervisor))))))
+
+(deftest add-accepts-an-id-whose-run-finishes-test
+  (testing "a finished run can be started again (resume after completion)"
+    (let [supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a"}]
+                                               {:child (fn [record _] (assoc record :state :completed))})
+          _ (await-bounded supervisor)
+          again (session-supervisor/add (test-utils/download-manager (mock-net/create)
+                                                                     (mock-disk/create))
+                                        supervisor
+                                        (assoc (first (session-supervisor/live-records supervisor))
+                                               :state :downloading)
+                                        {:child (fn [record _] (assoc record :state :completed))})]
+      (is (= ["a"] (keys (:children again)))))))
+
+(deftest remove-child-stops-and-forgets-a-download-test
+  (testing "removing a child cancels its run and drops its live record"
+    (let [blocker (promise)
+          started (promise)
+          child (fn [download-record publish]
+                  (publish (assoc download-record :state :downloading))
+                  (deliver started true)
+                  @blocker
+                  download-record)
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               [{:id "a" :state :downloading}]
+                                               {:child child})]
+      (try
+        (is (not= :timed-out (deref started 5000 :timed-out)))
+        (let [removed (session-supervisor/remove-child supervisor "a")]
+          (is (empty? (:children removed)) "the child is gone")
+          (is (empty? (session-supervisor/live-records removed))
+              "its live record is gone too, so a later save cannot resurrect it"))
+        (finally
+          (deliver blocker nil))))))
+
+(deftest stop-cancels-every-child-before-waiting-test
+  (testing "a wedged child does not add its whole bound to every sibling"
+    (let [release (promise)
+          child (fn [download-record _publish]
+                  @release
+                  download-record)
+          supervisor (session-supervisor/start (test-utils/download-manager (mock-net/create)
+                                                                            (mock-disk/create))
+                                               (mapv (fn [id] {:id id})
+                                                     ["a" "b" "c" "d"])
+                                               {:child child})]
+      (try
+        (let [started (System/currentTimeMillis)]
+          (session-supervisor/stop supervisor)
+          ;; Each child ignores its interrupt, but all are cancelled first,
+          ;; so one shared bound covers them instead of one bound each.
+          (is (< (- (System/currentTimeMillis) started) 40000)
+              "shutdown is bounded by one deadline, not one per child"))
+        (finally
+          (deliver release nil))))))

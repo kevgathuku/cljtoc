@@ -12,7 +12,7 @@
   (:require [clojure.edn :as edn]
             [clojure.spec.alpha :as s])
   (:import [java.io PushbackReader PrintWriter]
-           [java.net ServerSocket]))
+           [java.net InetAddress ServerSocket]))
 
 (s/def ::command keyword?)
 
@@ -26,7 +26,9 @@
 
 (s/def ::message string?)
 
-(s/def ::error-response (s/keys :req-un [::reason ::message]))
+(s/def ::error keyword?)
+
+(s/def ::error-response (s/keys :req-un [::error ::message]))
 
 (def no-daemon
   "The response a client gets when nothing is listening on the daemon's
@@ -34,22 +36,38 @@
   {:error :no-daemon
    :message "No daemon is running on that port"})
 
-(declare serve-connection)
+(declare serve-connection error-response)
+
+(def ^:private read-timeout-ms
+  "How long one connection may hold the server waiting for its request,
+   in milliseconds. Without a bound, a client that connects and says
+   nothing keeps a thread and a socket forever."
+  30000)
 
 (defn- serve-connection
-  "Read one request from the socket, answer it, close the socket."
+  "Read one request from the socket, answer it, close the socket.
+
+   The request is validated before it reaches the handler: a payload that
+   is not a command/args map is refused here, so the handler can assume
+   the shape its fdef promises. A connection that sends nothing is
+   abandoned after `read-timeout-ms`."
   [socket handle]
   (try
+    (.setSoTimeout ^java.net.Socket socket read-timeout-ms)
     (with-open [reader (PushbackReader. (java.io.InputStreamReader.
                                          (.getInputStream ^java.net.Socket socket)))
                 writer (PrintWriter. (.getOutputStream ^java.net.Socket socket) true)]
-      (let [request (edn/read reader)]
-        (.println writer (pr-str (try
-                                   (handle request)
-                                   (catch Exception error
-                                     {:error :handler-failed
-                                      :message (or (.getMessage ^Exception error)
-                                                   (.getName (class error)))}))))
+      (let [request (edn/read reader)
+            response (if (s/valid? ::request request)
+                       (try
+                         (handle request)
+                         (catch Exception error
+                           {:error :handler-failed
+                            :message (or (.getMessage ^Exception error)
+                                         (.getName (class error)))}))
+                       (error-response :invalid-request
+                                       (str "Not a request: " (pr-str request))))]
+        (.println writer (pr-str response))
         (.flush writer)))
     (catch Exception _ nil)
     (finally
@@ -64,10 +82,16 @@
    bad connection never takes the server down.
 
    Returns {:stop (fn [])}: the stop closes the listening socket, which
-   ends the accept loop."
+   ends the accept loop.
+
+   The socket binds to loopback only: the daemon answers lifecycle
+   commands (start, stop, pause) without authentication, and the CLI is
+   always local, so listening on every interface would let any host that
+   can reach the port drive this client. The returned map carries the
+   bound `:address` so a test can prove it."
   [{:keys [port handle]}]
   (let [running (atom true)
-        server (ServerSocket. port)
+        server (ServerSocket. port 50 (InetAddress/getByName "127.0.0.1"))
         accept (Thread.
                 (fn []
                   (while @running
@@ -77,7 +101,8 @@
                       (catch Exception _ nil)))))]
     (.setDaemon accept true)
     (.start accept)
-    {:stop (fn []
+    {:address (.getInetAddress server)
+     :stop (fn []
              (reset! running false)
              (.close ^ServerSocket server))}))
 

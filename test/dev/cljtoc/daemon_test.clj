@@ -11,6 +11,7 @@
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.ports.disk-impl :as disk-impl]
             [dev.cljtoc.rpc :as rpc]
+            [dev.cljtoc.supervision.session-supervisor :as session-supervisor]
             [dev.cljtoc.test-doubles.network :as mock-net]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
             [dev.cljtoc.test-doubles.time :as mock-time]
@@ -407,5 +408,93 @@
                   (> (System/currentTimeMillis) deadline) false
                   :else (do (Thread/sleep 10) (recur deadline)))))
             "the periodic pass saved a torrent that has not finished")
+        (finally
+          ((:stop daemon-instance)))))))
+
+(defn- add-to-session!
+  "Join one download to the daemon's session atom the way the daemon does:
+   the read and the reset happen together, so a concurrent request cannot
+   interleave between them."
+  [supervisor-atom manager download options]
+  (locking supervisor-atom
+    (reset! supervisor-atom
+            (session-supervisor/add manager @supervisor-atom download options))))
+
+(deftest pausing-a-running-download-stops-its-run-test
+  (testing "pause stops the child before transitioning the record, so the run cannot overwrite it"
+    (let [{:keys [manager settings]} (daemon-fixture "pause-stops")
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :shutdown-hook (fn [_] nil)})
+          supervisor-atom (:session-supervisor daemon-instance)
+          started (promise)
+          ;; A live run: publishes progress, then idles until interrupted.
+          child (fn [download-record publish]
+                  (publish (assoc download-record :state :downloading))
+                  (deliver started true)
+                  (loop [] (Thread/sleep 20) (recur)))]
+      (try
+        (records/put (:records daemon-instance)
+                     (assoc (test-utils/saved-record "p1" :downloading) :peers #{}))
+        (add-to-session! supervisor-atom manager
+                         (assoc (test-utils/saved-record "p1" :downloading) :peers #{})
+                         {:child child})
+        (is (not= :timed-out (deref started 5000 :timed-out)) "the run started")
+        (let [response (rpc/request (:rpc-port daemon-instance) :pause {:id "p1"})]
+          (is (= :paused (get-in response [:ok :record :state])))
+          (is (realized? (get-in @supervisor-atom [:children "p1" :done]))
+              "the paused download has no live run left"))
+        (finally
+          ((:stop daemon-instance)))))))
+
+(deftest stopping-a-download-drops-its-live-record-test
+  (testing "a stopped download is not resurrected by the next persistence pass"
+    (let [{:keys [manager settings]} (daemon-fixture "stop-drops")
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :shutdown-hook (fn [_] nil)})
+          supervisor-atom (:session-supervisor daemon-instance)
+          started (promise)
+          child (fn [download-record publish]
+                  (publish (assoc download-record :state :downloading))
+                  (deliver started true)
+                  (loop [] (Thread/sleep 20) (recur)))]
+      (try
+        (records/put (:records daemon-instance)
+                     (assoc (test-utils/saved-record "s1" :downloading) :peers #{}))
+        (add-to-session! supervisor-atom manager
+                         (assoc (test-utils/saved-record "s1" :downloading) :peers #{})
+                         {:child child})
+        (is (not= :timed-out (deref started 5000 :timed-out)))
+        (let [response (rpc/request (:rpc-port daemon-instance) :stop {:id "s1"})]
+          (is (nil? (:error response)) (pr-str response)))
+        (is (nil? (get-in @supervisor-atom [:children "s1"]))
+            "the child is gone from the session")
+        (is (empty? (session-supervisor/live-records @supervisor-atom))
+            "and its live record with it, so a later save cannot resurrect it")
+        (finally
+          ((:stop daemon-instance)))))))
+
+(deftest resuming-a-download-already-running-is-refused-test
+  (testing "resume refuses an id the session is already running instead of orphaning the live run"
+    (let [{:keys [manager settings]} (daemon-fixture "dup-resume")
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :shutdown-hook (fn [_] nil)})
+          supervisor-atom (:session-supervisor daemon-instance)
+          started (promise)
+          child (fn [_download-record _publish]
+                  (deliver started true)
+                  (loop [] (Thread/sleep 20) (recur)))
+          paused (assoc (test-utils/saved-record "r1" :paused)
+                        :torrent-path "/tmp/r1.torrent")]
+      (try
+        (add-to-session! supervisor-atom manager
+                         {:id "r1" :state :downloading}
+                         {:child child})
+        (is (not= :timed-out (deref started 5000 :timed-out)))
+        (records/put (:records daemon-instance) paused)
+        (disk/save-state (:disk-port manager) paused)
+        (let [response (rpc/request (:rpc-port daemon-instance) :resume {:id "r1"})]
+          (is (= :duplicate-id (:error response)) (pr-str response))
+          (is (not (realized? (get-in @supervisor-atom [:children "r1" :done])))
+              "the live run was not replaced or stopped"))
         (finally
           ((:stop daemon-instance)))))))

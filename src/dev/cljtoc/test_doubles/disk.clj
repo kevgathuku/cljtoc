@@ -177,13 +177,21 @@
     ;; Mirrors DiskPortImpl: an encode refusal (e.g. an invalid pre-existing
     ;; {:cljtoc/bytes ...} tag) comes back as {:error :save-error}, never an
     ;; uncaught throw — fail fast at the write, identically on both ports.
-    ;; :save-error forces that refusal and :save-throws an unexpected
-    ;; throw, so both shapes of save failure stay drivable.
+    ;; :save-error forces that refusal, :save-throws an unexpected throw
+    ;; (for every record, or for the ids named in :save-throws-for), and
+    ;; :save-delay-ms slows a save, so every save-failure and in-flight
+    ;; shape stays drivable.
     (cond
-      (:save-throws config) (throw (ex-info "disk exploded" {}))
+      (or (:save-throws config)
+          (contains? (set (:save-throws-for config)) (:id download)))
+      (throw (ex-info "disk exploded" {}))
+
       (:save-error config) (:save-error config)
+
       :else
       (try
+        (when-let [delay (:save-delay-ms config)]
+          (Thread/sleep (long delay)))
         (swap! state-files assoc (:id download) (disk/encode-state download))
         {:ok :saved}
         (catch Exception error
@@ -217,6 +225,8 @@
    - :delete-error - error map returned from delete-state instead of deleting
    - :save-error - error map returned from save-state instead of storing
    - :save-throws - unexpected throw from save-state (a crashing port)
+   - :save-throws-for - unexpected throw only for these download ids
+   - :save-delay-ms - how long a save takes, for in-flight shutdown tests
    - :output-write-error - error map from write-output-piece (falls back to :write-error)"
   ([]
    (create {}))

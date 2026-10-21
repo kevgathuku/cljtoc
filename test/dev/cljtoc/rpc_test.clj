@@ -1,7 +1,8 @@
 (ns dev.cljtoc.rpc-test
   "Tests for the RPC transport: one request per connection, an error
    envelope for a refusal, and a server that survives a bad request."
-  (:require [clojure.test :refer [deftest is testing]]
+  (:require [clojure.edn :as edn]
+            [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.rpc :as rpc])
   (:import [java.net ServerSocket]))
 
@@ -96,3 +97,38 @@
   (testing "the refusal envelope carries a reason and a message"
     (is (= {:error :no-peers :message "nobody"}
            (rpc/error-response :no-peers "nobody")))))
+
+(deftest an-invalid-request-is-refused-before-the-handler-test
+  (testing "a request that is not a command/args map never reaches the handler"
+    (let [port (free-port)
+          seen (atom 0)
+          server (rpc/start-server {:port port
+                                    :handle (fn [_request]
+                                              (swap! seen inc)
+                                              {:ok :reached})})]
+      (try
+        (doseq [payload ["\"just-a-string\"" "{:command :status}"
+                         "{:args {}}" "42"]]
+          (let [response (with-open [socket (java.net.Socket. "127.0.0.1" (int port))]
+                           (.setSoTimeout socket 2000)
+                           (let [writer (java.io.PrintWriter. (.getOutputStream socket) true)]
+                             (.println writer payload)
+                             (edn/read (java.io.PushbackReader.
+                                        (java.io.InputStreamReader.
+                                         (.getInputStream socket))))))]
+            (is (= :invalid-request (:error response)) (pr-str payload))))
+        (is (zero? @seen) "the handler saw no malformed request")
+        (finally
+          ((:stop server)))))))
+
+(deftest the-server-binds-loopback-only-test
+  (testing "the RPC listens on 127.0.0.1, not every interface"
+    (let [port (free-port)
+          server (rpc/start-server {:port port :handle (fn [_] {:ok :x})})]
+      (try
+        (is (.isLoopbackAddress ^java.net.InetAddress (:address server))
+            "the bound address is loopback")
+        (is (= {:ok :x} (rpc/request port :status {}))
+            "the CLI's loopback connection still works")
+        (finally
+          ((:stop server)))))))

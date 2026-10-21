@@ -71,6 +71,28 @@
     (.addShutdownHook (Runtime/getRuntime) hook)
     hook))
 
+(defn- add-to-session!
+  "Join one download to the session atom.
+
+   The read and the reset happen together under the atom's monitor, so two
+   requests cannot interleave between them — and `add` runs exactly once.
+   `add` starts the download's run, so letting it sit inside a `swap!`
+   updater would start a duplicate run every time the swap retried.
+
+   Returns {:added true} or, when the session is already running that id,
+   {:refused :duplicate-id} instead of throwing out of the request."
+  [session-supervisor manager download options]
+  (locking session-supervisor
+    (try
+      (reset! session-supervisor
+              (session-supervisor/add manager @session-supervisor download options))
+      {:added true}
+      (catch clojure.lang.ExceptionInfo error
+        (if (= ::session-supervisor/duplicate-child
+               (:type (ex-data error)))
+          {:refused :duplicate-id}
+          (throw error))))))
+
 (defn handle
   "The RPC handler over a live daemon session.
 
@@ -86,15 +108,20 @@
       (let [paths (vec (:paths args))
             started (session/start-torrents (session/session manager) paths
                                             (:output-dir settings))
-            downloads (session/downloads started)]
-        (doseq [download downloads]
-          (records/put records download)
-          (swap! session-supervisor
-                 (fn [supervisor]
-                   (session-supervisor/add manager supervisor download
-                                           {:on-complete (partial report records disk-port)}))))
+            downloads (session/downloads started)
+            refused (into []
+                          (keep (fn [download]
+                                  (records/put records download)
+                                  (when (= :refused
+                                           (:refused
+                                            (add-to-session! session-supervisor manager download
+                                                             {:on-complete (partial report records disk-port)})))
+                                    {:torrent-path (:torrent-path download)
+                                     :error :duplicate-id
+                                     :message (str "Download is already running: " (:id download))}))
+                                downloads))]
         {:ok {:downloads (mapv :id downloads)
-              :failures (vec (session/failures started))}})
+              :failures (into (vec (session/failures started)) refused)}})
 
       :status
       ;; The daemon owns the records; the session owns the telemetry.
@@ -119,21 +146,22 @@
         {:ok {:records (mapv #(record-status time-port %) wanted)}})
 
       :pause
-      ;; The record transition is durable immediately, exactly like the
-      ;; old CLI's pause: the process may die before the next periodic
-      ;; save, and a pause the daemon forgets is a pause that never
-      ;; happened. Stopping the running subtree itself rides 0c9.18's
-      ;; shutdown path, which tears a subtree down cleanly.
+      ;; Stop the run before the record says paused: a live run would keep
+      ;; downloading and publish over the paused record on its next
+      ;; progress report. The run unwinds through the same interrupt path
+      ;; `stop` uses, so it keeps the pieces it verified.
       (if-let [record (records/record-for records (:id args))]
-        (let [paused (download/pause-download time-port nil record)]
-          (if (:error paused)
-            (rpc/error-response (:error paused) (:message paused))
-            (let [ok (get paused :ok)
-                  saved (disk/save-state disk-port ok)]
-              (if (:error saved)
-                (rpc/error-response (:error saved) (:message saved))
-                (do (records/put records ok)
-                    {:ok {:record (record-status time-port ok)}})))))
+        (do
+          (session-supervisor/stop-child live-supervisor (:id args))
+          (let [paused (download/pause-download time-port nil record)]
+            (if (:error paused)
+              (rpc/error-response (:error paused) (:message paused))
+              (let [ok (get paused :ok)
+                    saved (disk/save-state disk-port ok)]
+                (if (:error saved)
+                  (rpc/error-response (:error saved) (:message saved))
+                  (do (records/put records ok)
+                      {:ok {:record (record-status time-port ok)}}))))))
         (rpc/error-response :unknown-download
                             (str "No download with id " (:id args))))
 
@@ -154,17 +182,26 @@
                   (records/put records done)
                   {:ok {:record (record-status time-port done)}})
                 (do (records/put records revived)
-                    (swap! session-supervisor
-                           (fn [supervisor]
-                             (session-supervisor/add manager supervisor revived
-                                                     {:on-complete (partial report records disk-port)})))
-                    {:ok {:record (record-status time-port revived)}})))))
+                    (if (= {:added true}
+                           (add-to-session! session-supervisor manager revived
+                                            {:on-complete (partial report records disk-port)}))
+                      {:ok {:record (record-status time-port revived)}}
+                      (rpc/error-response :duplicate-id
+                                          (str "Download is already running: "
+                                               (:id args)))))))))
         (rpc/error-response :unknown-download
                             (str "No download with id " (:id args))))
 
       :stop
+      ;; Stop the run and forget its live record before the record is
+      ;; deleted: a live run would publish progress for a download the
+      ;; user just stopped, and a leftover live record would be written
+      ;; back by the next persistence pass.
       (if-let [record (records/record-for records (:id args))]
-        (let [stopped (download/stop-download record)
+        (let [_ (locking session-supervisor
+                  (reset! session-supervisor
+                          (session-supervisor/remove-child @session-supervisor (:id args))))
+              stopped (download/stop-download record)
               deleted (disk/delete-state disk-port (:id record))]
           (records/forget records (:id record))
           (if (:error deleted)
