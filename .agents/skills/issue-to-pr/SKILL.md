@@ -69,6 +69,8 @@ scripts/coverage_diff.sh --ns 'dev.cljtoc.cli.*' --ns 'dev.cljtoc.core'
 
 `--ns REGEX` is forwarded to `lein cloverage -n` and can be repeated; it speeds cloverage and narrows the test surface for this run.
 
+By default the script runs only the test namespaces mapped from the changed src files (`<src-ns>-test`), so the gate finishes instead of re-running the whole suite under instrumentation. A line covered solely from another test namespace then reports uncovered: rerun with `--all-tests` for the full run, or add `--test-ns REGEX` (forwarded to `lein cloverage -t`, repeatable) to widen. `--skip-run` reuses the report already in `target/coverage-diff` without re-running cloverage.
+
 **Use `lein cloverage` directly** only when the script's output isn't enough — you want the full per-form/per-line summary, the historical cloverage report, or the EMMA XML for tooling. The script does the diff intersection; raw `lein cloverage` gives you the per-namespace totals. Both write to `target/`, so they share state cleanly.
 
 **Use `git diff main...HEAD` directly** only when the script's diff intersection is too narrow — you want every changed line, not just added lines. Coverage per changed line is the script's job; coverage of the branch as a whole is `lein cloverage`'s.
