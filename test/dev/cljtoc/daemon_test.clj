@@ -258,6 +258,7 @@
           piece-1 (test-utils/to-bytes "efgh")
           info-hash (bencode/sha1-hash (test-utils/to-bytes "cached-info"))
           torrent {:info-hash info-hash
+                   :announce "http://tracker.example.com/announce"
                    :info {:pieces [(bencode/sha1-hash piece-0)
                                    (bencode/sha1-hash piece-1)]
                           :piece-length 4
@@ -304,7 +305,8 @@
         (records/put
          (:records daemon-instance)
          (assoc (test-utils/saved-record "rejoin" :paused)
-                :torrent {:info-hash (bencode/sha1-hash
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info-hash (bencode/sha1-hash
                                       (test-utils/to-bytes "rejoin-info"))
                           :info {:pieces [(bencode/sha1-hash
                                            (test-utils/to-bytes "abcd"))]

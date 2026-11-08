@@ -628,6 +628,7 @@
               :name "done.bin"
               :length 8}
         torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :announce "http://tracker.example.com/announce"
                  :info info}
         piece-state (-> (pieces/initial-piece-state 2)
                         (#(:ok (pieces/mark-in-flight % 0)))
@@ -2214,6 +2215,7 @@
                 :files [{:path ["data.bin"] :length 4}
                         {:path ["empty.bin"] :length 0}]}
           torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :announce "http://tracker.example.com/announce"
                    :info info}
           output-dir (test-utils/temp-dir "resume-empty-out-")
           port (disk-impl/create {:state-dir (test-utils/temp-dir "resume-empty-state-")
