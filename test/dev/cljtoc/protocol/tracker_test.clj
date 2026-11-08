@@ -134,8 +134,7 @@
       (is (= [] (:ok result))))))
 
 (defspec parse-compact-peers-ipv4-generative-test 100
-  ;; Compact wire format is IPv4-only (6 bytes per peer), so generate
-  ;; ::ipv4-address even though ::ip-address now covers both families.
+  ;; Compact wire format is IPv4-only
   (prop/for-all [peers (gen/vector (gen/tuple (s/gen ::tracker/ipv4-address)
                                               (s/gen ::tracker/port))
                                    1 10)]
@@ -155,6 +154,17 @@
                                  (and (= (first expected-peer) (:ip actual-peer))
                                       (= (second expected-peer) (:port actual-peer))))
                                (map vector peers (:ok result)))))))
+
+(defspec parse-compact-peers-ipv4-envelope-generative 100
+  ;; Property: a multiple-of-6 input yields exactly length/6 peers,
+  ;; anything else yields :invalid-peer-data. 
+  ;; Length-only oracle, independent of parsing
+  (prop/for-all [bs (gen/vector (gen/choose -128 127) 0 60)]
+                (let [result (tracker/parse-compact-peers-ipv4 (byte-array bs))]
+                  (if (zero? (mod (count bs) 6))
+                    (and (contains? result :ok)
+                         (= (/ (count bs) 6) (count (:ok result))))
+                    (= :invalid-peer-data (:error result))))))
 
 (defspec generated-peers-satisfy-spec 100
   (testing "All generated peers satisfy the peer spec"
