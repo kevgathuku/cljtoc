@@ -501,3 +501,24 @@
               "the live run was not replaced or stopped"))
         (finally
           ((:stop daemon-instance)))))))
+
+(deftest daemon-start-refuses-unvalidated-saved-record-test
+  (testing "a stored record the trust boundaries would refuse starts failed
+            instead of supervising: its info without :name would otherwise
+            compile to an empty layout and complete with no files"
+    (let [{:keys [manager settings]} (daemon-fixture "bad-startup")
+          hostile {:id "nameless" :state :paused
+                   :torrent {:announce "http://tracker.example.com/announce"
+                             :info {:piece-length 4 :length 8 :pieces []}}
+                   :piece-state {:total-pieces 1 :needed #{0}
+                                 :in-flight #{} :verified #{}}
+                   :stats {:bytes-downloaded 0}}
+          _ (disk/save-state (:disk-port manager) hostile)
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :shutdown-hook (fn [_] nil)})]
+      (try
+        (let [record (records/record-for (:records daemon-instance) "nameless")]
+          (is (= :failed (:state record)))
+          (is (= :invalid-torrent (get-in record [:error :reason]))))
+        (finally
+          ((:stop daemon-instance)))))))

@@ -581,18 +581,22 @@
             {:ok download :layout nil}
             (assoc materialized :layout (:ok compiled))))))))
 
-(defn- refuse-corrupt-resume
-  "Refuse a resume whose persisted record fails torrent validation: disk
-   state is a trust boundary, and layout derivation trusts its input now.
-   Returns an :invalid-torrent envelope, or nil when there is no stored
-   record or it validates."
-  [stored]
-  (when stored
-    (let [checked (torrent/validate-torrent (:torrent stored))]
+(defn refuse-unvalidated-record
+  "Refuse a record whose torrent fails validation: disk state is a trust
+  boundary, and layout derivation trusts its input now. Shared by
+  resume-download and daemon startup. Returns an :invalid-torrent
+  envelope, or nil when there is no record or it validates."
+  [record]
+  (when record
+    (let [checked (torrent/validate-torrent (:torrent record))]
       (when (:error checked)
         {:error :invalid-torrent
          :message (str "Stored state fails torrent validation: "
                        (-> checked :error first :message))}))))
+
+(s/fdef refuse-unvalidated-record
+  :args (s/cat :record (s/nilable map?))
+  :ret (s/nilable map?))
 
 (defn resume-download
   "Resume a paused or failed download.
@@ -618,7 +622,7 @@
    (if (contains? resumable-states (:state download))
      (let [stored (when disk-port
                     (:ok (disk/load-state disk-port (:id download))))
-           corrupt (refuse-corrupt-resume stored)]
+           corrupt (refuse-unvalidated-record stored)]
        (if corrupt
          corrupt
          (let [restored (or stored download)
