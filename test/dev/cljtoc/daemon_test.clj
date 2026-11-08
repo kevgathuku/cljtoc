@@ -524,3 +524,21 @@
           (is (= :invalid-torrent (get-in record [:error :reason]))))
         (finally
           ((:stop daemon-instance)))))))
+
+(deftest refuse-unvalidated-saved-test
+  (testing "terminal records pass through untouched"
+    (let [done (assoc (test-utils/saved-record "done" :completed)
+                      :torrent {:announce "http://x"
+                                :info {:piece-length 4}})]
+      (is (= done (#'daemon/refuse-unvalidated-saved done)))))
+  (testing "valid runnable records pass through untouched"
+    (let [live {:id "live" :state :paused
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "live" :piece-length 4 :length 8 :pieces []}}}]
+      (is (= live (#'daemon/refuse-unvalidated-saved live)))))
+  (testing "runnable records with hostile torrents start failed"
+    (let [bad {:id "bad" :state :paused
+               :torrent {:announce "http://tracker.example.com/announce"
+                         :info {:piece-length 4 :length 8 :pieces []}}}]
+      (is (= :failed (:state (#'daemon/refuse-unvalidated-saved bad))))
+      (is (= :invalid-torrent (get-in (#'daemon/refuse-unvalidated-saved bad) [:error :reason]))))))

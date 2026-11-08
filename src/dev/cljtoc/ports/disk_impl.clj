@@ -480,7 +480,7 @@
                     ;; maps; every other parse failure carries :message.
                     reason (if (vector? parse-error)
                              (apply str (interpose "; " (map :message parse-error)))
-                             (:message parse-error))]
+                             (:message parse-result))]
                 {:error :invalid-torrent :message (str "Failed to parse: " reason)})
               {:ok (:ok parse-result)}))
           {:error :file-not-found :message (str "File not found: " path)}))

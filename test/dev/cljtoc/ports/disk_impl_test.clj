@@ -79,7 +79,15 @@
                                "info" info})))
           result (disk/read-torrent-file port path)]
       (is (= :invalid-torrent (:error result)))
-      (is (re-find #"natural integer" (:message result))))))
+      (is (re-find #"natural integer" (:message result)))))
+  (testing "a file that is not a torrent keeps its decode reason"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          dir (test-utils/temp-dir "torrent-")
+          path (str dir "/corrupt.torrent")
+          _ (spit path "not bencode")
+          result (disk/read-torrent-file port path)]
+      (is (= :invalid-torrent (:error result)))
+      (is (re-find #"Failed to parse: .+" (:message result))))))
 
 (deftest piece-cache-scoped-by-torrent-content-test
   (testing "distinct torrents share no cache entries: same piece index, distinct bytes, both intact"
