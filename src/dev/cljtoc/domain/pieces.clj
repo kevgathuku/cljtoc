@@ -34,7 +34,6 @@
     ;; => {:ok 7}  or  {:error :hash-mismatch ...}"
   (:require [clojure.set :as set]
             [clojure.spec.alpha :as s]
-            [clojure.test.check.generators :as gen]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.utils :as utils]))
 
@@ -90,21 +89,29 @@
               (every? (fn [member] (and (nat-int? member) (< member total-pieces)))
                       (concat needed in-flight verified))))))
 
-(def ^:private gen-piece-state
+(defn ^:private gen-piece-state
   "Generates reachable PieceState records: a total in [1, 12] plus a
   random needed / in-flight / verified partition of its range, so every
-  generated state is one the transitions could actually produce."
-  (gen/bind (gen/choose 1 12)
-            (fn [total-pieces]
-              (gen/fmap (fn [buckets]
-                          (let [assigned (map vector (range total-pieces) buckets)
-                                in-bucket (fn [bucket]
-                                            (set (map first (filter #(= bucket (second %)) assigned))))]
-                            (->PieceState total-pieces
-                                          (in-bucket 0)
-                                          (in-bucket 1)
-                                          (in-bucket 2))))
-                        (gen/vector (gen/choose 0 2) total-pieces)))))
+  generated state is one the transitions could actually produce.
+  A defn, not a def: building the generator must wait for first
+  generate, so requiring this namespace never loads test.check."
+  []
+  ;; test.check is :dev-only (the uberjar excludes it): resolve lazily.
+  (let [gen-bind (requiring-resolve 'clojure.test.check.generators/bind)
+        gen-choose (requiring-resolve 'clojure.test.check.generators/choose)
+        gen-fmap (requiring-resolve 'clojure.test.check.generators/fmap)
+        gen-vector (requiring-resolve 'clojure.test.check.generators/vector)]
+    (gen-bind (gen-choose 1 12)
+              (fn [total-pieces]
+                (gen-fmap (fn [buckets]
+                            (let [assigned (map vector (range total-pieces) buckets)
+                                  in-bucket (fn [bucket]
+                                              (set (map first (filter #(= bucket (second %)) assigned))))]
+                              (->PieceState total-pieces
+                                            (in-bucket 0)
+                                            (in-bucket 1)
+                                            (in-bucket 2))))
+                          (gen-vector (gen-choose 0 2) total-pieces))))))
 
 ;; ============================================================================
 ;; Specs — primitive types
@@ -120,8 +127,12 @@
 ;; accepted before.
 (s/def ::total-pieces
   (s/with-gen pos-int?
-    (constantly (gen/sized
-                 (fn [size] (gen/choose 1 (min 4096 (max 32 (inc size)))))))))
+    ;; A fn, not constantly: building the sized generator must wait for
+    ;; first generate, so requiring this namespace never loads test.check.
+    (fn [] (let [gen-sized (requiring-resolve 'clojure.test.check.generators/sized)
+                 gen-choose (requiring-resolve 'clojure.test.check.generators/choose)]
+             (gen-sized
+              (fn [size] (gen-choose 1 (min 4096 (max 32 (inc size))))))))))
 ;; Bounded generation only: piece-blocks materializes one Block record per
 ;; 16 KiB of the piece, so an unbounded byte size draws planet-sized
 ;; vectors that never terminate (same feasibility class as ::total-pieces).
@@ -129,8 +140,12 @@
 ;; Conformance stays pos-int?.
 (s/def ::byte-size
   (s/with-gen pos-int?
-    (constantly (gen/sized
-                 (fn [size] (gen/choose 1 (min 1048576 (max 16384 (inc size)))))))))
+    ;; A fn, not constantly: building the sized generator must wait for
+    ;; first generate, so requiring this namespace never loads test.check.
+    (fn [] (let [gen-sized (requiring-resolve 'clojure.test.check.generators/sized)
+                 gen-choose (requiring-resolve 'clojure.test.check.generators/choose)]
+             (gen-sized
+              (fn [size] (gen-choose 1 (min 1048576 (max 16384 (inc size))))))))))
 (s/def ::piece-index-set (s/coll-of nat-int? :kind set?))
 ;; ::length validates the :length field on Block records (1 to 16384 bytes)
 (s/def ::length (s/int-in 1 (inc block-size)))
@@ -147,7 +162,7 @@
   (s/with-gen
     (s/and (s/keys :req-un [::total-pieces ::needed ::in-flight ::verified])
            valid-partition?)
-    (constantly gen-piece-state)))
+    gen-piece-state))
 
 (s/def ::offset nat-int?)
 

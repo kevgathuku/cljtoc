@@ -20,7 +20,9 @@
 
 ;; Hash/id shapes live in protocol.peer, where generation was fixed
 ;; centrally on ::byte-array-20 — so this namespace references peer's
-;; specs directly with no local wrappers. The handshake shape stays
+;; specs directly with no local wrappers. The s/keys below keeps peer's
+;; alias on purpose: utils' spec would demand a :byte-array-20 key,
+;; but the traded maps carry :info-hash. The handshake shape stays
 ;; minimal (info-hash only): the mock and tests trade {:info-hash
 ;; :peer-id} maps without :protocol/:reserved, which peer's full
 ;; handshake spec demands.
@@ -37,7 +39,7 @@
     {:error :info-hash-mismatch}))
 
 (s/fdef verify-handshake
-  :args (s/cat :info-hash :dev.cljtoc.protocol.peer/info-hash
+  :args (s/cat :info-hash ::utils/byte-array-20
                :peer-handshake ::peer-handshake)
   :ret map?)
 
@@ -122,8 +124,8 @@
 ;; pin them instead.
 (s/fdef connect
   :args (s/cat :network-port any?
-               :info-hash :dev.cljtoc.protocol.peer/info-hash
-               :our-peer-id :dev.cljtoc.protocol.peer/peer-id
+               :info-hash ::utils/byte-array-20
+               :our-peer-id ::utils/byte-array-20
                :address string?
                :total-pieces pos-int?)
   :ret map?)

@@ -9,6 +9,13 @@
             [dev.cljtoc.domain.pieces :as pieces]
             [dev.cljtoc.test-utils :as test-utils]))
 
+(deftest no-eager-test-check-dependency-test
+  ;; test.check is :dev-only (the uberjar excludes it), so loading the
+  ;; domain namespaces on a production classpath must not pull it in.
+  ;; Generators resolve lazily at first generate instead.
+  (testing "loading pieces does not alias test.check generators"
+    (is (not (contains? (ns-aliases 'dev.cljtoc.domain.pieces) 'gen)))))
+
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: US1 — Track Piece Download Status
 ;; ---------------------------------------------------------------------------

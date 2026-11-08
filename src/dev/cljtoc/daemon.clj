@@ -31,6 +31,20 @@
   [disk-port state-dir]
   (vec (cli-state/load-all disk-port state-dir)))
 
+(defn- refuse-unvalidated-saved
+  "Mark a runnable stored record failed when its torrent fails validation:
+   supervising it would derive layouts from hostile info (or throw on
+   it), and compile-output-layout no longer checks. Terminal records
+   pass through untouched."
+  [record]
+  (if (terminal-states (:state record))
+    record
+    (if-let [refused (download/refuse-unvalidated-record record)]
+      (assoc record
+             :state :failed
+             :error {:reason (:error refused) :message (:message refused)})
+      record)))
+
 (defn- report
   "The daemon's progress hook: a record that lands in the daemon's live
    view, and on its way out the door to the state dir, so a crash after a
@@ -240,8 +254,9 @@
   (let [manager (or manager (:manager (core/make-ports settings)))
         {:keys [disk-port]} manager
         saved (load-torrents disk-port (:state-dir settings))
-        records (records/create saved)
-        runnable (remove (comp terminal-states :state) saved)
+        owned (map refuse-unvalidated-saved saved)
+        records (records/create owned)
+        runnable (remove (comp terminal-states :state) owned)
         supervisor (atom
                     (session-supervisor/start
                      manager

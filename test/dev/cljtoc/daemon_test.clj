@@ -258,6 +258,7 @@
           piece-1 (test-utils/to-bytes "efgh")
           info-hash (bencode/sha1-hash (test-utils/to-bytes "cached-info"))
           torrent {:info-hash info-hash
+                   :announce "http://tracker.example.com/announce"
                    :info {:pieces [(bencode/sha1-hash piece-0)
                                    (bencode/sha1-hash piece-1)]
                           :piece-length 4
@@ -304,7 +305,8 @@
         (records/put
          (:records daemon-instance)
          (assoc (test-utils/saved-record "rejoin" :paused)
-                :torrent {:info-hash (bencode/sha1-hash
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info-hash (bencode/sha1-hash
                                       (test-utils/to-bytes "rejoin-info"))
                           :info {:pieces [(bencode/sha1-hash
                                            (test-utils/to-bytes "abcd"))]
@@ -484,7 +486,10 @@
                   (deliver started true)
                   (loop [] (Thread/sleep 20) (recur)))
           paused (assoc (test-utils/saved-record "r1" :paused)
-                        :torrent-path "/tmp/r1.torrent")]
+                        :torrent-path "/tmp/r1.torrent"
+                        :torrent {:announce "http://tracker.example.com/announce"
+                                  :info {:name "r1" :piece-length 16384 :length 0
+                                         :pieces []}})]
       (try
         (add-to-session! supervisor-atom manager
                          {:id "r1" :state :downloading}
@@ -498,3 +503,43 @@
               "the live run was not replaced or stopped"))
         (finally
           ((:stop daemon-instance)))))))
+
+(deftest daemon-start-refuses-unvalidated-saved-record-test
+  (testing "a stored record the trust boundaries would refuse starts failed
+            instead of supervising: its info without :name would otherwise
+            compile to an empty layout and complete with no files"
+    (let [{:keys [manager settings]} (daemon-fixture "bad-startup")
+          hostile {:id "nameless" :state :paused
+                   :torrent {:announce "http://tracker.example.com/announce"
+                             :info {:piece-length 4 :length 8 :pieces []}}
+                   :piece-state {:total-pieces 1 :needed #{0}
+                                 :in-flight #{} :verified #{}}
+                   :stats {:bytes-downloaded 0}}
+          _ (disk/save-state (:disk-port manager) hostile)
+          daemon-instance (daemon/start settings {:manager manager
+                                                  :shutdown-hook (fn [_] nil)})]
+      (try
+        (let [record (records/record-for (:records daemon-instance) "nameless")]
+          (is (= :failed (:state record)))
+          (is (= :invalid-torrent (get-in record [:error :reason]))))
+        (finally
+          ((:stop daemon-instance)))))))
+
+(deftest refuse-unvalidated-saved-test
+  (testing "terminal records pass through untouched"
+    (let [done (assoc (test-utils/saved-record "done" :completed)
+                      :torrent {:announce "http://x"
+                                :info {:piece-length 4}})]
+      (is (= done (#'daemon/refuse-unvalidated-saved done)))))
+  (testing "valid runnable records pass through untouched"
+    (let [live {:id "live" :state :paused
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "live" :piece-length 4 :length 8
+                                 :pieces [(byte-array 20) (byte-array 20)]}}}]
+      (is (= live (#'daemon/refuse-unvalidated-saved live)))))
+  (testing "runnable records with hostile torrents start failed"
+    (let [bad {:id "bad" :state :paused
+               :torrent {:announce "http://tracker.example.com/announce"
+                         :info {:piece-length 4 :length 8 :pieces []}}}]
+      (is (= :failed (:state (#'daemon/refuse-unvalidated-saved bad))))
+      (is (= :invalid-torrent (get-in (#'daemon/refuse-unvalidated-saved bad) [:error :reason]))))))

@@ -2,8 +2,7 @@
   "Shared byte helpers with no layer dependencies: any layer may require
    this namespace. Equality over raw bytes and byte-array generation for
    specs and tests live here instead of being repeated per namespace."
-  (:require [clojure.spec.alpha :as s]
-            [clojure.test.check.generators :as gen]))
+  (:require [clojure.spec.alpha :as s]))
 
 ;; Every hash comparison bottoms out in the byte helpers here; fail the compile
 ;; on reflective calls so boxing never hides in the hot path.
@@ -23,8 +22,14 @@
 (defn gen-byte-array
   "Generate a generator for byte arrays of specific length."
   [len]
-  (gen/fmap byte-array
-            (gen/vector (gen/choose -128 127) len)))
+  ;; test.check is :dev-only (the uberjar excludes it), so the generators
+  ;; resolve lazily here — requiring this namespace never loads test.check,
+  ;; and generation still works wherever the dev classpath has it.
+  (let [gen-fmap (requiring-resolve 'clojure.test.check.generators/fmap)
+        gen-vector (requiring-resolve 'clojure.test.check.generators/vector)
+        gen-choose (requiring-resolve 'clojure.test.check.generators/choose)]
+    (gen-fmap byte-array
+              (gen-vector (gen-choose -128 127) len))))
 
 ;; ============================================================================
 ;; Primitive specs — wire-encoding shapes shared by every layer.

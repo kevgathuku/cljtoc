@@ -628,6 +628,7 @@
               :name "done.bin"
               :length 8}
         torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                 :announce "http://tracker.example.com/announce"
                  :info info}
         piece-state (-> (pieces/initial-piece-state 2)
                         (#(:ok (pieces/mark-in-flight % 0)))
@@ -676,6 +677,75 @@
       (is (= :downloading (get-in result [:ok :state])))
       (is (= {:downloaded 0 :left 8} (:progress @captured)))
       (is (= #{0 1} (:needed (get-in result [:ok :piece-state])))))))
+
+(deftest resume-download-refuses-corrupt-stored-torrent-test
+  (testing "a persisted record whose torrent fails validation is refused
+            before any layout derivation: disk state is a trust boundary,
+            and the layout step no longer checks"
+    (let [disk (mock-disk/create)
+          hostile {:id "evil"
+                   :state :paused
+                   :output-dir "/out"
+                   :torrent {:announce "http://tracker.example.com/announce"
+                             :info {:name "evil" :piece-length 4 :length -5
+                                    :pieces [(byte-array 20)]}}
+                   :piece-state (pieces/initial-piece-state 1)}
+          _ (disk/save-state disk hostile)
+          result (download/resume-download disk nil {:id "evil" :state :paused})]
+      (is (= :invalid-torrent (:error result)))))
+  (testing "a live record that did not come from disk is trusted as-is"
+    (let [live {:id "live"
+                :state :paused
+                :output-dir "/out"
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "live" :piece-length 4 :length -5
+                                 :pieces [(byte-array 20)]}}
+                :piece-state (pieces/initial-piece-state 1)}
+          result (download/resume-download nil nil live)]
+      (is (= :downloading (get-in result [:ok :state])))))
+  (testing "a missing stored record with a hostile live record is refused"
+    (let [disk (mock-disk/create)
+          live {:id "ghost"
+                :state :paused
+                :output-dir "/out"
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "ghost" :piece-length 4 :length "x"
+                                 :pieces [(byte-array 20)]}}
+                :piece-state (pieces/initial-piece-state 1)}
+          result (download/resume-download disk nil live)]
+      (is (= :invalid-torrent (:error result))))))
+
+(deftest refuse-unvalidated-record-rejects-hash-count-mismatch-test
+  (testing "a stored torrent whose hash count does not match the layout's piece count is refused"
+    ;; length 16 over piece length 4 requires 4 hashes; one is stored.
+    (let [record {:id "short"
+                  :state :paused
+                  :output-dir "/out"
+                  :torrent {:announce "http://tracker.example.com/announce"
+                            :info {:name "short" :piece-length 4 :length 16
+                                   :pieces [(byte-array 20)]}}}]
+      (is (= :invalid-torrent (:error (download/refuse-unvalidated-record record))))))
+  (testing "a stored torrent with the matching hash count is accepted"
+    (let [record {:id "full"
+                  :state :paused
+                  :output-dir "/out"
+                  :torrent {:announce "http://tracker.example.com/announce"
+                            :info {:name "full" :piece-length 4 :length 8
+                                   :pieces [(byte-array 20) (byte-array 20)]}}}]
+      (is (nil? (download/refuse-unvalidated-record record)))))
+  (testing "a multi-file torrent counts hashes against the summed total"
+    ;; Two 4-byte files over piece length 4 require 2 hashes.
+    (let [base {:id "m"
+                :state :paused
+                :output-dir "/out"
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "m" :piece-length 4
+                                 :files [{:path ["a"] :length 4}
+                                         {:path ["b"] :length 4}]
+                                 :pieces [(byte-array 20) (byte-array 20)]}}}
+          short (assoc-in base [:torrent :info :pieces] [(byte-array 20)])]
+      (is (nil? (download/refuse-unvalidated-record base)))
+      (is (= :invalid-torrent (:error (download/refuse-unvalidated-record short)))))))
 
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
@@ -1157,8 +1227,10 @@
       (is (= 1 (count @(:layouts-initialized disk)))))))
 
 (deftest run-download-fails-on-uncompilable-layout-test
-  (testing "info that cannot compile fails before the port is reached"
-    (let [info {:pieces [] :piece-length 4 :length 8}
+  (testing "layout arithmetic overflow fails before the port is reached"
+    (let [info {:pieces [] :piece-length 1 :name "big"
+                :files [{:path ["a"] :length 9223372036854775807}
+                        {:path ["b"] :length 9223372036854775807}]}
           torrent {:info-hash (byte-array 20) :info info}
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-name")
                          :state :downloading)
@@ -1916,7 +1988,8 @@
                       dev.cljtoc.orchestration.download/handle-piece-verification-failure
                       dev.cljtoc.orchestration.download/handle-peer-disconnect
                       dev.cljtoc.orchestration.download/add-peer
-                      dev.cljtoc.orchestration.download/remove-peer]
+                      dev.cljtoc.orchestration.download/remove-peer
+                      dev.cljtoc.orchestration.download/refuse-unvalidated-record]
                     50)]
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))
@@ -2175,6 +2248,7 @@
                 :files [{:path ["data.bin"] :length 4}
                         {:path ["empty.bin"] :length 0}]}
           torrent {:info-hash (bencode/sha1-hash (test-utils/to-bytes "fake-info"))
+                   :announce "http://tracker.example.com/announce"
                    :info info}
           output-dir (test-utils/temp-dir "resume-empty-out-")
           port (disk-impl/create {:state-dir (test-utils/temp-dir "resume-empty-state-")

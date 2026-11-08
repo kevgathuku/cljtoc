@@ -475,7 +475,13 @@
           (let [bytes (Files/readAllBytes (.toPath file))
                 parse-result (torrent/parse-torrent bytes)]
             (if (:error parse-result)
-              {:error :invalid-torrent :message (str "Failed to parse: " (get-in parse-result [:error :message]))}
+              (let [parse-error (:error parse-result)
+                    ;; Validation failures arrive as a vector of error
+                    ;; maps; every other parse failure carries :message.
+                    reason (if (vector? parse-error)
+                             (apply str (interpose "; " (map :message parse-error)))
+                             (:message parse-result))]
+                {:error :invalid-torrent :message (str "Failed to parse: " reason)})
               {:ok (:ok parse-result)}))
           {:error :file-not-found :message (str "File not found: " path)}))
       (catch Exception e

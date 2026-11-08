@@ -301,8 +301,6 @@ Check for errors with `(:error result)`:
 | `parse-pieces` | `[^bytes piece-data]` | Split concatenated hashes into 20-byte chunks |
 | `validate-torrent` | `[torrent]` | Run all validations |
 | `validate-required-fields` | `[torrent]` | Check required fields present |
-| `validate-field-types` | `[torrent]` | Check field types correct |
-| `validate-piece-length` | `[torrent]` | Check piece-length is positive |
 | `validate-pieces-length` | `[torrent]` | Check each piece hash is 20 bytes |
 
 ---

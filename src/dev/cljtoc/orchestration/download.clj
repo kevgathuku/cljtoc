@@ -581,10 +581,60 @@
             {:ok download :layout nil}
             (assoc materialized :layout (:ok compiled))))))))
 
+(defn- hash-count-mismatch
+  "Returns {:expected n :actual m} when the stored piece-hash count differs
+  from the piece count the declared total length and piece length require
+  (ceiling of total over piece length), else nil. Answers nil whenever the
+  layout is not numeric enough to count: validate-torrent already refuses
+  those shapes, and this check must stay total over hostile stored state."
+  [torrent]
+  (let [info (:info torrent)
+        pieces (:pieces info)]
+    (when (and (map? info)
+               (sequential? pieces)
+               (pos-int? (:piece-length info)))
+      (let [lengths (if (some? (:files info))
+                      (when (sequential? (:files info))
+                        (map :length (:files info)))
+                      [(:length info)])]
+        (when (and (some? lengths) (every? nat-int? lengths))
+          (let [expected (long (Math/ceil (/ (reduce + 0 lengths)
+                                             (double (:piece-length info)))))
+                actual (count pieces)]
+            (when (not= expected actual)
+              {:expected expected :actual actual})))))))
+
+(defn refuse-unvalidated-record
+  "Refuse a record whose torrent fails validation: disk state is a trust
+  boundary, and layout derivation trusts its input now. Shared by
+  resume-download and daemon startup. Also refuse a stored torrent whose
+  piece-hash count does not match the layout's piece count. Returns an
+  :invalid-torrent envelope, or nil when there is no record or it validates."
+  [record]
+  (when record
+    (let [checked (torrent/validate-torrent (:torrent record))]
+      (cond
+        (:error checked)
+        {:error :invalid-torrent
+         :message (str "Stored state fails torrent validation: "
+                       (-> checked :error first :message))}
+
+        (hash-count-mismatch (:torrent record))
+        (let [{:keys [expected actual]} (hash-count-mismatch (:torrent record))]
+          {:error :invalid-torrent
+           :message (str "Stored state declares " actual
+                         " piece hashes but the layout requires " expected)})))))
+
+(s/fdef refuse-unvalidated-record
+  :args (s/cat :record (s/nilable map?))
+  :ret (s/nilable map?))
+
 (defn resume-download
   "Resume a paused or failed download.
 
    - Loads persisted state from disk when a disk port is given
+   - Refuses a persisted record whose torrent fails validation, before
+     touching it: disk state is a trust boundary like the wire
    - Reconciles verified pieces against the piece cache before
      announcing: a record the cache already completes comes back
      :completed without contacting the tracker, and the announce
@@ -604,49 +654,56 @@
      (let [stored (when disk-port
                     (:ok (disk/load-state disk-port (:id download))))
            restored (or stored download)
-           revived (assoc restored
-                          :state :downloading
-                          ;; Starts empty whatever the record carried. The
-                          ;; announce below fills it in; without a network
-                          ;; port it stays empty, so run-download refuses
-                          ;; instead of redialing peers already known dead.
-                          :peers #{})
-           revived (assoc revived
-                          :error nil
-                          :piece-state (requeue-stranded-pieces
-                                        (:piece-state revived)))]
-       (if network-port
-          ;; Announce the reconciled record, not the revived one: pieces
-          ;; the cache no longer holds went back to :needed above, so the
-          ;; tracker hears the corrected progress. A reconciled-complete
-          ;; record skips the announce and the swarm outright: there is
-          ;; nothing left to fetch, and gating completion on a tracker
-          ;; answer stranded fully-cached resumes on a dead tracker.
-         (let [{reconciled :ok layout :layout}
-               (reconcile-verified-pieces disk-port revived)
-                ;; The swarm is skipped, so run-download never initializes
-                ;; the output layout -- and the piece writer only opens
-                ;; files piece bytes touch. Initialize here so a declared
-                ;; zero-length file exists before the :completed report.
-                ;; An init failure falls through to the announce path,
-                ;; where run-download reports it exactly as before.
-               initialized (when (and (pieces/complete? (:piece-state reconciled))
-                                      (some? layout))
-                             (disk/initialize-output-layout
-                              disk-port layout (:output-dir reconciled)))]
-           (if (and (some? initialized) (not (:error initialized)))
-             {:ok (assoc reconciled :state :completed)}
-             (let [announce-result (announce-to-tracker network-port reconciled)]
-               (if (:error announce-result)
-                 announce-result
-                  ;; :layout travels at the envelope level (never inside
-                  ;; the record) for a caller that can hand it to the run;
-                  ;; no caller does today, so a run re-derives the layout
-                  ;; from the cache.
-                 {:ok (assoc reconciled
-                             :peers (build-peers (:ok announce-result)))
-                  :layout layout}))))
-         {:ok revived}))
+           ;; With a disk port the record may have come from disk even
+           ;; when the load missed, so the selected record is refused,
+           ;; not just the stored one. Without one the record is live
+           ;; session state and stays trusted.
+           corrupt (when disk-port (refuse-unvalidated-record restored))]
+       (if corrupt
+         corrupt
+         (let [revived (assoc restored
+                              :state :downloading
+                            ;; Starts empty whatever the record carried. The
+                            ;; announce below fills it in; without a network
+                            ;; port it stays empty, so run-download refuses
+                            ;; instead of redialing peers already known dead.
+                              :peers #{})
+               revived (assoc revived
+                              :error nil
+                              :piece-state (requeue-stranded-pieces
+                                            (:piece-state revived)))]
+           (if network-port
+            ;; Announce the reconciled record, not the revived one: pieces
+            ;; the cache no longer holds went back to :needed above, so the
+            ;; tracker hears the corrected progress. A reconciled-complete
+            ;; record skips the announce and the swarm outright: there is
+            ;; nothing left to fetch, and gating completion on a tracker
+            ;; answer stranded fully-cached resumes on a dead tracker.
+             (let [{reconciled :ok layout :layout}
+                   (reconcile-verified-pieces disk-port revived)
+                  ;; The swarm is skipped, so run-download never initializes
+                  ;; the output layout -- and the piece writer only opens
+                  ;; files piece bytes touch. Initialize here so a declared
+                  ;; zero-length file exists before the :completed report.
+                  ;; An init failure falls through to the announce path,
+                  ;; where run-download reports it exactly as before.
+                   initialized (when (and (pieces/complete? (:piece-state reconciled))
+                                          (some? layout))
+                                 (disk/initialize-output-layout
+                                  disk-port layout (:output-dir reconciled)))]
+               (if (and (some? initialized) (not (:error initialized)))
+                 {:ok (assoc reconciled :state :completed)}
+                 (let [announce-result (announce-to-tracker network-port reconciled)]
+                   (if (:error announce-result)
+                     announce-result
+                    ;; :layout travels at the envelope level (never inside
+                    ;; the record) for a caller that can hand it to the run;
+                    ;; no caller does today, so a run re-derives the layout
+                    ;; from the cache.
+                     {:ok (assoc reconciled
+                                 :peers (build-peers (:ok announce-result)))
+                      :layout layout}))))
+             {:ok revived}))))
      {:error :not-paused
       :message (str "Download is not resumable from state "
                     (:state download))})))
