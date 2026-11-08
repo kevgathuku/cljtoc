@@ -1956,7 +1956,8 @@
                       dev.cljtoc.orchestration.download/handle-piece-verification-failure
                       dev.cljtoc.orchestration.download/handle-peer-disconnect
                       dev.cljtoc.orchestration.download/add-peer
-                      dev.cljtoc.orchestration.download/remove-peer]
+                      dev.cljtoc.orchestration.download/remove-peer
+                      dev.cljtoc.orchestration.download/refuse-unvalidated-record]
                     50)]
       (is (empty? failures)
           (str "fdef check failures: " (pr-str failures))))))
