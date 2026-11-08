@@ -221,10 +221,6 @@
 (s/def ::udp-scrape-response
   (s/keys :req-un [::action ::transaction-id ::torrents]))
 
-;; Generators for UDP types
-(def gen-transaction-id gen/int)
-(def gen-connection-id gen/large-integer)
-
 ;; ---------------------------------------------------------------------------
 ;; UDP request composite specs (BEP 15)
 ;; ---------------------------------------------------------------------------
