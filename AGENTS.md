@@ -242,11 +242,7 @@ All PRs must verify:
 
 ## Memory
 
-After implementing an issue and opening its PR, file two records in the palace (wing `torrent_client_clj`): the key decision (room `decisions`): issue number, branch/PR, what changed and why, plus any deviation from the issue as written; and one drawer per new learning (room `lessons`): every discovery from the implementation a future session would otherwise re-derive the hard way — platform facts, diagnostic methods that worked, gotchas actually hit. Rule of thumb: if the session paid for it in debugging time, file it; if it merely confirms existing docs, skip it. Verify both landed via `mempal search --wing torrent_client_clj` before moving on.
-
-After addressing PR review findings, file a **per-thread outcome record** in the same room: PR number, one line per thread with its verdict (confirmed / false positive / partially true) and either the fixing commit or the proof that refuted it, plus any deviation from the review as written. A thread left unfixed must be recorded as such, pointing at the issue that now carries it — a consolidated record, not one drawer per round, so the whole review history sits in one place.
-
-One-off work gets the same discipline without the issue/PR trigger: whenever a commit lands from a user-directed change, or the user makes an explicit decision (an adoption, an override, a scope cut), file the decision drawer in the same sitting, plus one lessons drawer per discovery paid for in debugging time. Route repo-scoped items to wing `torrent_client_clj` (`decisions` / `lessons`) and personal preferences to wing `pi-diary` (room `diary`). When a new decision reverses a filed one, supersede it in the knowledge graph rather than leaving two live contradictions. Close each topic with a diary entry naming what landed and what is next. Verify every filing in the wing where you stored it: repo-scoped filings via `mempal search --wing torrent_client_clj`, personal preferences via `mempal search --wing pi-diary` — before moving on.
+Project memory lives in mempal and is documented only in `docs/memory-mcp.md` — read it and follow it.
 
 <!-- MANUAL ADDITIONS END -->
 
@@ -461,7 +457,7 @@ bd prime                # Refresh Beads context
 
 - Use `bd` for all task tracking; do not create markdown TODO lists.
 - Run `bd prime` when Beads context is missing or stale. Codex 0.129.0+ can load Beads context automatically through native hooks; use `/hooks` to inspect or toggle them.
-- Keep persistent project memory in Beads via `bd remember`; do not create ad hoc memory files.
+- Do not create ad hoc memory files.
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
