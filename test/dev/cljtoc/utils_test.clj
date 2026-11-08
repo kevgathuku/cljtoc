@@ -103,3 +103,36 @@
                       decoded (utils/bytes-to-int16 encoded)]
                   (and (= val decoded)
                        (= 2 (count encoded))))))
+
+(defspec concat-bytes-length-and-order-generative 100
+  (prop/for-all [part-lists (gen/vector (gen/vector (gen/choose -128 127) 0 32) 0 5)]
+                (let [arrays (mapv byte-array part-lists)
+                      before (mapv vec arrays)
+                      result (apply utils/concat-bytes arrays)
+                      expected (vec (apply concat part-lists))]
+                  (and (= (reduce + 0 (map count part-lists)) (count result))
+                       (= expected (vec result))
+                       (= before (mapv vec arrays))))))
+
+(defspec concat-bytes-identity-and-empty-generative 100
+  (prop/for-all [values (gen/vector (gen/choose -128 127) 0 64)
+                 empty-count (gen/choose 0 5)]
+                (let [arr (byte-array values)]
+                  (and (= 0 (count (utils/concat-bytes)))
+                       (= 0 (count (apply utils/concat-bytes
+                                          (repeatedly empty-count #(byte-array 0)))))
+                       ; appending one or more empty byte arrays to arr results in arr
+                       (utils/bytes-equal? arr (utils/concat-bytes arr))
+                       (utils/bytes-equal? arr (utils/concat-bytes
+                                                (byte-array 0) arr (byte-array 0)))))))
+
+(defspec concat-bytes-associative-generative 100
+  (prop/for-all [part-lists (gen/vector (gen/vector (gen/choose -128 127) 0 32) 0 5)
+                 split gen/nat]
+                (let [arrays (mapv byte-array part-lists)
+                      cut (mod split (inc (count arrays)))
+                      flat (apply utils/concat-bytes arrays)
+                      regrouped (utils/concat-bytes
+                                 (apply utils/concat-bytes (take cut arrays))
+                                 (apply utils/concat-bytes (drop cut arrays)))]
+                  (utils/bytes-equal? flat regrouped))))

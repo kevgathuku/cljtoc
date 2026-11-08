@@ -160,21 +160,14 @@
    Returns:
      Single byte array containing all input bytes in order"
   [& byte-arrays]
-  (let [total-len (reduce + (map count byte-arrays))
-        result (byte-array total-len)]
-    (loop [offset 0
-           arrays byte-arrays]
-      (when (seq arrays)
-        (let [arr (first arrays)
-              len (count arr)]
-          (System/arraycopy arr 0 result offset len)
-          (recur (+ offset len) (rest arrays)))))
-    result))
-
-;; ============================================================================
+  (let [out (java.io.ByteArrayOutputStream.)]
+    (doseq [^bytes arr byte-arrays]
+      (.write out arr 0 (alength arr)))
+    (.toByteArray out)))
 
 (s/fdef concat-bytes
   :args (s/cat :byte-arrays (s/* bytes?))
   :ret  bytes?
-  :fn   #(= (count (:ret %))
-            (reduce + 0 (map count (-> % :args :byte-arrays)))))
+  :fn (fn [{:keys [args ret]}]
+        #(= (seq ret)
+            (mapcat seq (:byte-arrays args)))))
