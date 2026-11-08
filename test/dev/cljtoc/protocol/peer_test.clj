@@ -112,6 +112,19 @@
       (is (some? (:error result)) "Should have error key")
       (is (= :unsupported-protocol (:error result))))))
 
+(deftest parse-handshake-wrong-pstrlen-test
+  (testing "Wrong pstrlen byte returns error"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (test-utils/make-bytes 0 0 0 0 0 0 0 0)
+          ;; Build valid handshake then corrupt pstrlen
+          built (peer/build-handshake info-hash peer-id reserved)
+          handshake-bytes (:ok built)
+          _ (aset handshake-bytes 0 (byte 0x00))  ; Corrupt pstrlen (must be 19)
+          result (peer/parse-handshake handshake-bytes)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :unsupported-protocol (:error result))))))
+
 (deftest parse-handshake-preserves-reserved-test
   (testing "Non-zero reserved bytes are preserved"
     (let [info-hash (make-random-bytes 20)

@@ -194,12 +194,18 @@
    Returns:
      {:ok PeerHandshake} on success
      {:error :incomplete-handshake :message string} if < 68 bytes
-     {:error :unsupported-protocol :message string} if protocol mismatch"
+     {:error :unsupported-protocol :message string} if pstrlen is not 19
+     or the protocol string mismatches"
   [^bytes b]
   (cond
     (< (count b) handshake-length)
     {:error :incomplete-handshake
      :message (format "Handshake must be %d bytes, got %d" handshake-length (count b))}
+
+    (not= 19 (aget b 0))
+    {:error :unsupported-protocol
+     :message (format "Protocol string length must be 19, got %d"
+                      (bit-and (aget b 0) 0xFF))}
 
     (not= (seq (subvec (vec b) 1 20)) (seq protocol-string-bytes))
     {:error :unsupported-protocol
