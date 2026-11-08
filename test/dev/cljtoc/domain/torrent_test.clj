@@ -285,7 +285,10 @@
       (is (empty? (torrent/validate-pieces-length t)))))
   (testing "non-20-byte piece returns error"
     (let [t {:info {:pieces [(byte-array 20) (byte-array 15)]}}]
-      (is (seq (torrent/validate-pieces-length t))))))
+      (is (seq (torrent/validate-pieces-length t)))))
+  (testing "non-byte-array pieces are errors, never a throw"
+    (let [t {:info {:pieces ["h1" 42 nil]}}]
+      (is (= 3 (count (torrent/validate-pieces-length t)))))))
 
 (deftest validate-torrent-test
   (testing "valid torrent returns {:ok true}"

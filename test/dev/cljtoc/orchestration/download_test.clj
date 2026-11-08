@@ -1183,8 +1183,10 @@
       (is (= 1 (count @(:layouts-initialized disk)))))))
 
 (deftest run-download-fails-on-uncompilable-layout-test
-  (testing "info that cannot compile fails before the port is reached"
-    (let [info {:pieces [] :piece-length 4 :length 8}
+  (testing "layout arithmetic overflow fails before the port is reached"
+    (let [info {:pieces [] :piece-length 1 :name "big"
+                :files [{:path ["a"] :length 9223372036854775807}
+                        {:path ["b"] :length 9223372036854775807}]}
           torrent {:info-hash (byte-array 20) :info info}
           started (assoc (download/initial-download (mock-time/create) torrent "/out" "no-name")
                          :state :downloading)

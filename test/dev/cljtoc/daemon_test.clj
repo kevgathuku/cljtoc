@@ -484,7 +484,10 @@
                   (deliver started true)
                   (loop [] (Thread/sleep 20) (recur)))
           paused (assoc (test-utils/saved-record "r1" :paused)
-                        :torrent-path "/tmp/r1.torrent")]
+                        :torrent-path "/tmp/r1.torrent"
+                        :torrent {:announce "http://tracker.example.com/announce"
+                                  :info {:name "r1" :piece-length 16384 :length 0
+                                         :pieces []}})]
       (try
         (add-to-session! supervisor-atom manager
                          {:id "r1" :state :downloading}
