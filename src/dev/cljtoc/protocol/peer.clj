@@ -194,12 +194,17 @@
    Returns:
      {:ok PeerHandshake} on success
      {:error :incomplete-handshake :message string} if < 68 bytes
+     {:error :invalid-length :message string} if > 68 bytes
      {:error :unsupported-protocol :message string} if pstrlen is not 19
      or the protocol string mismatches"
   [^bytes b]
   (cond
     (< (count b) handshake-length)
     {:error :incomplete-handshake
+     :message (format "Handshake must be %d bytes, got %d" handshake-length (count b))}
+
+    (> (count b) handshake-length)
+    {:error :invalid-length
      :message (format "Handshake must be %d bytes, got %d" handshake-length (count b))}
 
     (not= 19 (aget b 0))
@@ -227,9 +232,20 @@
 (s/fdef parse-handshake
   :args ::bytes-arg
   :ret  ::envelope
-  :fn   (s/or
-         :ok    #(= protocol-string (-> % :ret second :ok :protocol))
-         :error #(= :error (-> % :ret first))))
+  :fn (fn [{:keys [args ret]}]
+        (let [input-bytes (:b args)
+              [tag body] ret]
+          (if (= :ok tag)
+            ;; Success pins the whole decision boundary: exact length,
+            ;; pstrlen 19, and the protocol string all read back off
+            ;; the input, so a validator that waves bad bytes through
+            ;; fails here rather than under a green check.
+            (and (= handshake-length (count input-bytes))
+                 (= 19 (nth (vec input-bytes) 0))
+                 (= (seq protocol-string-bytes)
+                    (seq (subvec (vec input-bytes) 1 20)))
+                 (= protocol-string (-> body :ok :protocol)))
+            (= :error tag)))))
 
 ;; ============================================================================
 ;; Handshake Building

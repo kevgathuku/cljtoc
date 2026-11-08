@@ -125,6 +125,26 @@
       (is (some? (:error result)) "Should have error key")
       (is (= :unsupported-protocol (:error result))))))
 
+(deftest parse-handshake-over-long-test
+  (testing "Over-long handshake returns error"
+    (let [info-hash (make-random-bytes 20)
+          peer-id (make-random-bytes 20)
+          reserved (test-utils/make-bytes 0 0 0 0 0 0 0 0)
+          ;; Build valid handshake then append trailing garbage
+          built (peer/build-handshake info-hash peer-id reserved)
+          long-bytes (byte-array (concat (:ok built) (repeat 10 0)))
+          result (peer/parse-handshake long-bytes)]
+      (is (some? (:error result)) "Should have error key")
+      (is (= :invalid-length (:error result))))))
+
+(deftest parse-handshake-fdef-holds-generatively-test
+  (testing "parse-handshake fdef holds over generated inputs"
+    (let [failures (test-utils/check-fdefs
+                    '[dev.cljtoc.protocol.peer/parse-handshake]
+                    200)]
+      (is (empty? failures)
+          (str "fdef check failures: " (pr-str failures))))))
+
 (deftest parse-handshake-preserves-reserved-test
   (testing "Non-zero reserved bytes are preserved"
     (let [info-hash (make-random-bytes 20)
