@@ -23,7 +23,7 @@
   (:import [java.io File]))
 
 (defn- compile-layout
-  "Compile an info dict to the output layout the port methods take."
+  "Compile a valid info dict to the output layout the port methods take."
   [info]
   (:ok (torrent/compile-output-layout info)))
 
@@ -222,7 +222,9 @@
   (testing "pause persists and resume restores the same download id"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
           started (assoc (download/initial-download (time/->RealTimePort)
-                                                    {:info {:pieces ["h1" "h2"]}}
+                                                    {:announce "http://tracker.example.com/announce"
+                                                     :info {:name "cycle" :piece-length 4 :length 8
+                                                            :pieces [(byte-array 20)]}}
                                                     "/out" "cycle")
                          :state :downloading)
           paused (:ok (download/pause-download port started))
@@ -354,19 +356,6 @@
              (containment-prefix (str "tmp" File/separator "out"))))
       (is (= (str "tmp" File/separator "out" File/separator)
              (containment-prefix (str "tmp" File/separator "out" File/separator)))))))
-
-(deftest initialize-output-layout-rejects-duplicate-declared-path-test
-  ;; Two entries for one path: the size map keeps one length, the spans hand
-  ;; out two ranges for it, and both land in the same physical file. The
-  ;; layout must be refused before anything is created.
-  (let [port (make-port (test-utils/temp-dir "disk-state-"))
-        output-dir (test-utils/temp-dir "output-dup-")
-        info {:name "t" :piece-length 4
-              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}]
-    (is (= :invalid-info (:error (disk/initialize-output-layout port (compile-layout info) output-dir))))
-    (is (= :invalid-info (:error (disk/write-output-piece port (compile-layout info) output-dir 0
-                                                          (byte-array 4)))))
-    (is (not (.exists (io/file output-dir "t"))))))
 
 (deftest initialize-output-layout-creates-no-parent-dir-through-a-symlink-test
   ;; The nested-symlink test above only passes because the symlinked directory
@@ -600,29 +589,6 @@
       (is (= "bystander" (slurp bystander))
           "the unrelated file is untouched"))))
 
-(deftest initialize-output-layout-rejects-layout-without-lengths-test
-  ;; A layout with neither :length nor :files must be refused as
-  ;; :invalid-info before anything is created — not attempted until
-  ;; setLength explodes on nil and reports :write-error.
-  (let [port (make-port (test-utils/temp-dir "disk-state-"))
-        output-dir (test-utils/temp-dir "output-no-length-")
-        info {:name "t" :piece-length 4}
-        result (disk/initialize-output-layout port (compile-layout info) output-dir)]
-    (is (= :invalid-info (:error result)))
-    (is (not (.exists (io/file output-dir "t"))))))
-
-(deftest initialize-output-layout-rejects-prefix-collision-test
-  ;; t/a cannot be both a file and t/a/b's directory. Pre-fix this created
-  ;; the file, then failed opening the child through it as :write-error;
-  ;; refuse the layout as :invalid-info with nothing created instead.
-  (let [port (make-port (test-utils/temp-dir "disk-state-"))
-        output-dir (test-utils/temp-dir "output-prefix-")
-        info {:name "t" :piece-length 4
-              :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}
-        result (disk/initialize-output-layout port (compile-layout info) output-dir)]
-    (is (= :invalid-info (:error result)))
-    (is (not (.exists (io/file output-dir "t"))))))
-
 (deftest resolve-contained-rejects-the-empty-path-test
   ;; Unreachable through the guarded derivations (every layout path carries
   ;; the root), but the primitive itself must refuse: [] resolves to the
@@ -655,20 +621,7 @@
                                                 File/separator)]
       (is (= :unsafe-output-dir (:error result))))))
 
-(deftest initialize-output-layout-rejects-escaping-component-test
-  (testing "layout init refuses the hostile components the piece write refuses"
-    ;; The escape is now reported where the layout is derived (compile),
-    ;; and the port refuses the uncompilable info with :invalid-info.
-    (let [port (make-port (test-utils/temp-dir "disk-state-"))
-          output-dir (test-utils/temp-dir "output-init-escape-")
-          info {:name "a/b" :piece-length 4 :length 4}
-          compiled (torrent/compile-output-layout info)
-          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
-      (is (:error compiled))
-      (is (re-find #"escape" (:message compiled)))
-      (is (= :invalid-info (:error result)))
-      (is (not (.exists (io/file output-dir "a"))))))
-
+(deftest initialize-output-layout-accepts-nested-path-test
   (testing "a nested multi-file path is still accepted"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
           output-dir (test-utils/temp-dir "output-init-nested-")
@@ -676,7 +629,6 @@
                 :files [{:path ["sub" "deep" "a"] :length 4}]}]
       (is (= {:ok :initialized} (disk/initialize-output-layout port (compile-layout info) output-dir)))
       (is (.exists (io/file output-dir "t" "sub" "deep" "a"))))))
-
 (deftest write-output-piece-creates-zero-length-file-test
   (testing "a declared zero-length file exists empty after its neighbors land"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
@@ -733,33 +685,6 @@
         (is (= :write-error (:error result)))
         (is (= "not a directory" (slurp (io/file output-dir "t"))))))))
 
-(deftest write-output-piece-invalid-info-test
-  (testing "a torrent-controlled path that escapes the output dir is refused"
-    ;; The escape is reported where the layout is derived (compile);
-    ;; the port refuses the uncompilable info with :invalid-info.
-    (let [port (make-port (test-utils/temp-dir "disk-state-"))
-          output-dir (test-utils/temp-dir "output-escape-info-")
-          info {:name "t" :piece-length 4
-                :files [{:path [".."] :length 4}]}
-          compiled (torrent/compile-output-layout info)
-          result (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [1 2 3 4]))]
-      (is (:error compiled))
-      (is (re-find #"escape" (:message compiled)))
-      (is (= :invalid-info (:error result))))))
-
-(deftest initialize-output-layout-invalid-info-test
-  (testing "layout init refuses info that cannot produce a layout"
-    ;; The missing :name is reported where the layout is derived;
-    ;; the port refuses the uncompilable info with :invalid-info.
-    (let [port (make-port (test-utils/temp-dir "disk-state-"))
-          output-dir (test-utils/temp-dir "output-init-no-name-")
-          info {:piece-length 4 :length 4}
-          compiled (torrent/compile-output-layout info)
-          result (disk/initialize-output-layout port (compile-layout info) output-dir)]
-      (is (:error compiled))
-      (is (re-find #":name" (:message compiled)))
-      (is (= :invalid-info (:error result))))))
-
 (deftest write-output-piece-catches-non-byte-input-test
   (testing "a piece that is not a byte array surfaces the port's error envelope"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
@@ -769,21 +694,15 @@
       (is (= :write-error (:error result)))
       (is (string? (:message result))))))
 
-(deftest initialize-output-layout-catches-malformed-files-test
-  (testing "info whose :files is not a collection surfaces the port's error envelope"
-    ;; Non-collection :files is refused where the layout is derived
-    ;; (an error envelope, never a throw), and the port refuses the
-    ;; uncompilable info with :invalid-info.
-    (let [port (make-port (test-utils/temp-dir "disk-state-"))
-          output-dir (test-utils/temp-dir "output-bad-files-")
-          info {:name "t" :piece-length 4 :files 42}
-          compiled (torrent/compile-output-layout info)
-          result (disk/initialize-output-layout port (compile-layout info)
-                                                output-dir)]
-      (is (:error compiled))
-      (is (= :invalid-info (:error result)))
-      (is (string? (:message result))))))
-
+(deftest port-entry-points-refuse-nil-layout-test
+  ;; Info the parse boundary refuses never arrives here; nil stands in for
+  ;; any info no layout derives from. Both entry points refuse it as
+  ;; :invalid-info before creating anything.
+  (let [port (make-port (test-utils/temp-dir "disk-state-"))
+        output-dir (test-utils/temp-dir "output-nil-layout-")]
+    (is (= :invalid-info (:error (disk/initialize-output-layout port nil output-dir))))
+    (is (= :invalid-info (:error (disk/write-output-piece port nil output-dir 0 (byte-array 4)))))
+    (is (not (.exists (io/file output-dir "t"))))))
 (deftest initialize-output-layout-rejects-inconsistent-layout-test
   (testing "a layout whose files are not declared in sizes is refused before creating anything"
     ;; Every entry point must agree on what a valid layout is: these shapes
