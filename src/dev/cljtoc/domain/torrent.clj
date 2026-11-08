@@ -361,15 +361,18 @@
         nil))))
 
 ;; The trust contract behind compile-output-layout: info the layout guard
-;; accepts. Built on map? rather than ::info: with-gen loses to an s/or
-;; branch's own generator (such-that over its hostile names fails), while
-;; a predicate branch keeps the bespoke generator below. layout-error is
-;; total over maps, so the predicate never throws. The gen.* calls stay
-;; inside the s/with-gen function, so requiring this namespace never loads
-;; test.check (dev-only); the calls run only when a test generates.
+;; accepts, in either declared shape. Built on ::single-info/::multi-info
+;; rather than a bare map so the declared info shapes stay single-sourced;
+;; the layout predicate adds what s/keys cannot say (paths, duplicates,
+;; exactly one of :length/:files). with-gen sits outside the s/or: nested
+;; the other way (s/or as an s/and branch) the branch generator wins and
+;; such-that starves on hostile names. The gen.* calls stay inside the
+;; s/with-gen function, so requiring this namespace never loads test.check
+;; (dev-only); the calls run only when a test generates.
 (s/def ::compilable-info
   (s/with-gen
-    (s/and map? #(nil? (layout-error %)))
+    (s/or :single (s/and ::single-info #(nil? (layout-error %)))
+          :multi (s/and ::multi-info #(nil? (layout-error %))))
     #(gen/fmap (fn [[piece-length file-count single?]]
                  (let [lengths (mapv inc (range file-count))]
                    (if single?
