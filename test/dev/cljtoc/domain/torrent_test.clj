@@ -210,6 +210,27 @@
     (let [result (torrent/parse-torrent (.getBytes "not bencode" "UTF-8"))]
       (is (:error result)))))
 
+(deftest parse-torrent-negative-length-test
+  (testing "single-file info with negative length returns error"
+    (let [result (torrent/parse-torrent
+                  (make-single-file-torrent-bytes :length -5))]
+      (is (:error result))))
+  (testing "multi-file info with a negative entry length returns error"
+    (let [torrent-bytes (bencode/encode-bencode
+                         {"announce" "http://tracker.example.com/announce"
+                          "info" {"files" [{"length" 100 "path" ["dir" "file1.txt"]}
+                                           {"length" -5 "path" ["dir" "file2.txt"]}]
+                                  "name" "my-torrent"
+                                  "piece length" 262144
+                                  "pieces" (make-pieces 1)}})
+          result (torrent/parse-torrent torrent-bytes)]
+      (is (:error result))))
+  (testing "single-file info with zero length still parses"
+    (let [result (torrent/parse-torrent
+                  (make-single-file-torrent-bytes :length 0))]
+      (is (:ok result))
+      (is (= 0 (get-in result [:ok :info :length]))))))
+
 ;; ---------------------------------------------------------------------------
 ;; GROUP 7: Validation
 ;; ---------------------------------------------------------------------------
@@ -272,7 +293,31 @@
                     :pieces [(byte-array 20)]
                     :length "not a number"}}]
       (is (some #(re-find #"length" (:message %))
-                (torrent/validate-field-types t))))))
+                (torrent/validate-field-types t)))))
+  (testing "negative top-level length returns error"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]
+                    :length -5}}]
+      (is (some #(re-find #"natural integer" (:message %))
+                (torrent/validate-field-types t)))))
+  (testing "negative per-file entry length returns error"
+    (let [t {:announce "http://example.com"
+             :info {:name "my-torrent"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]
+                    :files [{:path ["a"] :length 100}
+                            {:path ["b"] :length -5}]}}]
+      (is (some #(re-find #"natural integer" (:message %))
+                (torrent/validate-field-types t)))))
+  (testing "zero lengths return no errors"
+    (let [t {:announce "http://example.com"
+             :info {:name "test.txt"
+                    :piece-length 262144
+                    :pieces [(byte-array 20)]
+                    :length 0}}]
+      (is (empty? (torrent/validate-field-types t))))))
 
 (deftest validate-pieces-length-test
   (testing "valid 20-byte pieces return no errors"

@@ -539,8 +539,11 @@
   :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-field-types
-  "Checks that torrent fields have correct types: piece-length and length
-  must be integers. Returns a vector of error maps."
+  "Checks that torrent fields have correct types: piece-length must be an
+  integer, and every present length — top-level and per-file — must be a
+  natural integer, the same rule layout-error enforces. Non-sequential
+  :files is left to layout-error: mapping :length over it would throw
+  instead of answering. Returns a vector of error maps."
   [torrent]
   (let [errors (transient [])
         info (:info torrent)]
@@ -549,10 +552,13 @@
         (conj! errors (bencode/torrent-error
                        "type mismatch: piece-length must be an integer"
                        {:field "piece-length" :actual (type (:piece-length info))})))
-      (when (and (:length info) (not (integer? (:length info))))
+      (when-not (and (or (nil? (:length info)) (nat-int? (:length info)))
+                     (or (nil? (:files info))
+                         (and (sequential? (:files info))
+                              (every? nat-int? (map :length (:files info))))))
         (conj! errors (bencode/torrent-error
-                       "type mismatch: length must be an integer"
-                       {:field "length" :actual (type (:length info))}))))
+                       "info carries a file length that is not a natural integer"
+                       {:field "length"}))))
     (persistent! errors)))
 
 (s/fdef validate-field-types
