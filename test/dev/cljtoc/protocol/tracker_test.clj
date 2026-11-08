@@ -73,8 +73,8 @@
                 (= :v6 (first (s/conform ::tracker/ip-address addr)))))
 
 (defspec ip-address-generates-conforming-values 100
-     (prop/for-all [addr (s/gen ::tracker/ip-address)]
-       (not= :clojure.spec.alpha/invalid (s/conform ::tracker/ip-address addr))))
+  (prop/for-all [addr (s/gen ::tracker/ip-address)]
+                (not= :clojure.spec.alpha/invalid (s/conform ::tracker/ip-address addr))))
 
 (deftest ip-address-generates-both-families-test
   (testing "generated values cover v4 and v6"
@@ -665,7 +665,7 @@
 
 ;; T058: Generative tests for UDP parsers
 (defspec parse-udp-connect-response-round-trip 100
-  (prop/for-all [txid gen/int
+  (prop/for-all [txid gen/small-integer
                  cid  gen/large-integer]
                 (let [bytes (make-connect-response-bytes 0 txid cid)
                       result (tracker/parse-udp-connect-response bytes)]
@@ -674,7 +674,7 @@
                        (= cid  (:connection-id  (:ok result)))))))
 
 (defspec parse-udp-announce-response-round-trip 50
-  (prop/for-all [txid gen/int
+  (prop/for-all [txid gen/small-integer
                  interval (gen/fmap inc gen/nat)
                  leechers gen/nat
                  seeders  gen/nat]
@@ -687,7 +687,7 @@
                        (= seeders  (:seeders  (:ok result)))))))
 
 (defspec parse-udp-scrape-response-round-trip 50
-  (prop/for-all [txid gen/int
+  (prop/for-all [txid gen/small-integer
                  entries (gen/vector
                           (gen/fmap (fn [[s c l]] {:seeders s :completed c :leechers l})
                                     (gen/tuple gen/nat gen/nat gen/nat))
@@ -704,7 +704,7 @@
                                (map vector entries (:torrents (:ok result))))))))
 
 (defspec parse-udp-error-response-round-trip 50
-  (prop/for-all [txid gen/int
+  (prop/for-all [txid gen/small-integer
                  msg  gen/string-ascii]
                 (let [bytes (make-error-response-bytes 3 txid msg)
                       result (tracker/parse-udp-error-response bytes)]
@@ -882,7 +882,7 @@
 
 ;; T071: generative round-trip tests
 (defspec build-udp-connect-request-round-trip 100
-  (prop/for-all [txid gen/int]
+  (prop/for-all [txid gen/small-integer]
                 (let [result (tracker/build-udp-connect-request {:transaction-id txid})]
                   (and (contains? result :ok)
                        (let [buf (java.nio.ByteBuffer/wrap (:ok result))]
@@ -893,7 +893,7 @@
 
 (defspec build-udp-announce-request-round-trip 50
   (prop/for-all [cid    gen/large-integer
-                 txid   gen/int
+                 txid   gen/small-integer
                  port   (gen/choose 1 65535)
                  dld    gen/nat
                  lft    gen/nat
@@ -911,7 +911,7 @@
 
 (defspec build-udp-scrape-request-round-trip 50
   (prop/for-all [cid      gen/large-integer
-                 txid     gen/int
+                 txid     gen/small-integer
                  n-hashes (gen/choose 1 5)]
                 (let [hashes (vec (repeatedly n-hashes #(byte-array 20)))
                       req    {:connection-id cid :transaction-id txid :info-hashes hashes}

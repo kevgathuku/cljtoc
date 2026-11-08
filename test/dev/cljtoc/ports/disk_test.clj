@@ -70,10 +70,10 @@
   (gen/one-of [(gen/fmap #(str % "zz") gen/string-alphanumeric)
                (gen/fmap (fn [text] (if (even? (count text)) (str text "0") text))
                          gen/string-alphanumeric)
-               gen/int
+               gen/small-integer
                (gen/return nil)
-               (gen/vector gen/int 0 4)
-               (gen/fmap #(into {} %) (gen/vector (gen/tuple gen/keyword gen/int) 0 3))]))
+               (gen/vector gen/small-integer 0 4)
+               (gen/fmap #(into {} %) (gen/vector (gen/tuple gen/keyword gen/small-integer) 0 3))]))
 
 (defn- encode-throws?
   "True when encoding download throws (fail-closed on hostile input)."
