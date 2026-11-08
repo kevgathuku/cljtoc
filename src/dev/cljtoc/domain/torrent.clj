@@ -35,12 +35,18 @@
 (s/fdef extract-info-dict-bytes
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
-  :fn #(or (keyword? (-> % :ret :error))
-           (let [input (-> % :args :torrent-bytes)
-                 extracted (-> % :ret :ok)]
-             ;; A subrange copy: bytes out, never more bytes than went in.
-             (and (bytes? extracted)
-                  (<= (alength ^bytes extracted) (alength ^bytes input))))))
+  ;; Exclusive envelope: callers branch on contains? :ok, so a map
+  ;; carrying both (or neither) must fail. Success is a subrange copy:
+  ;; bytes out, never more bytes than went in.
+  :fn #(let [{extracted :ok :as result} (:ret %)
+             input (-> % :args :torrent-bytes)]
+         (if (contains? result :ok)
+           (and (not (contains? result :error))
+                (bytes? extracted)
+                (<= (alength ^bytes extracted) (alength ^bytes input)))
+           (and (contains? result :error)
+                (not (contains? result :ok))
+                (keyword? (:error result))))))
 
 (defn compute-info-hash
   "Computes the 20-byte SHA-1 info hash from torrent bytes.
@@ -55,9 +61,15 @@
 (s/fdef compute-info-hash
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
-  :fn #(or (and (bytes? (:ok (:ret %)))
-                (= 20 (let [digested ^bytes (:ok (:ret %))] (alength digested))))
-           (keyword? (-> % :ret :error))))
+  ;; Exclusive envelope with a 20-byte SHA-1 digest on success.
+  :fn #(let [{digested :ok :as result} (:ret %)]
+         (if (contains? result :ok)
+           (and (not (contains? result :error))
+                (bytes? digested)
+                (= 20 (alength ^bytes digested)))
+           (and (contains? result :error)
+                (not (contains? result :ok))
+                (keyword? (:error result))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Announce URL extraction
@@ -82,7 +94,15 @@
 (s/fdef extract-announce-urls
   :args (s/cat :decoded-dict map?)
   :ret map?
-  :fn #(= #{:announce :announce-list} (-> % :ret keys set)))
+  ;; Exactly these keys; tiers stay nested (nil when absent). Value types
+  ;; stay unpinned on purpose: bytes->str passes hostile scalars through,
+  ;; and required-fields accepts them, so string? would outlaw live outputs.
+  :fn #(let [result (:ret %)
+             tiers (:announce-list result)]
+         (and (= #{:announce :announce-list} (-> result keys set))
+              (or (nil? tiers)
+                  (and (vector? tiers)
+                       (every? vector? tiers))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Piece parsing
@@ -157,12 +177,22 @@
 (s/fdef parse-info-dict
   :args (s/cat :info-map map?)
   :ret map?
-  :fn #(let [parsed (-> % :ret :ok)
-             keys-found (set (keys parsed))]
-         (and (map? parsed)
-              (every? keys-found [:name :piece-length :pieces])
-              (every? #{:name :piece-length :pieces :length :files :private}
-                      keys-found))))
+  ;; Total: always {:ok ...}, never an error. Beyond the key contract,
+  ;; pin what the parser guarantees: :pieces is always a byte vector
+  ;; (empty when the raw value is not bytes) and :private is boolean
+  ;; when present. Other values ride through raw for validate-torrent.
+  :fn #(let [{parsed :ok :as result} (:ret %)]
+         (and (contains? result :ok)
+              (not (contains? result :error))
+              (map? parsed)
+              (let [keys-found (set (keys parsed))]
+                (and (every? keys-found [:name :piece-length :pieces])
+                     (every? #{:name :piece-length :pieces :length :files :private}
+                             keys-found)
+                     (vector? (:pieces parsed))
+                     (every? bytes? (:pieces parsed))
+                     (or (not (contains? parsed :private))
+                         (boolean? (:private parsed))))))))
 
 (defn total-size
   "Total content bytes described by an info dict: :length for single-file
@@ -170,6 +200,10 @@
   [info]
   (or (:length info)
       (reduce + 0 (map :length (:files info)))))
+
+(s/fdef total-size
+  :args (s/cat :info ::totalable-info)
+  :ret nat-int?)
 
 (defn- totalable?
   "True when total-size can answer honestly: a present :length must be a
@@ -187,10 +221,6 @@
 ;; map? alone lets {:length \"x\"} through while :ret promises nat-int? —
 ;; stest/check passes that pairing only until the generator emits :length.
 (s/def ::totalable-info (s/and map? totalable?))
-
-(s/fdef total-size
-  :args (s/cat :info ::totalable-info)
-  :ret nat-int?)
 
 (s/def ::piece-span-index nat-int?)
 (s/def ::piece-byte-count pos-int?)
@@ -428,15 +458,38 @@
 (s/fdef compile-output-layout
   :args (s/cat :info ::compilable-info)
   :ret map?
-  ;; The single derivation behind the sizes and span views: every searched
-  ;; entry is a declared size, and the sizes sum to the total.
-  :fn #(let [ret (:ret %)]
-         (or (:error ret)
-             (let [layout (:ok ret)]
-               (and (every? (fn [{file-path :path file-length :length}]
-                              (= file-length (get (:sizes layout) file-path)))
-                            (:files layout))
-                    (= (:total layout) (reduce + 0 (vals (:sizes layout)))))))))
+  ;; Exclusive envelope. On success the layout shape callers rely on:
+  ;; exact keys, passthrough piece length, searchable entries each with
+  ;; an exact shape and positive length over a nat-int start, plus the
+  ;; single-derivation rule (every searched entry is a declared size,
+  ;; and the sizes sum to the total).
+  :fn #(let [{layout :ok :as result} (:ret %)]
+         (if (contains? result :ok)
+           (and (not (contains? result :error))
+                (map? layout)
+                (= #{:files :sizes :total :piece-length} (set (keys layout)))
+                (pos-int? (:piece-length layout))
+                (nat-int? (:total layout))
+                (map? (:sizes layout))
+                (every? nat-int? (vals (:sizes layout)))
+                (vector? (:files layout))
+                (every? (fn [entry]
+                          (and (map? entry)
+                               (= #{:path :length :start} (set (keys entry)))
+                               (let [{file-path :path file-length :length file-start :start} entry]
+                                 (and (vector? file-path)
+                                      (seq file-path)
+                                      (every? string? file-path)
+                                      (pos-int? file-length)
+                                      (nat-int? file-start)))))
+                        (:files layout))
+                (every? (fn [{file-path :path file-length :length}]
+                          (= file-length (get (:sizes layout) file-path)))
+                        (:files layout))
+                (= (:total layout) (reduce + 0 (vals (:sizes layout)))))
+           (and (contains? result :error)
+                (not (contains? result :ok))
+                (keyword? (:error result))))))
 
 (defn- first-overlap-index
   "Index of the first file a piece starting at piece-start can overlap:
@@ -537,11 +590,24 @@
                :piece-index ::piece-span-index
                :piece-byte-count ::piece-byte-count)
   :ret map?
-  ;; Span shape pinned per generated layout by the independent-oracle
-  ;; property: every emitted span conforms ::file-span-list.
-  :fn #(let [ret (:ret %)]
-         (or (:error ret)
-             (s/valid? ::file-span-list (:ok ret)))))
+  ;; Exclusive envelope. Success is never empty (empty means a malformed
+  ;; layout the port would misreport as :written) and every span stays
+  ;; inside the requested piece: data-offset + length <= byte count.
+  ;; Contiguity and file-offset bounds stay with the independent-oracle
+  ;; spec: hand-built layouts with gaps can return non-contiguous spans.
+  :fn #(let [{spans :ok :as result} (:ret %)
+             piece-count (-> % :args :piece-byte-count)]
+         (if (contains? result :ok)
+           (and (not (contains? result :error))
+                (vector? spans)
+                (seq spans)
+                (s/valid? ::file-span-list spans)
+                (every? (fn [{data-offset :data-offset span-length :length}]
+                          (<= (+ data-offset span-length) piece-count))
+                        spans))
+           (and (contains? result :error)
+                (not (contains? result :ok))
+                (keyword? (:error result))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Validation
@@ -611,7 +677,22 @@
 (s/fdef validate-pieces-length
   :args (s/cat :torrent map?)
   :ret vector?
-  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
+  ;; One error per bad entry: empty exactly when :pieces is absent or
+  ;; every entry is a 20-byte array; a non-sequential :pieces is one
+  ;; shape error of its own. The count is computed from bytes?/count,
+  ;; not by calling the fn under test.
+  :fn #(let [pieces (get-in (-> % :args :torrent) [:info :pieces])
+             errors (:ret %)]
+         (and (vector? errors)
+              (every? (fn [error-map] (keyword? (:error error-map))) errors)
+              (cond
+                (nil? pieces) (empty? errors)
+                (not (sequential? pieces)) (= 1 (count errors))
+                :else (= (count errors)
+                         (count (filter (fn [piece]
+                                          (not (and (bytes? piece)
+                                                    (= 20 (count piece)))))
+                                        pieces)))))))
 
 (defn validate-torrent
   "Runs all validation checks on a parsed torrent map. Returns {:ok true}
@@ -631,8 +712,16 @@
 (s/fdef validate-torrent
   :args (s/cat :torrent map?)
   :ret map?
-  :fn #(or (true? (-> % :ret :ok))
-           (vector? (-> % :ret :error))))
+  ;; Exclusive envelope: {:ok true} carries no :error, and every failure
+  ;; is a non-empty error vector. Correspondence to the three sub-checks
+  ;; stays with validate-torrent-test and the mutation specs.
+  :fn #(let [{ok :ok errors :error :as result} (:ret %)]
+         (or (and (true? ok)
+                  (not (contains? result :error)))
+             (and (vector? errors)
+                  (seq errors)
+                  (not (contains? result :ok))
+                  (every? (fn [error-map] (keyword? (:error error-map))) errors)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Main torrent parser
@@ -692,15 +781,20 @@
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
-  ;; The shape callers branch on: success carries a present announce, a
-  ;; parsed info dict inside the trust contract, and a 20-byte info hash;
-  ;; failure is one envelope or a vector of them. :announce stays
-  ;; truthiness-checked, not string?-checked: hostile scalars pass
-  ;; required-fields today, so pinning string? would outlaw live outputs.
-  :fn #(let [result (:ret %)]
-         (if-let [ok (:ok result)]
-           (and (some? (:announce ok))
+  ;; Exclusive envelope. The shape callers branch on: success carries a
+  ;; present announce, a parsed info dict inside the trust contract, and
+  ;; a 20-byte info hash; failure is one keyword envelope or a non-empty
+  ;; vector of them. :announce stays truthiness-checked, not string?-
+  ;; checked: hostile scalars pass required-fields today, so pinning
+  ;; string? would outlaw live outputs.
+  :fn #(let [{ok :ok error :error :as result} (:ret %)]
+         (if (contains? result :ok)
+           (and (not (contains? result :error))
+                (map? ok)
+                (some? (:announce ok))
                 (s/valid? ::parsed-info (:info ok))
                 (s/valid? ::utils/byte-array-20 (:info-hash ok)))
-           (let [error (:error result)]
-             (or (keyword? error) (vector? error))))))
+           (and (contains? result :error)
+                (not (contains? result :ok))
+                (or (keyword? error)
+                    (and (vector? error) (seq error)))))))
