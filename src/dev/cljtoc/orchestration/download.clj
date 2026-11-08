@@ -622,11 +622,15 @@
    (if (contains? resumable-states (:state download))
      (let [stored (when disk-port
                     (:ok (disk/load-state disk-port (:id download))))
-           corrupt (refuse-unvalidated-record stored)]
+           restored (or stored download)
+           ;; With a disk port the record may have come from disk even
+           ;; when the load missed, so the selected record is refused,
+           ;; not just the stored one. Without one the record is live
+           ;; session state and stays trusted.
+           corrupt (when disk-port (refuse-unvalidated-record restored))]
        (if corrupt
          corrupt
-         (let [restored (or stored download)
-               revived (assoc restored
+         (let [revived (assoc restored
                               :state :downloading
                             ;; Starts empty whatever the record carried. The
                             ;; announce below fills it in; without a network

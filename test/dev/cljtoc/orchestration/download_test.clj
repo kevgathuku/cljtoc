@@ -701,7 +701,18 @@
                                  :pieces [(byte-array 20)]}}
                 :piece-state (pieces/initial-piece-state 1)}
           result (download/resume-download nil nil live)]
-      (is (= :downloading (get-in result [:ok :state]))))))
+      (is (= :downloading (get-in result [:ok :state])))))
+  (testing "a missing stored record with a hostile live record is refused"
+    (let [disk (mock-disk/create)
+          live {:id "ghost"
+                :state :paused
+                :output-dir "/out"
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "ghost" :piece-length 4 :length "x"
+                                 :pieces [(byte-array 20)]}}
+                :piece-state (pieces/initial-piece-state 1)}
+          result (download/resume-download disk nil live)]
+      (is (= :invalid-torrent (:error result))))))
 
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
