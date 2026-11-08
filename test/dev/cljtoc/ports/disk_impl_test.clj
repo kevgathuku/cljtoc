@@ -64,6 +64,23 @@
               (str port-name " " method " returned neither :ok nor :error: "
                    (pr-str result))))))))
 
+(deftest read-torrent-file-keeps-validation-reasons-test
+  (testing "a torrent refused at the parse boundary reports the reason,
+            not an empty Failed to parse"
+    (let [port (make-port (test-utils/temp-dir "disk-state-"))
+          dir (test-utils/temp-dir "torrent-")
+          path (str dir "/negative.torrent")
+          info {"name" "neg" "piece length" 16384
+                "pieces" (byte-array 20) "length" -5}
+          _ (with-open [out (io/output-stream path)]
+              (.write ^java.io.OutputStream out
+                      ^bytes (bencode/encode-bencode
+                              {"announce" "http://tracker.example.com/announce"
+                               "info" info})))
+          result (disk/read-torrent-file port path)]
+      (is (= :invalid-torrent (:error result)))
+      (is (re-find #"natural integer" (:message result))))))
+
 (deftest piece-cache-scoped-by-torrent-content-test
   (testing "distinct torrents share no cache entries: same piece index, distinct bytes, both intact"
     (let [port (make-port (test-utils/temp-dir "disk-state-"))
