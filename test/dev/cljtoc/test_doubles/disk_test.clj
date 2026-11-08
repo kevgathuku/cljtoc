@@ -7,7 +7,8 @@
   (:require [clojure.test :refer [deftest is testing]]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.ports.disk :as disk]
-            [dev.cljtoc.test-doubles.disk :as mock-disk]))
+            [dev.cljtoc.test-doubles.disk :as mock-disk]
+            [dev.cljtoc.utils :as utils]))
 
 (deftest mock-save-load-round-trips-bytes-test
   (testing "byte arrays saved through the mock load back as byte arrays"
@@ -22,7 +23,7 @@
         (is (contains? result :ok))
         (is (= "bytes-torrent" (get-in result [:ok :id])))
         (is (bytes? loaded-hash))
-        (is (java.util.Arrays/equals info-hash loaded-hash))))))
+        (is (utils/bytes-equal? info-hash loaded-hash))))))
 
 (deftest mock-persists-the-encoded-form-test
   (testing "the mock stores what the real port writes: the EDN-safe encoded form"
@@ -59,8 +60,8 @@
       (is (= {:ok :written}
              (disk/write-prepared-piece port prepared "/tmp/out" 0 (byte-array [0 1 2 3]))))
       (is (= [layout] (mock-disk/get-output-layouts port)))
-      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                   (mock-disk/get-output-piece port 0))))))
+      (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                              (mock-disk/get-output-piece port 0))))))
 
 (deftest mock-write-prepared-refuses-foreign-dir-test
   (testing "a prepared value bound to another dir is refused"

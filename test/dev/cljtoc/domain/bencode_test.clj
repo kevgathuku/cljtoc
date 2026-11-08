@@ -4,7 +4,8 @@
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
             [dev.cljtoc.domain.bencode :as bencode]
-            [dev.cljtoc.test-utils :refer [to-bytes]]))
+            [dev.cljtoc.test-utils :refer [to-bytes]]
+            [dev.cljtoc.utils :as utils]))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 1: Error constructors, SHA-1, byte utilities
@@ -263,6 +264,6 @@
 
 (defspec encode-deterministic 100
   (prop/for-all [v gen-bencode-value]
-                (java.util.Arrays/equals
-                 ^bytes (bencode/encode-bencode v)
-                 ^bytes (bencode/encode-bencode v))))
+                (utils/bytes-equal?
+                 (bencode/encode-bencode v)
+                 (bencode/encode-bencode v))))

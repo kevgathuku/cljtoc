@@ -8,7 +8,8 @@
             [clojure.spec.test.alpha :as stest]
             [clojure.edn :as edn]
             [dev.cljtoc.ports.disk :as disk]
-            [dev.cljtoc.test-utils :as test-utils]))
+            [dev.cljtoc.test-utils :as test-utils]
+            [dev.cljtoc.utils :as utils]))
 
 (def bytes-gen
   "Generator for arbitrary byte arrays."
@@ -22,7 +23,7 @@
                                       (pr-str (disk/encode-state {:hash original}))))
                                     :hash)]
                   (and (bytes? restored)
-                       (java.util.Arrays/equals ^bytes original ^bytes restored)))))
+                       (utils/bytes-equal? original restored)))))
 
 (defspec nested-bytes-round-trip-generative 100
   (prop/for-all [first-bytes bytes-gen
@@ -32,10 +33,10 @@
                                           :info {:pieces [second-bytes]}}}
                       restored (disk/decode-state
                                 (edn/read-string (pr-str (disk/encode-state download))))]
-                  (and (java.util.Arrays/equals ^bytes first-bytes
-                                                ^bytes (get-in restored [:torrent :info-hash]))
-                       (java.util.Arrays/equals ^bytes second-bytes
-                                                ^bytes (first (get-in restored [:torrent :info :pieces])))))))
+                  (and (utils/bytes-equal? first-bytes
+                                           (get-in restored [:torrent :info-hash]))
+                       (utils/bytes-equal? second-bytes
+                                           (first (get-in restored [:torrent :info :pieces])))))))
 
 (defspec id-from-path-round-trip-generative 100
   (prop/for-all [file-name (gen/such-that (comp not empty?) gen/string-alphanumeric)]

@@ -18,7 +18,8 @@
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.orchestration.download :as download]
             [dev.cljtoc.test-doubles.disk :as mock-disk]
-            [dev.cljtoc.cli.state :as cli-state])
+            [dev.cljtoc.cli.state :as cli-state]
+            [dev.cljtoc.utils :as utils])
   (:import [java.io File]))
 
 (defn- compile-layout
@@ -74,8 +75,8 @@
       (is (= {:ok :written} (disk/write-piece port hash-b 0 piece-b)))
       (let [read-a (:ok (disk/read-piece port hash-a 0))
             read-b (:ok (disk/read-piece port hash-b 0))]
-        (is (java.util.Arrays/equals piece-a read-a))
-        (is (java.util.Arrays/equals piece-b read-b))))))
+        (is (utils/bytes-equal? piece-a read-a))
+        (is (utils/bytes-equal? piece-b read-b))))))
 
 (deftest identical-torrents-share-cache-entries-test
   (testing "same info-hash, different names: one entry, last write wins"
@@ -85,8 +86,8 @@
           shared-hash (bencode/sha1-hash (test-utils/to-bytes "same-bytes"))]
       (is (= {:ok :written} (disk/write-piece port shared-hash 0 (byte-array [1 1 1 1]))))
       (is (= {:ok :written} (disk/write-piece port shared-hash 0 (byte-array [2 2 2 2]))))
-      (is (java.util.Arrays/equals (byte-array [2 2 2 2])
-                                   (:ok (disk/read-piece port shared-hash 0)))))))
+      (is (utils/bytes-equal? (byte-array [2 2 2 2])
+                              (:ok (disk/read-piece port shared-hash 0)))))))
 
 (deftest case-variant-names-with-different-content-stay-isolated-test
   (testing "Foo.torrent vs foo.torrent: distinct ids, distinct content, no clobber on any filesystem"
@@ -100,10 +101,10 @@
           hash-foo-lower (bencode/sha1-hash (test-utils/to-bytes "foo-content"))]
       (is (= {:ok :written} (disk/write-piece port hash-foo 0 (byte-array [0 1 2 3]))))
       (is (= {:ok :written} (disk/write-piece port hash-foo-lower 0 (byte-array [4 5 6 7]))))
-      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                   (:ok (disk/read-piece port hash-foo 0))))
-      (is (java.util.Arrays/equals (byte-array [4 5 6 7])
-                                   (:ok (disk/read-piece port hash-foo-lower 0)))))))
+      (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                              (:ok (disk/read-piece port hash-foo 0))))
+      (is (utils/bytes-equal? (byte-array [4 5 6 7])
+                              (:ok (disk/read-piece port hash-foo-lower 0)))))))
 
 (def hostile-info-hashes
   "Info hashes that must never name a cache entry: missing, empty, or not bytes at all."
@@ -160,7 +161,7 @@
         (is (contains? result :ok))
         (is (= "bytes-torrent" (get-in result [:ok :id])))
         (is (bytes? loaded-hash))
-        (is (java.util.Arrays/equals (byte-array [0 1 15 16 127 -1]) loaded-hash))))))
+        (is (utils/bytes-equal? (byte-array [0 1 15 16 127 -1]) loaded-hash))))))
 
 (deftest save-invalid-tag-returns-save-error-test
   (testing "saving a download with an invalid :cljtoc/bytes tag fails fast
@@ -185,9 +186,9 @@
             loaded-hash (get-in loaded [:torrent :info-hash])
             loaded-piece (first (get-in loaded [:torrent :info :pieces]))]
         (is (bytes? loaded-hash))
-        (is (java.util.Arrays/equals info-hash loaded-hash))
+        (is (utils/bytes-equal? info-hash loaded-hash))
         (is (bytes? loaded-piece))
-        (is (java.util.Arrays/equals piece-hash loaded-piece))))))
+        (is (utils/bytes-equal? piece-hash loaded-piece))))))
 
 (deftest saved-file-is-plain-edn-test
   (testing "the state file parses with edn/read-string (no reader tags, no #object)"
@@ -239,9 +240,9 @@
       (doseq [[piece-index piece-data] (map-indexed vector piece-bytes)]
         (is (= {:ok :written}
                (disk/write-output-piece port (compile-layout info) output-dir piece-index piece-data))))
-      (is (java.util.Arrays/equals (byte-array (range 10))
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "data.bin"))))))))
+      (is (utils/bytes-equal? (byte-array (range 10))
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "data.bin"))))))))
 
 (deftest write-output-piece-spans-file-boundary-test
   (testing "a piece crossing a file boundary lands split across both files"
@@ -253,12 +254,12 @@
              (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3 4 5]))))
       (is (= {:ok :written}
              (disk/write-output-piece port (compile-layout info) output-dir 1 (byte-array [6 7 8 9]))))
-      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "t" "a")))))
-      (is (java.util.Arrays/equals (byte-array [4 5 6 7 8 9])
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "t" "b"))))))))
+      (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "t" "a")))))
+      (is (utils/bytes-equal? (byte-array [4 5 6 7 8 9])
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "t" "b"))))))))
 
 (deftest write-output-piece-truncates-stale-file-test
   (testing "a longer file left by an earlier run comes out byte-identical"
@@ -274,8 +275,8 @@
                                                             (byte-array [8 9])])]
         (is (= {:ok :written}
                (disk/write-output-piece port (compile-layout info) output-dir piece-index piece-data))))
-      (is (java.util.Arrays/equals (byte-array (range 10))
-                                   (java.nio.file.Files/readAllBytes (.toPath stale)))))))
+      (is (utils/bytes-equal? (byte-array (range 10))
+                              (java.nio.file.Files/readAllBytes (.toPath stale)))))))
 
 (deftest write-output-piece-rejects-symlink-escape-test
   (testing "a symlink inside output-dir cannot redirect a write outside it"
@@ -505,8 +506,8 @@
     (let [result (disk/write-prepared-piece port prepared output-dir 0
                                             (byte-array [1 2 3 4]))]
       (is (= :unsafe-path (:error result)))
-      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
-                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+      (is (utils/bytes-equal? (byte-array [0 0 0 0])
+                              (java.nio.file.Files/readAllBytes (.toPath target)))
           "the refused write leaves the touched file intact"))))
 
 (deftest write-prepared-piece-refuses-post-prepare-untouched-hardlink-alias-test
@@ -530,8 +531,8 @@
     (let [result (disk/write-prepared-piece port prepared output-dir 0
                                             (byte-array [1 2 3 4]))]
       (is (= :unsafe-path (:error result)))
-      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
-                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+      (is (utils/bytes-equal? (byte-array [0 0 0 0])
+                              (java.nio.file.Files/readAllBytes (.toPath target)))
           "the refused write leaves the touched file intact"))))
 
 (deftest write-prepared-piece-refuses-alias-in-untouched-parent-dir-test
@@ -566,8 +567,8 @@
     (let [result (disk/write-prepared-piece port prepared output-dir 0
                                             (byte-array [1 2 3 4]))]
       (is (= :unsafe-path (:error result)))
-      (is (java.util.Arrays/equals (byte-array [0 0 0 0])
-                                   (java.nio.file.Files/readAllBytes (.toPath target)))
+      (is (utils/bytes-equal? (byte-array [0 0 0 0])
+                              (java.nio.file.Files/readAllBytes (.toPath target)))
           "the refused write leaves the touched file intact"))))
 
 (deftest write-prepared-piece-writes-through-benign-post-prepare-change-test
@@ -592,9 +593,9 @@
     (let [result (disk/write-prepared-piece port prepared output-dir 0
                                             (byte-array [1 2 3 4]))]
       (is (= {:ok :written} result))
-      (is (java.util.Arrays/equals (byte-array [1 2 3 4])
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "t" "a"))))
+      (is (utils/bytes-equal? (byte-array [1 2 3 4])
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "t" "a"))))
           "the piece lands in the touched file")
       (is (= "bystander" (slurp bystander))
           "the unrelated file is untouched"))))
@@ -692,12 +693,12 @@
              (disk/write-output-piece port (compile-layout info) output-dir 1 (byte-array [4 5 6 7]))))
       (is (.exists empty-file))
       (is (zero? (.length empty-file)))
-      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "t" "a")))))
-      (is (java.util.Arrays/equals (byte-array [4 5 6 7])
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "t" "b"))))))))
+      (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "t" "a")))))
+      (is (utils/bytes-equal? (byte-array [4 5 6 7])
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "t" "b"))))))))
 
 (deftest initialize-output-layout-creates-empty-files-test
   (testing "a torrent with no pieces still materializes its empty files"
@@ -822,9 +823,9 @@
       (is (= {:ok :written}
              (disk/write-output-piece port (compile-layout info) output-dir 0 (byte-array [0 1 2 3]))))
       (is (= "sentinel" (slurp sentinel)))
-      (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                   (java.nio.file.Files/readAllBytes
-                                    (.toPath (io/file output-dir "t" "a"))))))))
+      (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                              (java.nio.file.Files/readAllBytes
+                               (.toPath (io/file output-dir "t" "a"))))))))
 
 ;; ---------------------------------------------------------------------------
 
@@ -920,12 +921,12 @@
                (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
         (is (= {:ok :written}
                (disk/write-prepared-piece port prepared output-dir 1 (byte-array [4 5 6 7]))))
-        (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                     (java.nio.file.Files/readAllBytes
-                                      (.toPath (io/file output-dir "t" "a")))))
-        (is (java.util.Arrays/equals (byte-array [4 5 6 7])
-                                     (java.nio.file.Files/readAllBytes
-                                      (.toPath (io/file output-dir "t" "b")))))))))
+        (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                                (java.nio.file.Files/readAllBytes
+                                 (.toPath (io/file output-dir "t" "a")))))
+        (is (utils/bytes-equal? (byte-array [4 5 6 7])
+                                (java.nio.file.Files/readAllBytes
+                                 (.toPath (io/file output-dir "t" "b")))))))))
 
 (deftest write-prepared-piece-refuses-redirected-touch-test
   (testing "a touched file swapped after prepare is refused, nothing written"
@@ -967,9 +968,9 @@
         (.delete (io/file output-dir "t" "a"))
         (is (= {:ok :written}
                (disk/write-prepared-piece port prepared output-dir 0 (byte-array [0 1 2 3]))))
-        (is (java.util.Arrays/equals (byte-array [0 1 2 3])
-                                     (java.nio.file.Files/readAllBytes
-                                      (.toPath (io/file output-dir "t" "a")))))))))
+        (is (utils/bytes-equal? (byte-array [0 1 2 3])
+                                (java.nio.file.Files/readAllBytes
+                                 (.toPath (io/file output-dir "t" "a")))))))))
 
 (deftest write-prepared-piece-leaves-zero-length-files-alone-test
   (testing "a prepared write touches only spanned files, keeping declared empties"
@@ -1000,9 +1001,9 @@
       (let [prepared (:ok (disk/prepare-output-layout port layout output-dir))
             result (disk/write-prepared-piece port prepared output-dir 99 (byte-array [0 1 2 3]))]
         (is (= :invalid-info (:error result)))
-        (is (java.util.Arrays/equals (byte-array 4)
-                                     (java.nio.file.Files/readAllBytes
-                                      (.toPath (io/file output-dir "t")))))))))
+        (is (utils/bytes-equal? (byte-array 4)
+                                (java.nio.file.Files/readAllBytes
+                                 (.toPath (io/file output-dir "t")))))))))
 
 (deftest write-prepared-piece-refuses-incomplete-prepared-test
   (testing "a prepared value missing the touched entry is refused"
@@ -1018,9 +1019,9 @@
         (is (disk/valid-prepared-layout? prepared))
         (is (not (disk/valid-prepared-layout? thinned)))
         (is (= :invalid-info (:error result)))
-        (is (java.util.Arrays/equals (byte-array 4)
-                                     (java.nio.file.Files/readAllBytes
-                                      (.toPath (io/file output-dir "t" "a")))))))))
+        (is (utils/bytes-equal? (byte-array 4)
+                                (java.nio.file.Files/readAllBytes
+                                 (.toPath (io/file output-dir "t" "a")))))))))
 
 (deftest write-prepared-piece-refuses-foreign-output-dir-test
   (testing "a prepared value is bound to the dir it was resolved under"
@@ -1100,7 +1101,7 @@
                   actual (with-open [in (io/input-stream target)]
                            (.readAllBytes ^java.io.InputStream in))]
               (and (= length (alength actual))
-                   (java.util.Arrays/equals
+                   (utils/bytes-equal?
                     actual
                     (java.util.Arrays/copyOfRange
                      source-bytes (int start) (int (+ start length)))))))

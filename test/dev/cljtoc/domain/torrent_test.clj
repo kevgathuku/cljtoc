@@ -5,7 +5,8 @@
             [clojure.test.check.properties :as prop]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.domain.bencode :as bencode]
-            [dev.cljtoc.test-utils :as test-utils]))
+            [dev.cljtoc.test-utils :as test-utils]
+            [dev.cljtoc.utils :as utils]))
 
 ;; ---------------------------------------------------------------------------
 ;; Helpers
@@ -59,7 +60,7 @@
       (is (not (:error result)))
       (let [extracted (:ok result)
             standalone (bencode/encode-bencode info-map)]
-        (is (java.util.Arrays/equals ^bytes extracted ^bytes standalone)))))
+        (is (utils/bytes-equal? extracted standalone)))))
   (testing "returns error for non-dict input"
     (let [result (torrent/extract-info-dict-bytes (bencode/encode-bencode "not a dict"))]
       (is (:error result))))
@@ -79,7 +80,7 @@
           info-bytes (:ok (torrent/extract-info-dict-bytes torrent-bytes))
           expected (bencode/sha1-hash info-bytes)
           actual (:ok (torrent/compute-info-hash torrent-bytes))]
-      (is (java.util.Arrays/equals ^bytes expected ^bytes actual)))))
+      (is (utils/bytes-equal? expected actual)))))
 
 (deftest extract-announce-urls-test
   (testing "extracts primary announce URL"
