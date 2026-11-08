@@ -45,6 +45,14 @@
      {"announce" "http://tracker.example.com/announce"
       "info" info})))
 
+(defn- validation-messages
+  "Messages from validate-torrent over an info dict wrapped in a minimal
+   valid torrent, so layout-rule tests read the seam under test."
+  [info]
+  (map :message (:error (torrent/validate-torrent
+                         {:announce "http://tracker.example.com/announce"
+                          :info (assoc info :pieces [(byte-array 20)])}))))
+
 ;; ---------------------------------------------------------------------------
 ;; GROUP 5: Info dict extraction, info hash, announce URLs
 ;; ---------------------------------------------------------------------------
@@ -271,54 +279,6 @@
       (is (some #(re-find #"pieces" (:message %))
                 (torrent/validate-required-fields t))))))
 
-(deftest validate-field-types-test
-  (testing "valid types return no errors"
-    (let [t {:announce "http://example.com"
-             :info {:name "test.txt"
-                    :piece-length 262144
-                    :pieces [(byte-array 20)]
-                    :length 500000}}]
-      (is (empty? (torrent/validate-field-types t)))))
-  (testing "non-integer piece-length returns error"
-    (let [t {:announce "http://example.com"
-             :info {:name "test.txt"
-                    :piece-length "not a number"
-                    :pieces [(byte-array 20)]}}]
-      (is (some #(re-find #"piece-length" (:message %))
-                (torrent/validate-field-types t)))))
-  (testing "non-integer length returns error"
-    (let [t {:announce "http://example.com"
-             :info {:name "test.txt"
-                    :piece-length 262144
-                    :pieces [(byte-array 20)]
-                    :length "not a number"}}]
-      (is (some #(re-find #"length" (:message %))
-                (torrent/validate-field-types t)))))
-  (testing "negative top-level length returns error"
-    (let [t {:announce "http://example.com"
-             :info {:name "test.txt"
-                    :piece-length 262144
-                    :pieces [(byte-array 20)]
-                    :length -5}}]
-      (is (some #(re-find #"natural integer" (:message %))
-                (torrent/validate-field-types t)))))
-  (testing "negative per-file entry length returns error"
-    (let [t {:announce "http://example.com"
-             :info {:name "my-torrent"
-                    :piece-length 262144
-                    :pieces [(byte-array 20)]
-                    :files [{:path ["a"] :length 100}
-                            {:path ["b"] :length -5}]}}]
-      (is (some #(re-find #"natural integer" (:message %))
-                (torrent/validate-field-types t)))))
-  (testing "zero lengths return no errors"
-    (let [t {:announce "http://example.com"
-             :info {:name "test.txt"
-                    :piece-length 262144
-                    :pieces [(byte-array 20)]
-                    :length 0}}]
-      (is (empty? (torrent/validate-field-types t))))))
-
 (deftest validate-pieces-length-test
   (testing "valid 20-byte pieces return no errors"
     (let [t {:info {:pieces [(byte-array 20) (byte-array 20)]}}]
@@ -326,17 +286,6 @@
   (testing "non-20-byte piece returns error"
     (let [t {:info {:pieces [(byte-array 20) (byte-array 15)]}}]
       (is (seq (torrent/validate-pieces-length t))))))
-
-(deftest validate-piece-length-test
-  (testing "positive piece-length returns no errors"
-    (let [t {:info {:piece-length 262144}}]
-      (is (empty? (torrent/validate-piece-length t)))))
-  (testing "zero piece-length returns error"
-    (let [t {:info {:piece-length 0}}]
-      (is (seq (torrent/validate-piece-length t)))))
-  (testing "negative piece-length returns error"
-    (let [t {:info {:piece-length -1}}]
-      (is (seq (torrent/validate-piece-length t))))))
 
 (deftest validate-torrent-test
   (testing "valid torrent returns {:ok true}"
@@ -380,107 +329,78 @@
   (testing "missing sizes total zero"
     (is (= 0 (torrent/total-size {})))))
 
-(deftest compiled-layout-rejects-bad-piece-length-test
+(deftest validate-torrent-rejects-bad-piece-length-test
   ;; Geometry (bad index/count) is pinned through layout-spans in
-  ;; layout-spans-test; this pins the compile side: a missing or
-  ;; non-positive piece length never yields a layout at all.
+  ;; layout-spans-test; this pins the parse side: a missing or
+  ;; non-positive piece length never clears validation at all.
   (testing "a missing or non-positive piece length is an error"
-    (is (re-find #"positive :piece-length"
-                 (:message (torrent/compile-output-layout {:name "t" :length 8}))))
-    (is (re-find #"positive :piece-length"
-                 (:message (torrent/compile-output-layout {:name "t" :piece-length 0 :length 8}))))
-    (is (re-find #"positive :piece-length"
-                 (:message (torrent/compile-output-layout {:name "t" :piece-length -4 :length 8}))))))
-
-(deftest compile-output-layout-requires-name-test
-  (testing "info without a name cannot yield an output layout"
-    (is (re-find #":name"
-                 (:message (torrent/compile-output-layout {:piece-length 4 :length 8}))))
-    (is (re-find #":name"
-                 (:message (torrent/compile-output-layout {:piece-length 4
-                                                           :files [{:path ["a"] :length 8}]}))))))
-
+    (is (some #(re-find #"positive :piece-length" %)
+              (validation-messages {:name "t" :length 8})))
+    (is (some #(re-find #"positive :piece-length" %)
+              (validation-messages {:name "t" :piece-length 0 :length 8})))
+    (is (some #(re-find #"positive :piece-length" %)
+              (validation-messages {:name "t" :piece-length -4 :length 8})))))
+(deftest validate-torrent-requires-name-test
+  (testing "info without a name fails validation"
+    (is (some #(re-find #":name" %)
+              (validation-messages {:piece-length 4 :length 8})))
+    (is (some #(re-find #":name" %)
+              (validation-messages {:piece-length 4
+                                    :files [{:path ["a"] :length 8}]})))))
 (deftest duplicate-declared-paths-are-rejected-test
   ;; A torrent may declare the same path twice: the sizes view would collapse
   ;; that into one map entry while spans kept two distinct byte ranges, so
   ;; both landed in the same physical file and the download completed having
-  ;; lost the overwritten bytes. Refuse it in the layout guard, so no layout
-  ;; is ever derived from the clash.
-  (let [info {:name "t" :piece-length 4
-              :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]}
-        result (torrent/compile-output-layout info)]
-    (is (:error result))
-    (is (re-find #"same output path twice" (:message result))))
+  ;; lost the overwritten bytes. Refuse it at the parse boundary, so no
+  ;; layout is ever derived from the clash.
+  (let [messages (validation-messages {:name "t" :piece-length 4
+                                       :files [{:path ["a"] :length 4} {:path ["a"] :length 4}]})]
+    (is (seq messages))
+    (is (some #(re-find #"same output path twice" %) messages)))
   (testing "a duplicate full path declared through different nesting is the same clash"
-    (let [info {:name "t" :piece-length 4
-                :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]}]
-      (is (:error (torrent/compile-output-layout info))))))
-
+    (is (seq (validation-messages {:name "t" :piece-length 4
+                                   :files [{:path ["a" "b"] :length 4} {:path ["a" "b"] :length 4}]})))))
 (deftest mutually-exclusive-layout-fields-are-rejected-test
-  ;; An info carrying both :length (single-file) and :files (multi-file)
-  ;; derives two layouts at once: total-size prefers :length while
-  ;; file-layout prefers :files, so spans cover a different byte range from
-  ;; the initialized files — e.g. :length 4 with files totaling 8 leaves
-  ;; half the declared layout unwritten. The wire format leaves no room for
-  ;; both; reject the shape in the shared guard.
-  (let [info {:name "t" :piece-length 4 :length 4
-              :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]}
-        result (torrent/compile-output-layout info)]
-    (is (:error result))
-    (is (re-find #"both :length and :files" (:message result))))
+  (let [messages (validation-messages {:name "t" :piece-length 4 :length 4
+                                       :files [{:path ["a"] :length 4} {:path ["b"] :length 4}]})]
+    (is (seq messages))
+    (is (some #(re-find #"both :length and :files" %) messages)))
   (testing "an empty :files beside :length is the same clash, not an empty layout"
-    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
-                                                :length 4 :files []})))))
-
+    (is (seq (validation-messages {:name "t" :piece-length 4
+                                   :length 4 :files []})))))
 (deftest missing-length-fields-are-rejected-test
-  ;; The guard claims exactly one of :length/:files but only refused both
-  ;; present. With neither, the old sizes entry point returned a size map
-  ;; containing nil and init-layout! died later in setLength instead of
-  ;; refusing the malformed layout as :invalid-info. Same one level down:
-  ;; a file entry without :length poisons the same map.
   (testing "an info with neither :length nor :files is an error"
-    (let [info {:name "t" :piece-length 4}
-          result (torrent/compile-output-layout info)]
-      (is (:error result))
-      (is (re-find #"either :length or :files" (:message result)))))
+    (let [messages (validation-messages {:name "t" :piece-length 4})]
+      (is (seq messages))
+      (is (some #(re-find #"either :length or :files" %) messages))))
   (testing "a file entry without :length is an error"
-    (let [info {:name "t" :piece-length 4
-                :files [{:path ["a"] :length 4} {:path ["b"]}]}]
-      (is (:error (torrent/compile-output-layout info))))))
-
+    (is (seq (validation-messages {:name "t" :piece-length 4
+                                   :files [{:path ["a"] :length 4} {:path ["b"]}]})))))
 (deftest prefix-colliding-paths-are-rejected-test
-  ;; ["t" "a"] cannot be both the file one entry claims and the directory
-  ;; another needs for ["t" "a" "b"]. No declaration order repairs it: one
-  ;; direction fails creating the child through the file, the other fails
-  ;; opening the parent as a file — so refuse upfront, in the shared guard.
-  (let [info {:name "t" :piece-length 4
-              :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]}]
-    (is (:error (torrent/compile-output-layout info))))
+  (let [messages (validation-messages {:name "t" :piece-length 4
+                                       :files [{:path ["a"] :length 4} {:path ["a" "b"] :length 4}]})]
+    (is (seq messages)))
   (testing "an empty entry path collides with its siblings the same way"
-    (let [info {:name "t" :piece-length 4
-                :files [{:path [] :length 4} {:path ["x"] :length 4}]}]
-      (is (:error (torrent/compile-output-layout info))))))
-
+    (is (seq (validation-messages {:name "t" :piece-length 4
+                                   :files [{:path [] :length 4} {:path ["x"] :length 4}]})))))
 (deftest non-integer-lengths-are-rejected-test
   ;; Lengths the layout cannot honestly process: a string :length used to
   ;; crash span derivation in (>= piece-start total) instead of erroring,
   ;; and the sizes view happily handed the string downstream, where
-  ;; setLength exploded later, far from the lie. Same guard, same reason.
-  (testing "a non-integer single-file length is an error"
-    (let [info {:name "t" :piece-length 4 :length "x"}]
-      (is (:error (torrent/compile-output-layout info)))))
+  ;; setLength exploded later, far from the lie. Refused once, at parse.
+  (testing "a non-integer single-file length is one error, not two"
+    (let [messages (validation-messages {:name "t" :piece-length 4 :length "x"})]
+      (is (= 1 (count messages)))
+      (is (some #(re-find #"natural integer" %) messages))))
   (testing "a non-integer file-entry length is an error"
-    (let [info {:name "t" :piece-length 4
-                :files [{:path ["a"] :length 4} {:path ["b"] :length "x"}]}]
-      (is (:error (torrent/compile-output-layout info)))))
-  (testing "zero stays admitted — it is a length, and empty files are real"
-    (let [info {:name "t" :piece-length 4
-                :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]}]
-      (is (:ok (torrent/compile-output-layout info))))))
-
+    (is (seq (validation-messages {:name "t" :piece-length 4
+                                   :files [{:path ["a"] :length 4} {:path ["b"] :length "x"}]}))))
+  (testing "zero stays admitted: it is a length, and empty files are real"
+    (is (empty? (validation-messages {:name "t" :piece-length 4
+                                      :files [{:path ["a"] :length 4} {:path ["b"] :length 0}]})))))
 ;; The exclusivity rule, generated rather than hoped for: stest/check over
-;; the derivations can only feed them bare maps, whose generator all but
-;; never emits both keys — so the rule gets its own generator that always
+;; validate-torrent can only feed it bare maps, whose generator all but
+;; never emits both keys, so the rule gets its own generator that always
 ;; builds the hostile shape, across lengths and file counts.
 (defspec both-layout-fields-always-refused-spec 100
   (prop/for-all [length gen/nat
@@ -490,8 +410,7 @@
                                            {:path [(str "f" file-index)]
                                             :length (inc file-index)})
                                          (range file-count))}]
-                  (:error (torrent/compile-output-layout info)))))
-
+                  (seq (validation-messages info)))))
 (deftest piece-arithmetic-overflow-is-an-error-test
   ;; Found by stest/check once ::info generated realistic shapes: a huge
   ;; piece-length times a huge index overflows long in (* piece-index
@@ -590,17 +509,17 @@
      (and (some? layout)
           (every? sizes span-paths)))))
 
-(defspec hostile-path-components-never-produce-a-layout-spec 100
+(defspec hostile-path-components-never-validate-spec 100
   (prop/for-all
    [hostile (gen/elements [".." "." "a/b" "a\\b" "/abs" "" "./.." "f/.."
                            "/etc/passwd" "\\\\host\\share" "~/x" "sub/../../x"])]
-   (let [single (torrent/compile-output-layout {:name hostile :piece-length 4 :length 4})
-         multi (torrent/compile-output-layout
+   (let [single (validation-messages {:name hostile :piece-length 4 :length 4})
+         multi (validation-messages
                 {:name "t" :piece-length 4
                  :files [{:path [hostile] :length 4}]})]
-     ;; No layout, so no spans either: refusal at compile subsumes refusal
-     ;; at every per-piece lookup.
-     (and (:error single) (:error multi)))))
+     ;; No error means a layout could be derived: refusal at parse subsumes
+     ;; refusal at every per-piece lookup.
+     (and (seq single) (seq multi)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Compiled output layout (issue #31): derived once per download, so the
@@ -635,18 +554,17 @@
                                            :files [{:path ["a"] :length 4}
                                                    {:path ["empty"] :length 0}
                                                    {:path ["b"] :length 4}]}))))
-  (testing "an unusable layout is an error, not a layout"
-    (is (:error (torrent/compile-output-layout {:piece-length 4 :length 8})))
-    (is (:error (torrent/compile-output-layout {:name ".." :piece-length 4 :length 8})))
-    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4 :length 8
-                                                :files [{:path ["a"] :length 8}]})))
-    (is (:error (torrent/compile-output-layout {:name "t" :piece-length 4
-                                                :files [{:path ["a"] :length 4}
-                                                        {:path ["a"] :length 4}]})))))
+  (testing "an unusable info fails validation, so no layout is derived"
+    (is (seq (validation-messages {:piece-length 4 :length 8})))
+    (is (seq (validation-messages {:name ".." :piece-length 4 :length 8})))
+    (is (seq (validation-messages {:name "t" :piece-length 4 :length 8
+                                   :files [{:path ["a"] :length 8}]})))
+    (is (seq (validation-messages {:name "t" :piece-length 4
+                                   :files [{:path ["a"] :length 4}
+                                           {:path ["a"] :length 4}]})))))
 
 (def info-mutations
-  "One-field breaks of a valid info dict; every one must fail all three
-   layout derivations as data, never a throw. Each targets a different
+  "One-field breaks of a valid info dict; every one must fail validation
    clause of the shared guard: collection and entry shapes, hostile
    paths, lengths, names, and piece lengths (PR #36 rounds 4-5)."
   [(fn [info] (assoc-in info [:files 0 :path] 42))
@@ -668,10 +586,10 @@
                  mutation-idx (gen/choose 0 (dec (count info-mutations)))]
                 (let [info ((nth info-mutations mutation-idx)
                             (test-utils/layout-test-info piece-length file-lengths))]
-                  ;; The compile gate is the strictest: the retired wrappers
-                  ;; delegated to it, so its refusal subsumes theirs.
-                  (:error (torrent/compile-output-layout info)))))
-
+                  ;; The parse gate is the strictest: every production path
+                  ;; funnels through it, so its refusal subsumes every
+                  ;; downstream check.
+                  (seq (validation-messages info)))))
 (deftest layout-spans-test
   (testing "single-file piece maps to one span at the piece offset"
     (let [layout (:ok (torrent/compile-output-layout {:name "test.txt" :piece-length 4 :length 8}))]
@@ -797,9 +715,7 @@
                       dev.cljtoc.domain.torrent/compile-output-layout
                       dev.cljtoc.domain.torrent/layout-spans
                       dev.cljtoc.domain.torrent/validate-required-fields
-                      dev.cljtoc.domain.torrent/validate-field-types
                       dev.cljtoc.domain.torrent/validate-pieces-length
-                      dev.cljtoc.domain.torrent/validate-piece-length
                       dev.cljtoc.domain.torrent/validate-torrent
                       dev.cljtoc.domain.torrent/parse-torrent]
                     50)]

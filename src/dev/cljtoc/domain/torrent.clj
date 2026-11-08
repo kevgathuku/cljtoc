@@ -274,7 +274,7 @@
       [{:path [(:name info)] :length (:length info)}])))
 
 (defn- layout-error
-  "The one layout guard behind compile-output-layout: the
+  "The one layout guard, enforced at the trust boundaries (validate-torrent
    layout needs a :name, a positive :piece-length, carries exactly one of
    :length (single-file) or :files (multi-file), every declared path component must stay inside the
    output directory, every present length must be a natural integer, and no
@@ -362,13 +362,13 @@
    entries — a zero-length file overlaps no piece, so excluding it keeps
    the per-piece walk to exactly the overlapped files — while :sizes
    still lists every declared path so layout init creates the empties.
-   A layout that could not be written as declared (see layout-error)
-   is an error.
+   The info must already satisfy the layout guard: parse-torrent and
+   resume-download enforce it at their trust boundaries, so derivation
+   trusts its input and only arithmetic overflow still errors.
    Returns {:ok layout} or {:error ...}."
   [info]
-  (if-let [error (layout-error info)]
-    error
-    (try
+  ;; Trusted input (see above): no invariant checks here.
+  (try
       (let [entries (file-layout info)
             files (loop [remaining entries
                          file-start 0
@@ -391,7 +391,7 @@
               :total total
               :piece-length (:piece-length info)}})
       (catch ArithmeticException _
-        (bencode/torrent-error "output layout arithmetic overflowed" {})))))
+        (bencode/torrent-error "output layout arithmetic overflowed" {}))))
 
 (s/fdef compile-output-layout
   :args (s/cat :info ::info)
@@ -538,34 +538,6 @@
   :ret vector?
   :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
-(defn validate-field-types
-  "Checks that torrent fields have correct types: piece-length must be an
-  integer, and every present length — top-level and per-file — must be a
-  natural integer, the same rule layout-error enforces. Non-sequential
-  :files is left to layout-error: mapping :length over it would throw
-  instead of answering. Returns a vector of error maps."
-  [torrent]
-  (let [errors (transient [])
-        info (:info torrent)]
-    (when info
-      (when (and (:piece-length info) (not (integer? (:piece-length info))))
-        (conj! errors (bencode/torrent-error
-                       "type mismatch: piece-length must be an integer"
-                       {:field "piece-length" :actual (type (:piece-length info))})))
-      (when-not (and (or (nil? (:length info)) (nat-int? (:length info)))
-                     (or (nil? (:files info))
-                         (and (sequential? (:files info))
-                              (every? nat-int? (map :length (:files info))))))
-        (conj! errors (bencode/torrent-error
-                       "info carries a file length that is not a natural integer"
-                       {:field "length"}))))
-    (persistent! errors)))
-
-(s/fdef validate-field-types
-  :args (s/cat :torrent map?)
-  :ret vector?
-  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
-
 (defn validate-pieces-length
   "Checks that every piece hash is exactly 20 bytes. Returns a vector of error maps."
   [torrent]
@@ -585,29 +557,17 @@
   :ret vector?
   :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
-(defn validate-piece-length
-  "Checks that piece-length is a positive integer. Returns a vector of error maps."
-  [torrent]
-  (let [pl (get-in torrent [:info :piece-length])]
-    (if (and (integer? pl) (pos? pl))
-      []
-      [(bencode/torrent-error
-        (str "piece-length must be a positive integer, got: " pl)
-        {:field "piece-length" :value pl})])))
-
-(s/fdef validate-piece-length
-  :args (s/cat :torrent map?)
-  :ret vector?
-  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
-
 (defn validate-torrent
   "Runs all validation checks on a parsed torrent map. Returns {:ok true}
-  if valid, or {:error [error-maps]} with all validation failures."
+  if valid, or {:error [error-maps]} with all validation failures. The
+  output-layout guard (layout-error) runs here, at the parse boundary:
+  info that clears this is trusted downstream and never re-checked."
   [torrent]
   (let [errors (vec (concat (validate-required-fields torrent)
-                            (validate-field-types torrent)
-                            (validate-piece-length torrent)
-                            (validate-pieces-length torrent)))]
+                            (validate-pieces-length torrent)
+                            (when-let [info (:info torrent)]
+                              (when-let [error (layout-error info)]
+                                [error]))))]
     (if (empty? errors)
       {:ok true}
       {:error errors})))
