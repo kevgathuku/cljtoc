@@ -681,8 +681,28 @@
                       {:ok parsed}
                       validation)))))))))))
 
+;; Info that cleared validation: the trust contract plus valid piece
+;; hashes. :pieces is always present (parse-info-dict assocs it), and
+;; validation enforces that, so every? alone suffices here.
+(s/def ::parsed-info
+  (s/and ::compilable-info
+         #(every? (fn [piece-hash] (and (bytes? piece-hash)
+                                        (= 20 (count piece-hash))))
+                  (:pieces %))))
+
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
-  :fn #(or (map? (-> % :ret :ok))
-           (keyword? (-> % :ret :error))))
+  ;; The shape callers branch on: success carries a present announce, a
+  ;; parsed info dict inside the trust contract, and a 20-byte info hash;
+  ;; failure is one envelope or a vector of them. :announce stays
+  ;; truthiness-checked, not string?-checked: hostile scalars pass
+  ;; required-fields today, so pinning string? would outlaw live outputs.
+  :fn #(let [result (:ret %)]
+         (if-let [ok (:ok result)]
+           (and (some? (:announce ok))
+                (s/valid? ::parsed-info (:info ok))
+                (bytes? (:info-hash ok))
+                (= 20 (count (:info-hash ok))))
+           (let [error (:error result)]
+             (or (keyword? error) (vector? error))))))
