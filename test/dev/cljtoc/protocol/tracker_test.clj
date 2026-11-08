@@ -166,29 +166,54 @@
                          (= (/ (count bs) 6) (count (:ok result))))
                     (= :invalid-peer-data (:error result))))))
 
-(defspec generated-peers-satisfy-spec 100
-  (testing "All generated peers satisfy the peer spec"
-    (prop/for-all [peer (s/gen ::tracker/peer)]
-                  (s/valid? ::tracker/peer peer))))
+(deftest peer-shape-boundaries-test
+  (testing "an ip-address and a port make a peer; peer-id stays optional"
+    (is (s/valid? ::tracker/peer {:ip-address "1.2.3.4" :port 6881}))
+    (is (s/valid? ::tracker/peer {:ip-address "1.2.3.4" :port 6881 :peer-id (byte-array 20)}))
+    (are [peer] (not (s/valid? ::tracker/peer peer))
+      {}
+      {:ip-address "1.2.3.4"}
+      {:port 6881}
+      {:ip-address "1.2.3.4" :port 0}
+      {:ip-address "1.2.3.4" :port 65536}
+      {:ip-address "999.1.1.1" :port 6881}
+      {:ip-address "1.2.3.4" :port 6881 :peer-id (byte-array 19)}))
 
-(defspec generated-peer-ids-are-valid 100
-  (testing "All generated peer-ids are exactly 20 bytes"
-    (prop/for-all [peer-id (s/gen ::tracker/peer-id)]
-                  (and (bytes? peer-id)
-                       (= 20 (alength peer-id))))))
+  (testing "ipv6 peers need full-form addresses; compressed lands in .28"
+    (is (s/valid? ::tracker/peer {:ip-address "2001:db8:0:0:0:0:0:1" :port 6881}))
+    (are [ip] (not (s/valid? ::tracker/peer {:ip-address ip :port 6881}))
+      "::1"
+      "1:2:3:4:5:6:7"
+      "1:2:3:4:5:6:7:8:9"
+      "1:2:3:4:5:6:7:zzzz")))
 
-(defspec generated-info-hashes-are-valid 100
-  (testing "All generated info-hashes are exactly 20 bytes"
-    (prop/for-all [info-hash (s/gen ::tracker/info-hash)]
-                  (and (bytes? info-hash)
-                       (= 20 (alength info-hash))))))
+(deftest peer-id-length-boundaries-test
+  (testing "exactly 20 bytes is a peer-id; neighbours are not"
+    (is (s/valid? ::tracker/peer-id (byte-array 20)))
+    (are [n] (not (s/valid? ::tracker/peer-id (byte-array n)))
+      0 19 21 100))
+  (testing "non-bytes are not peer-ids"
+    (are [x] (not (s/valid? ::tracker/peer-id x))
+      nil "01234567890123456789" [0 1 2])))
 
-(defspec generated-ports-are-in-range 100
-  (testing "All generated ports are in valid range and realistic"
-    (prop/for-all [port (s/gen ::tracker/port)]
-                  (and (int? port)
-                       (<= 1 port 65535)
-                       (>= port 1024)))))  ; Our generator uses 1024-65535
+(deftest info-hash-length-boundaries-test
+  (testing "exactly 20 bytes is an info-hash; neighbours are not"
+    (is (s/valid? ::tracker/info-hash (byte-array 20)))
+    (are [n] (not (s/valid? ::tracker/info-hash (byte-array n)))
+      0 19 21 100))
+  (testing "non-bytes are not info-hashes"
+    (are [x] (not (s/valid? ::tracker/info-hash x))
+      nil "01234567890123456789" [0 1 2])))
+
+(deftest port-range-boundaries-test
+  (testing "1 to 65535 are ports; the neighbours are not"
+    (are [port] (s/valid? ::tracker/port port)
+      1 1024 6881 65535)
+    (are [port] (not (s/valid? ::tracker/port port))
+      0 65536 -1))
+  (testing "non-integers are not ports"
+    (are [x] (not (s/valid? ::tracker/port x))
+      nil "6881" 68.81)))
 
 ;; ---------------------------------------------------------------------------
 ;; GROUP 2: Dictionary peer parsing
