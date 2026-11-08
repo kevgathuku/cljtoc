@@ -564,7 +564,18 @@
 (s/fdef validate-required-fields
   :args (s/cat :torrent map?)
   :ret vector?
-  :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
+  ;; Presence is the whole contract: no errors exactly when every
+  ;; required field is present. :args stays map? on purpose — this fn
+  ;; exists to diagnose malformed torrents, so requiring the fields up
+  ;; front would forbid its own inputs and blind the generative pin.
+  :fn #(let [torrent (-> % :args :torrent)
+             complete? (boolean (and (:announce torrent)
+                                     (:info torrent)
+                                     (get-in torrent [:info :name])
+                                     (get-in torrent [:info :piece-length])
+                                     (get-in torrent [:info :pieces])))]
+         (and (= (empty? (:ret %)) complete?)
+              (every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))))
 
 (defn validate-pieces-length
   "Checks that every piece hash is exactly 20 bytes. Non-array entries
