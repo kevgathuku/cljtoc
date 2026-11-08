@@ -8,7 +8,8 @@
 
   All errors are returned as data maps, never thrown as exceptions."
   (:require [dev.cljtoc.domain.bencode :as bencode]
-            [clojure.spec.alpha :as s])
+            [clojure.spec.alpha :as s]
+            [clojure.spec.gen.alpha :as gen])
   (:import [java.util Arrays]))
 
 ;; Byte arrays flow through info-hash and layout math here; fail the compile on
@@ -354,6 +355,28 @@
         :else
         nil))))
 
+;; The trust contract behind compile-output-layout: info the layout guard
+;; accepts. Built on map? rather than ::info: with-gen loses to an s/or
+;; branch's own generator (such-that over its hostile names fails), while
+;; a predicate branch keeps the bespoke generator below. layout-error is
+;; total over maps, so the predicate never throws. The gen.* calls stay
+;; inside the s/with-gen function, so requiring this namespace never loads
+;; test.check (dev-only); the calls run only when a test generates.
+(s/def ::compilable-info
+  (s/with-gen
+    (s/and map? #(nil? (layout-error %)))
+    #(gen/fmap (fn [[piece-length file-count single?]]
+                 (let [lengths (mapv inc (range file-count))]
+                   (if single?
+                     {:name "t" :piece-length piece-length :length (first lengths)}
+                     {:name "t" :piece-length piece-length
+                      :files (mapv (fn [file-index file-length]
+                                     {:path [(str "f" file-index)] :length file-length})
+                                   (range file-count) lengths)})))
+               (gen/tuple (s/gen (s/int-in 1 17))
+                          (s/gen (s/int-in 1 6))
+                          (s/gen boolean?)))))
+
 (defn compile-output-layout
   "Derive the output layout of an info dict once per download: every
    declared entry with its cumulative byte :start, the sizes map,
@@ -369,32 +392,32 @@
   [info]
   ;; Trusted input (see above): no invariant checks here.
   (try
-      (let [entries (file-layout info)
-            files (loop [remaining entries
-                         file-start 0
-                         acc (transient [])]
-                    (if (empty? remaining)
-                      (persistent! acc)
-                      (let [{file-path :path file-length :length} (first remaining)]
-                        (recur (rest remaining)
-                               (long (+ file-start file-length))
-                               (if (pos? file-length)
-                                 (conj! acc {:path file-path
-                                             :length file-length
-                                             :start file-start})
-                                 acc)))))
-            total (reduce + 0 (map :length entries))]
-        {:ok {:files files
-              :sizes (into {} (map (fn [{file-path :path file-length :length}]
-                                     [file-path file-length])
-                                   entries))
-              :total total
-              :piece-length (:piece-length info)}})
-      (catch ArithmeticException _
-        (bencode/torrent-error "output layout arithmetic overflowed" {}))))
+    (let [entries (file-layout info)
+          files (loop [remaining entries
+                       file-start 0
+                       acc (transient [])]
+                  (if (empty? remaining)
+                    (persistent! acc)
+                    (let [{file-path :path file-length :length} (first remaining)]
+                      (recur (rest remaining)
+                             (long (+ file-start file-length))
+                             (if (pos? file-length)
+                               (conj! acc {:path file-path
+                                           :length file-length
+                                           :start file-start})
+                               acc)))))
+          total (reduce + 0 (map :length entries))]
+      {:ok {:files files
+            :sizes (into {} (map (fn [{file-path :path file-length :length}]
+                                   [file-path file-length])
+                                 entries))
+            :total total
+            :piece-length (:piece-length info)}})
+    (catch ArithmeticException _
+      (bencode/torrent-error "output layout arithmetic overflowed" {}))))
 
 (s/fdef compile-output-layout
-  :args (s/cat :info ::info)
+  :args (s/cat :info ::compilable-info)
   :ret map?
   ;; The single derivation behind the sizes and span views: every searched
   ;; entry is a declared size, and the sizes sum to the total.
@@ -539,17 +562,23 @@
   :fn #(every? (fn [error-map] (keyword? (:error error-map))) (:ret %)))
 
 (defn validate-pieces-length
-  "Checks that every piece hash is exactly 20 bytes. Returns a vector of error maps."
+  "Checks that every piece hash is exactly 20 bytes. Non-array entries
+  are errors, never a throw: info off the wire or disk can carry anything.
+  Returns a vector of error maps."
   [torrent]
   (let [pieces (get-in torrent [:info :pieces])]
     (if (or (nil? pieces) (empty? pieces))
       []
       (vec (keep-indexed
-            (fn [idx ^bytes piece]
-              (when (not= 20 (alength piece))
+            (fn [idx piece]
+              (if-not (bytes? piece)
                 (bencode/torrent-error
-                 (str "piece " idx " is " (alength piece) " bytes, expected 20")
-                 {:piece-index idx :actual-length (alength piece)})))
+                 (str "piece " idx " is not a byte array: " (pr-str (type piece)))
+                 {:piece-index idx})
+                (when (not= 20 (count piece))
+                  (bencode/torrent-error
+                   (str "piece " idx " is " (count piece) " bytes, expected 20")
+                   {:piece-index idx :actual-length (count piece)}))))
             pieces)))))
 
 (s/fdef validate-pieces-length
