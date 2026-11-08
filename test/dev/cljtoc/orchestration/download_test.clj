@@ -677,6 +677,32 @@
       (is (= {:downloaded 0 :left 8} (:progress @captured)))
       (is (= #{0 1} (:needed (get-in result [:ok :piece-state])))))))
 
+(deftest resume-download-refuses-corrupt-stored-torrent-test
+  (testing "a persisted record whose torrent fails validation is refused
+            before any layout derivation: disk state is a trust boundary,
+            and the layout step no longer checks"
+    (let [disk (mock-disk/create)
+          hostile {:id "evil"
+                   :state :paused
+                   :output-dir "/out"
+                   :torrent {:announce "http://tracker.example.com/announce"
+                             :info {:name "evil" :piece-length 4 :length -5
+                                    :pieces [(byte-array 20)]}}
+                   :piece-state (pieces/initial-piece-state 1)}
+          _ (disk/save-state disk hostile)
+          result (download/resume-download disk nil {:id "evil" :state :paused})]
+      (is (= :invalid-torrent (:error result)))))
+  (testing "a live record that did not come from disk is trusted as-is"
+    (let [live {:id "live"
+                :state :paused
+                :output-dir "/out"
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "live" :piece-length 4 :length -5
+                                 :pieces [(byte-array 20)]}}
+                :piece-state (pieces/initial-piece-state 1)}
+          result (download/resume-download nil nil live)]
+      (is (= :downloading (get-in result [:ok :state]))))))
+
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
 

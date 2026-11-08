@@ -90,8 +90,10 @@
 
 (defn- declared-outputs
   "The absolute output paths a started download declares, from the same
-   layout derivation its writer uses. Nil when the layout is invalid — the
-   run fails on that later, so the session has nothing to compare."
+   layout derivation its writer uses. The download carries validated info
+   (parse or resume refused anything else), so a layout always derives;
+   the run fails later on what the writer refuses, and then the session
+   has nothing to compare."
   [download]
   (let [layout (torrent/compile-output-layout (get-in download [:torrent :info]))
         sizes (:sizes (:ok layout))]
