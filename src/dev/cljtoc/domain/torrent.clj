@@ -145,7 +145,12 @@
                   :piece-length piece-length
                   :pieces pieces}
            length (assoc :length length)
-           files (assoc :files (mapv parse-file-entry files))
+           ;; Only sequential files map to entries: anything else rides
+           ;; through raw for validate-torrent to refuse (mapv throws on
+           ;; scalars instead of answering).
+           files (assoc :files (if (sequential? files)
+                                 (mapv parse-file-entry files)
+                                 files))
            (some? private) (assoc :private (= 1 private)))}))
 
 (s/fdef parse-info-dict
@@ -564,11 +569,18 @@
 (defn validate-pieces-length
   "Checks that every piece hash is exactly 20 bytes. Non-array entries
   are errors, never a throw: info off the wire or disk can carry anything.
-  Returns a vector of error maps."
+  A non-sequential :pieces is a shape error of its own. Returns a vector
+  of error maps."
   [torrent]
   (let [pieces (get-in torrent [:info :pieces])]
-    (if (or (nil? pieces) (empty? pieces))
-      []
+    (cond
+      (nil? pieces) []
+      (not (sequential? pieces))
+      [(bencode/torrent-error
+        (str "pieces must be a collection of 20-byte hashes, got: " (pr-str (type pieces)))
+        {:field "pieces"})]
+      (empty? pieces) []
+      :else
       (vec (keep-indexed
             (fn [idx piece]
               (if-not (bytes? piece)

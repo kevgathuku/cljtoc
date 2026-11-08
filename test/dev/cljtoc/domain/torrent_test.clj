@@ -216,7 +216,15 @@
       (is (:error result))))
   (testing "invalid bencode returns error"
     (let [result (torrent/parse-torrent (.getBytes "not bencode" "UTF-8"))]
-      (is (:error result)))))
+      (is (:error result))))
+  (testing "non-sequential files value is an error, never a throw"
+    (let [torrent-bytes (bencode/encode-bencode
+                         {"announce" "http://tracker.example.com/announce"
+                          "info" {"name" "t" "piece length" 4
+                                  "pieces" (make-pieces 1) "files" 42}})
+          result (torrent/parse-torrent torrent-bytes)]
+      (is (:error result))
+      (is (some #(re-find #"collection" %) (map :message (:error result)))))))
 
 (deftest parse-torrent-negative-length-test
   (testing "single-file info with negative length returns error"
@@ -288,7 +296,10 @@
       (is (seq (torrent/validate-pieces-length t)))))
   (testing "non-byte-array pieces are errors, never a throw"
     (let [t {:info {:pieces ["h1" 42 nil]}}]
-      (is (= 3 (count (torrent/validate-pieces-length t)))))))
+      (is (= 3 (count (torrent/validate-pieces-length t))))))
+  (testing "scalar pieces are a shape error, never a throw"
+    (let [t {:info {:pieces 42}}]
+      (is (= 1 (count (torrent/validate-pieces-length t)))))))
 
 (deftest validate-torrent-test
   (testing "valid torrent returns {:ok true}"
