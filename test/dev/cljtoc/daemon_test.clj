@@ -534,7 +534,8 @@
   (testing "valid runnable records pass through untouched"
     (let [live {:id "live" :state :paused
                 :torrent {:announce "http://tracker.example.com/announce"
-                          :info {:name "live" :piece-length 4 :length 8 :pieces []}}}]
+                          :info {:name "live" :piece-length 4 :length 8
+                                 :pieces [(byte-array 20) (byte-array 20)]}}}]
       (is (= live (#'daemon/refuse-unvalidated-saved live)))))
   (testing "runnable records with hostile torrents start failed"
     (let [bad {:id "bad" :state :paused

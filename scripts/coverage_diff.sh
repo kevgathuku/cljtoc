@@ -22,6 +22,8 @@
 #     instead of re-running the whole suite under instrumentation).
 #   --skip-run: reuse the report already in target/coverage-diff instead
 #     of running cloverage again (for re-reading the intersection).
+#     Reuse is refused when the source snapshot recorded alongside the
+#     report no longer matches the current source state.
 # Exit codes: 0 = no uncovered added lines, 1 = uncovered added lines
 #             found, 2 = usage/setup error.
 
@@ -107,40 +109,87 @@ if [[ $narrow_tests -eq 1 ]]; then
   fi
 fi
 
+snapshot_file="$target_dir/.source-snapshot"
+
+# The source state a report was built from: the base ref, the checked-out
+# commit, uncommitted changes under src/, and a hash of the base...HEAD
+# src diff itself. Recorded next to each report, compared before reuse.
+snapshot_body() {
+  echo "base=$base"
+  git rev-parse HEAD
+  git status --porcelain -- src
+  git diff "$base"...HEAD -- src | git hash-object --stdin
+}
+
+write_snapshot() {
+  snapshot_body > "$snapshot_file"
+}
+
+snapshot_matches() {
+  [[ -f "$snapshot_file" ]] && diff -q "$snapshot_file" <(snapshot_body) > /dev/null
+}
+
+# Run cloverage into target_dir with the current flag selection, then
+# snapshot the source state the report was built from.
+run_cloverage() {
+  rm -rf "$target_dir"
+  # `--text` enables both the text report (per-line markers + summary,
+  # what the diff intersection reads) and the HTML report (what a human
+  # opens in a browser to navigate the file tree and see uncovered lines
+  # in context). target/ is gitignored, so the HTML is local-only. Disable
+  # every other report writer so we don't churn the tree or hit the network.
+  # Send cloverage's test runner chatter to stderr so only the diff rows
+  # end up on stdout.
+  # Empty arrays must stay safe under `set -u` on bash < 4.4 (macOS ships
+  # 3.2, where an empty "${arr[@]}" trips "unbound variable"): the
+  # ${arr[@]+"${arr[@]}"} idiom expands to nothing when the array is
+  # empty instead of failing.
+  if ! lein cloverage \
+      --text --summary \
+      --no-coveralls --no-codecov --no-emma-xml --no-lcov --no-junit --no-raw \
+      --no-colorize \
+      -o "$target_dir" \
+      ${ns_flags[@]+"${ns_flags[@]}"} \
+      ${ns_args[@]+"${ns_args[@]}"} \
+      ${test_flags[@]+"${test_flags[@]}"} \
+      ${test_ns_args[@]+"${test_ns_args[@]}"} \
+      --fail-threshold 0 \
+      ${extra[@]+"${extra[@]}"} 1>&2; then
+    echo "cloverage failed" >&2
+    exit 2
+  fi
+  write_snapshot
+}
+
+run_report() {
+  code=0
+  python3 "$(dirname "$0")/coverage_diff.py" --dir "$target_dir" --base "$base" || code=$?
+}
+
 if [[ $skip_run -eq 0 ]]; then
-rm -rf "$target_dir"
-
-# `--text` enables both the text report (per-line markers + summary,
-# what the diff intersection reads) and the HTML report (what a human
-# opens in a browser to navigate the file tree and see uncovered lines
-# in context). target/ is gitignored, so the HTML is local-only. Disable
-# every other report writer so we don't churn the tree or hit the network.
-# Send cloverage's test runner chatter to stderr so only the diff rows
-# end up on stdout.
-if ! lein cloverage \
-    --text --summary \
-    --no-coveralls --no-codecov --no-emma-xml --no-lcov --no-junit --no-raw \
-    --no-colorize \
-    -o "$target_dir" \
-    "${ns_flags[@]}" \
-    "${ns_args[@]}" \
-    "${test_flags[@]}" \
-    "${test_ns_args[@]}" \
-    --fail-threshold 0 \
-    "${extra[@]}" 1>&2; then
-  echo "cloverage failed" >&2
-  exit 2
-fi
+  run_cloverage
+else
+  if [[ ! -d "$target_dir" ]]; then
+    echo "no coverage dir at $target_dir to reuse" >&2
+    exit 2
+  fi
+  if ! snapshot_matches; then
+    echo "source state changed since the report in $target_dir was generated -- rerun without --skip-run" >&2
+    exit 2
+  fi
 fi
 
-if [[ $skip_run -eq 1 && ! -d "$target_dir" ]]; then
-  echo "no coverage dir at $target_dir to reuse" >&2
-  exit 2
-fi
-
-code=0
-python3 "$(dirname "$0")/coverage_diff.py" --dir "$target_dir" --base "$base" || code=$?
+run_report
 if [[ $code -eq 1 && $narrow_tests -eq 1 ]]; then
-  echo "(lines covered solely from other test namespaces report uncovered here -- rerun with --all-tests to check)" >&2
+  if [[ $skip_run -eq 0 ]]; then
+    # Narrow selection can report lines uncovered that other test
+    # namespaces do cover: rerun everything before failing the gate.
+    echo "(uncovered under narrow test selection -- rerunning with all tests)" >&2
+    test_flags=()
+    run_cloverage
+    run_report
+  else
+    echo "(lines covered solely from other test namespaces report uncovered here -- rerun without --skip-run or with --all-tests to check)" >&2
+  fi
 fi
 exit $code

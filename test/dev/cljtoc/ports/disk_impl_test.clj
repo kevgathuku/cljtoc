@@ -249,7 +249,7 @@
           started (assoc (download/initial-download (time/->RealTimePort)
                                                     {:announce "http://tracker.example.com/announce"
                                                      :info {:name "cycle" :piece-length 4 :length 8
-                                                            :pieces [(byte-array 20)]}}
+                                                            :pieces [(byte-array 20) (byte-array 20)]}}
                                                     "/out" "cycle")
                          :state :downloading)
           paused (:ok (download/pause-download port started))

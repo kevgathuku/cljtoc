@@ -141,9 +141,14 @@
 
 (defn- parse-file-entry
   "Parse a file entry from a multi-file torrent info dict.
-  Converts path strings from byte arrays to UTF-8."
+  Converts path strings from byte arrays to UTF-8. Total over hostile
+  entries: a non-sequential path rides through raw for layout-error
+  (the trust boundary) to refuse, instead of throwing out of mapv."
   [file-map]
-  {:path (mapv bytes->str (get file-map "path"))
+  {:path (let [entry-path (get file-map "path")]
+           (if (sequential? entry-path)
+             (mapv bytes->str entry-path)
+             entry-path))
    :length (get file-map "length")})
 
 (defn parse-info-dict
@@ -767,31 +772,40 @@
                                  (get decoded "encoding")
                                  (assoc :encoding (bytes->str (get decoded "encoding"))))
                         validation (validate-torrent parsed)]
+                    ;; The docstring promises a string URL: a non-string
+                    ;; announce that survives required-fields is refused
+                    ;; here, before success is returned.
                     (if (:ok validation)
-                      {:ok parsed}
+                      (if (string? (:announce parsed))
+                        {:ok parsed}
+                        (bencode/torrent-error "announce must be a string URL"
+                                               {:field "announce"}))
                       validation)))))))))))
 
 ;; Info that cleared validation: the trust contract plus valid piece
 ;; hashes. :pieces is always present (parse-info-dict assocs it), and
-;; validation enforces that, so every? alone suffices here.
+;; validation enforces that, so every? alone suffices here. The predicate
+;; reads :pieces off the info map inside the s/or-tagged entry: s/and
+;; threads the conformed value through, and ::compilable-info conforms to
+;; [tag info], so reading (:pieces %) would ask a vector and answer nil.
 (s/def ::parsed-info
   (s/and ::compilable-info
-         #(every? (partial s/valid? ::utils/byte-array-20) (:pieces %))))
+         #(every? (partial s/valid? ::utils/byte-array-20) (:pieces (second %)))))
 
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)
   :ret map?
   ;; Exclusive envelope. The shape callers branch on: success carries a
-  ;; present announce, a parsed info dict inside the trust contract, and
-  ;; a 20-byte info hash; failure is one keyword envelope or a non-empty
-  ;; vector of them. :announce stays truthiness-checked, not string?-
-  ;; checked: hostile scalars pass required-fields today, so pinning
-  ;; string? would outlaw live outputs.
+  ;; string announce URL, a parsed info dict inside the trust contract,
+  ;; and a 20-byte info hash; failure is one keyword envelope or a
+  ;; non-empty vector of them. The string check lives in parse-torrent
+  ;; itself (required-fields still accepts hostile scalars, so it stays
+  ;; truthiness-checked there).
   :fn #(let [{ok :ok error :error :as result} (:ret %)]
          (if (contains? result :ok)
            (and (not (contains? result :error))
                 (map? ok)
-                (some? (:announce ok))
+                (string? (:announce ok))
                 (s/valid? ::parsed-info (:info ok))
                 (s/valid? ::utils/byte-array-20 (:info-hash ok)))
            (and (contains? result :error)

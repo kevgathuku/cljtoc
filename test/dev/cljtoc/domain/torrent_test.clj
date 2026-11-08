@@ -3,6 +3,7 @@
             [clojure.test.check.clojure-test :refer [defspec]]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
+            [clojure.spec.alpha :as s]
             [dev.cljtoc.domain.torrent :as torrent]
             [dev.cljtoc.domain.bencode :as bencode]
             [dev.cljtoc.test-utils :as test-utils]
@@ -163,6 +164,18 @@
         (is (= {:path ["dir" "file1.txt"] :length 100} (first (:files info))))
         (is (= {:path ["dir" "file2.txt"] :length 200} (second (:files info))))))))
 
+(deftest parsed-info-rejects-short-hashes-test
+  ;; ::parsed-info backs parse-torrent's success spec: the hash check must
+  ;; read the info map out of the s/or-tagged entry, not the entry itself.
+  (testing "an info dict with a short piece hash is not parsed-info"
+    (is (not (s/valid? ::torrent/parsed-info
+                       {:name "t" :piece-length 4 :length 8
+                        :pieces [(byte-array 15)]}))))
+  (testing "an info dict with valid hashes is parsed-info"
+    (is (s/valid? ::torrent/parsed-info
+                  {:name "t" :piece-length 4 :length 8
+                   :pieces [(byte-array 20)]}))))
+
 (deftest parse-torrent-single-file-test
   (testing "parses complete single-file torrent"
     (let [torrent-bytes (make-single-file-torrent-bytes)
@@ -224,7 +237,20 @@
                                   "pieces" (make-pieces 1) "files" 42}})
           result (torrent/parse-torrent torrent-bytes)]
       (is (:error result))
-      (is (some #(re-find #"collection" %) (map :message (:error result)))))))
+      (is (some #(re-find #"collection" %) (map :message (:error result)))))
+    (testing "a numeric file path is an error, never a throw"
+      (let [torrent-bytes (bencode/encode-bencode
+                           {"announce" "http://tracker.example.com/announce"
+                            "info" {"name" "t" "piece length" 4
+                                    "pieces" (make-pieces 1)
+                                    "files" [{"length" 4 "path" 42}]}})]
+        (is (:error (torrent/parse-torrent torrent-bytes)))))
+    (testing "a non-string announce is an error"
+      (let [torrent-bytes (bencode/encode-bencode
+                           {"announce" 42
+                            "info" {"name" "t" "piece length" 4
+                                    "pieces" (make-pieces 1) "length" 8}})]
+        (is (:error (torrent/parse-torrent torrent-bytes)))))))
 
 (deftest parse-torrent-negative-length-test
   (testing "single-file info with negative length returns error"
@@ -300,6 +326,31 @@
   (testing "scalar pieces are a shape error, never a throw"
     (let [t {:info {:pieces 42}}]
       (is (= 1 (count (torrent/validate-pieces-length t)))))))
+
+;; The fdef :fn pins one-error-per-bad-entry, but stest/check's default
+;; map? generator all but never emits a hostile :pieces shape, so that
+;; clause is proven here instead: every generated shape reports exactly
+;; the errors the independent bytes?/count oracle predicts.
+(defspec validate-pieces-length-count-matches-bad-entries-spec 100
+  (prop/for-all [pieces (gen/one-of [(gen/return nil)
+                                     gen/nat
+                                     (gen/vector
+                                      (gen/one-of [(gen/fmap byte-array
+                                                             (gen/vector (gen/choose -128 127) 20))
+                                                   (gen/fmap byte-array
+                                                             (gen/vector (gen/choose -128 127) 15))
+                                                   (gen/return "nope")
+                                                   gen/nat])
+                                      0 5)])]
+                (let [errors (torrent/validate-pieces-length {:info {:pieces pieces}})]
+                  (and (every? #(keyword? (:error %)) errors)
+                       (cond
+                         (nil? pieces) (empty? errors)
+                         (not (sequential? pieces)) (= 1 (count errors))
+                         :else (= (count errors)
+                                  (count (filter #(not (and (bytes? %)
+                                                            (= 20 (count %))))
+                                                 pieces))))))))
 
 (deftest validate-torrent-test
   (testing "valid torrent returns {:ok true}"

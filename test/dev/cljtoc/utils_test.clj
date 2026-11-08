@@ -22,6 +22,14 @@
     (let [samples (gen/sample (utils/gen-byte-array 20) 10)]
       (is (every? #(= 20 (count %)) samples)))))
 
+(deftest no-eager-test-check-dependency-test
+  ;; test.check is :dev-only (the uberjar excludes it), so loading the
+  ;; shared utils on a production classpath must not pull it in.
+  ;; Generation still works: gen-byte-array resolves the generators
+  ;; lazily at call time, when test.check is present.
+  (testing "loading utils does not alias test.check generators"
+    (is (not (contains? (ns-aliases 'dev.cljtoc.utils) 'gen)))))
+
 (deftest fdef-specs-hold-generatively-test
   (testing "bytes-equal? fdef holds over generated inputs"
     (let [failures (test-utils/check-fdefs

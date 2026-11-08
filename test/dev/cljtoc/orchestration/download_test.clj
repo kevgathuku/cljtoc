@@ -715,6 +715,38 @@
           result (download/resume-download disk nil live)]
       (is (= :invalid-torrent (:error result))))))
 
+(deftest refuse-unvalidated-record-rejects-hash-count-mismatch-test
+  (testing "a stored torrent whose hash count does not match the layout's piece count is refused"
+    ;; length 16 over piece length 4 requires 4 hashes; one is stored.
+    (let [record {:id "short"
+                  :state :paused
+                  :output-dir "/out"
+                  :torrent {:announce "http://tracker.example.com/announce"
+                            :info {:name "short" :piece-length 4 :length 16
+                                   :pieces [(byte-array 20)]}}}]
+      (is (= :invalid-torrent (:error (download/refuse-unvalidated-record record))))))
+  (testing "a stored torrent with the matching hash count is accepted"
+    (let [record {:id "full"
+                  :state :paused
+                  :output-dir "/out"
+                  :torrent {:announce "http://tracker.example.com/announce"
+                            :info {:name "full" :piece-length 4 :length 8
+                                   :pieces [(byte-array 20) (byte-array 20)]}}}]
+      (is (nil? (download/refuse-unvalidated-record record)))))
+  (testing "a multi-file torrent counts hashes against the summed total"
+    ;; Two 4-byte files over piece length 4 require 2 hashes.
+    (let [base {:id "m"
+                :state :paused
+                :output-dir "/out"
+                :torrent {:announce "http://tracker.example.com/announce"
+                          :info {:name "m" :piece-length 4
+                                 :files [{:path ["a"] :length 4}
+                                         {:path ["b"] :length 4}]
+                                 :pieces [(byte-array 20) (byte-array 20)]}}}
+          short (assoc-in base [:torrent :info :pieces] [(byte-array 20)])]
+      (is (nil? (download/refuse-unvalidated-record base)))
+      (is (= :invalid-torrent (:error (download/refuse-unvalidated-record short)))))))
+
 ;; Canonical download IDs (issue #7): human-readable, derived once from the
 ;; torrent path — never a UUID, never overwritten post-hoc.
 

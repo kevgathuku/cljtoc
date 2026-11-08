@@ -581,18 +581,49 @@
             {:ok download :layout nil}
             (assoc materialized :layout (:ok compiled))))))))
 
+(defn- hash-count-mismatch
+  "Returns {:expected n :actual m} when the stored piece-hash count differs
+  from the piece count the declared total length and piece length require
+  (ceiling of total over piece length), else nil. Answers nil whenever the
+  layout is not numeric enough to count: validate-torrent already refuses
+  those shapes, and this check must stay total over hostile stored state."
+  [torrent]
+  (let [info (:info torrent)
+        pieces (:pieces info)]
+    (when (and (map? info)
+               (sequential? pieces)
+               (pos-int? (:piece-length info)))
+      (let [lengths (if (some? (:files info))
+                      (when (sequential? (:files info))
+                        (map :length (:files info)))
+                      [(:length info)])]
+        (when (and (some? lengths) (every? nat-int? lengths))
+          (let [expected (long (Math/ceil (/ (reduce + 0 lengths)
+                                             (double (:piece-length info)))))
+                actual (count pieces)]
+            (when (not= expected actual)
+              {:expected expected :actual actual})))))))
+
 (defn refuse-unvalidated-record
   "Refuse a record whose torrent fails validation: disk state is a trust
   boundary, and layout derivation trusts its input now. Shared by
-  resume-download and daemon startup. Returns an :invalid-torrent
-  envelope, or nil when there is no record or it validates."
+  resume-download and daemon startup. Also refuse a stored torrent whose
+  piece-hash count does not match the layout's piece count. Returns an
+  :invalid-torrent envelope, or nil when there is no record or it validates."
   [record]
   (when record
     (let [checked (torrent/validate-torrent (:torrent record))]
-      (when (:error checked)
+      (cond
+        (:error checked)
         {:error :invalid-torrent
          :message (str "Stored state fails torrent validation: "
-                       (-> checked :error first :message))}))))
+                       (-> checked :error first :message))}
+
+        (hash-count-mismatch (:torrent record))
+        (let [{:keys [expected actual]} (hash-count-mismatch (:torrent record))]
+          {:error :invalid-torrent
+           :message (str "Stored state declares " actual
+                         " piece hashes but the layout requires " expected)})))))
 
 (s/fdef refuse-unvalidated-record
   :args (s/cat :record (s/nilable map?))
