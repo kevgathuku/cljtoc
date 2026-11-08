@@ -8,6 +8,7 @@
 
   All errors are returned as data maps, never thrown as exceptions."
   (:require [dev.cljtoc.domain.bencode :as bencode]
+            [dev.cljtoc.utils :as utils]
             [clojure.spec.alpha :as s]
             [clojure.spec.gen.alpha :as gen])
   (:import [java.util Arrays]))
@@ -686,9 +687,7 @@
 ;; validation enforces that, so every? alone suffices here.
 (s/def ::parsed-info
   (s/and ::compilable-info
-         #(every? (fn [piece-hash] (and (bytes? piece-hash)
-                                        (= 20 (count piece-hash))))
-                  (:pieces %))))
+         #(every? (partial s/valid? ::utils/byte-array-20) (:pieces %))))
 
 (s/fdef parse-torrent
   :args (s/cat :torrent-bytes bytes?)
@@ -702,7 +701,6 @@
          (if-let [ok (:ok result)]
            (and (some? (:announce ok))
                 (s/valid? ::parsed-info (:info ok))
-                (bytes? (:info-hash ok))
-                (= 20 (count (:info-hash ok))))
+                (s/valid? ::utils/byte-array-20 (:info-hash ok)))
            (let [error (:error result)]
              (or (keyword? error) (vector? error))))))
